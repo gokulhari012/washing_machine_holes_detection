@@ -1,0 +1,33 @@
+{
+  "active_detector": "opencv",
+  "common": {
+    "confidence_threshold": 0.6,
+    "expected_hole_count": 1,
+    "position_tolerance_mm": 2.5
+  },
+  "opencv": {
+    "detection_threshold": 60,
+    "adaptive_threshold": false,
+    "blur_kernel_size": 5,
+    "edge_threshold_low": 50,
+    "edge_threshold_high": 150,
+    "morphology_operation": "close",
+    "morphology_kernel_size": 5,
+    "morphology_iterations": 1,
+    "min_hole_diameter_px": 20,
+    "max_hole_diameter_px": 200,
+    "min_circularity": 0.7,
+    "contour_retrieval_mode": "external"
+  },
+  "template_matching": {
+    "template_path": "",
+    "match_threshold": 0.8,
+    "method": "TM_CCOEFF_NORMED"
+  },
+  "yolo": {
+    "model_path": "",
+    "confidence": 0.5,
+    "iou_threshold": 0.45,
+    "class_id": 0
+  }
+}

@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Runtime artifacts (never commit production data)
+data/
+*.db
+*.db-journal
+logs/
+images/
+exports/
+backups/
+
+# IDE
+.idea/
+.vscode/
+
+# Build
+build/
+dist/
+*.spec

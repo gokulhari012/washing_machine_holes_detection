@@ -1,0 +1,40 @@
+{
+  "application": {
+    "name": "Washing Machine Bottom Hole Detection System",
+    "version": "1.0.0",
+    "factory_name": "Factory 1",
+    "operator_name": "Operator",
+    "shift": "A",
+    "serial_prefix": "WM-",
+    "language": "en",
+    "theme": "dark"
+  },
+  "database": {
+    "path": "data/inspection.db",
+    "backup_directory": "backups",
+    "auto_backup": true,
+    "backup_time": "23:00",
+    "retention_days": 90
+  },
+  "storage": {
+    "image_directory": "images",
+    "save_images": true,
+    "save_ng_only": false,
+    "export_directory": "exports"
+  },
+  "security": {
+    "settings_password_protected": true,
+    "session_timeout_minutes": 30
+  },
+  "ui": {
+    "live_preview_fps": 15,
+    "recent_inspections_rows": 50,
+    "alarm_auto_clear_seconds": 0
+  },
+  "logging": {
+    "directory": "logs",
+    "level": "INFO",
+    "max_file_size_mb": 5,
+    "backup_count": 10
+  }
+}

@@ -1,0 +1,96 @@
+{
+  "cameras": [
+    {
+      "index": 1,
+      "name": "Camera 1 - Front Left",
+      "driver": "simulated",
+      "connection_id": "0",
+      "enabled": true,
+      "exposure_us": 10000,
+      "gain_db": 0.0,
+      "gamma": 1.0,
+      "brightness": 0,
+      "width": 1280,
+      "height": 1024,
+      "roi": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "trigger_mode": "software",
+      "simulation": {
+        "image_directory": "resources/sample_images/camera_1"
+      }
+    },
+    {
+      "index": 2,
+      "name": "Camera 2 - Front Right",
+      "driver": "simulated",
+      "connection_id": "1",
+      "enabled": true,
+      "exposure_us": 10000,
+      "gain_db": 0.0,
+      "gamma": 1.0,
+      "brightness": 0,
+      "width": 1280,
+      "height": 1024,
+      "roi": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "trigger_mode": "software",
+      "simulation": {
+        "image_directory": "resources/sample_images/camera_2"
+      }
+    },
+    {
+      "index": 3,
+      "name": "Camera 3 - Rear Left",
+      "driver": "simulated",
+      "connection_id": "2",
+      "enabled": true,
+      "exposure_us": 10000,
+      "gain_db": 0.0,
+      "gamma": 1.0,
+      "brightness": 0,
+      "width": 1280,
+      "height": 1024,
+      "roi": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "trigger_mode": "software",
+      "simulation": {
+        "image_directory": "resources/sample_images/camera_3"
+      }
+    },
+    {
+      "index": 4,
+      "name": "Camera 4 - Rear Right",
+      "driver": "simulated",
+      "connection_id": "3",
+      "enabled": true,
+      "exposure_us": 10000,
+      "gain_db": 0.0,
+      "gamma": 1.0,
+      "brightness": 0,
+      "width": 1280,
+      "height": 1024,
+      "roi": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
+      "trigger_mode": "software",
+      "simulation": {
+        "image_directory": "resources/sample_images/camera_4"
+      }
+    }
+  ]
+}
