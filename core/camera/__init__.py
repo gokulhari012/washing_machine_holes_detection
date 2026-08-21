@@ -2,6 +2,7 @@
 
 from core.camera.camera_base import CameraBase, CameraSettings
 from core.camera.camera_manager import CameraHealth, CameraManager
+from core.camera.image_file_camera import ImageFileCamera
 from core.camera.simulated_camera import SimulatedCamera
 from core.camera.usb_camera import UsbCamera
 
@@ -13,6 +14,7 @@ __all__ = [
     "CameraSettings",
     "CameraHealth",
     "CameraManager",
+    "ImageFileCamera",
     "SimulatedCamera",
     "UsbCamera",
     "create_camera",
@@ -27,6 +29,8 @@ def create_camera(settings: CameraSettings) -> CameraBase:
     """
     if settings.driver is CameraDriver.SIMULATED:
         return SimulatedCamera(settings)
+    if settings.driver is CameraDriver.IMAGE_FILE:
+        return ImageFileCamera(settings)
     if settings.driver is CameraDriver.USB:
         return UsbCamera(settings)
     if settings.driver is CameraDriver.HIKROBOT:

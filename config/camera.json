@@ -3,7 +3,7 @@
     {
       "index": 1,
       "name": "Camera 1 - Front Left",
-      "driver": "simulated",
+      "driver": "image_file",
       "connection_id": "0",
       "enabled": true,
       "exposure_us": 10000,
@@ -13,15 +13,16 @@
       "width": 1280,
       "height": 1024,
       "roi": {
-        "x": 0,
-        "y": 0,
-        "width": 0,
-        "height": 0
+        "x": 502,
+        "y": 510,
+        "width": 155,
+        "height": 110
       },
       "trigger_mode": "software",
       "simulation": {
         "image_directory": "resources/sample_images/camera_1"
-      }
+      },
+      "image_source": "C:/Users/gokul/MVS/Data/Image_20260820105917551.bmp"
     },
     {
       "index": 2,

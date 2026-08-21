@@ -64,6 +64,12 @@ pytest
    `core/camera/hikrobot_camera.py`). Basler/Daheng/IDS: implement a
    `CameraBase` adapter and register it in `core/camera/__init__.py`.
 
+   The `image_file` driver needs no hardware: press **Choose Image…** (or
+   **Folder…**) to pick a picture, then **Save Configuration**. That picture
+   is streamed as the camera's frames, so it shows up in the live preview and
+   is inspected by every trigger exactly like a real feed — the quickest way
+   to try detection on your own photos.
+
 3. **Calibration** — per camera on the Calibration page: pixel→mm scale (or a
    4-point homography for perspective correction) and the reference (nominal)
    hole position. The position tolerance judgement activates only for

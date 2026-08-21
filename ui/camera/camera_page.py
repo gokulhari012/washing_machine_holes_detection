@@ -12,10 +12,13 @@ save are handled by the composition root's config subscription.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
+    QFileDialog,
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
@@ -29,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.camera.image_file_camera import IMAGE_NAME_FILTER, IMAGE_PATTERNS, read_image
 from core.utilities.enums import CameraDriver, ConnectionState, TriggerMode
 from core.utilities.exceptions import VisionSystemError
 from models.app_state import AppState
@@ -98,6 +102,7 @@ class CameraPage(QWidget):
         self._name = QLineEdit()
         self._driver = QComboBox()
         self._driver.addItems([d.value for d in CameraDriver])
+        self._driver.currentTextChanged.connect(self._on_driver_changed)
         self._conn_id = QLineEdit()
         self._enabled = QCheckBox("Enabled")
         self._exposure = QSpinBox()
@@ -120,9 +125,34 @@ class CameraPage(QWidget):
         self._trigger = QComboBox()
         self._trigger.addItems([t.value for t in TriggerMode])
 
+        # "image_file" driver: the uploaded picture that is streamed as frames
+        self._image_source = QLineEdit()
+        self._image_source.setPlaceholderText("no image chosen")
+        self._image_source.setToolTip(
+            "Picture (or folder of pictures) streamed as this camera's frames"
+        )
+        choose_image = QPushButton("Choose Image…")
+        choose_image.setToolTip("Pick a picture to inspect live")
+        choose_image.clicked.connect(self._on_choose_image)
+        choose_folder = QPushButton("Folder…")
+        choose_folder.setToolTip("Pick a folder of pictures to cycle through")
+        choose_folder.clicked.connect(self._on_choose_folder)
+        image_buttons = QHBoxLayout()
+        image_buttons.setContentsMargins(0, 0, 0, 0)
+        image_buttons.addWidget(choose_image)
+        image_buttons.addWidget(choose_folder)
+        image_column = QVBoxLayout()
+        image_column.setContentsMargins(0, 0, 0, 0)
+        image_column.addWidget(self._image_source)
+        image_column.addLayout(image_buttons)
+        self._image_widget = QWidget()
+        self._image_widget.setLayout(image_column)
+
         form.addRow("Name", self._name)
         form.addRow("Driver", self._driver)
+        form.addRow("Image Source", self._image_widget)
         form.addRow("Connection ID", self._conn_id)
+        self._form = form
         form.addRow("", self._enabled)
         form.addRow("Exposure", self._exposure)
         form.addRow("Gain", self._gain)
@@ -176,11 +206,16 @@ class CameraPage(QWidget):
         hint = QLabel("Wheel: zoom · Drag: pan · Double-click: fit · Draw ROI: drag a region")
         hint.setProperty("class", "dim")
         preview_col.addWidget(hint)
+        self._image_hint = QLabel()
+        self._image_hint.setProperty("class", "dim")
+        self._image_hint.setWordWrap(True)
+        preview_col.addWidget(self._image_hint)
         body.addLayout(preview_col, stretch=1)
 
         # ---------------------------------------------------------- wiring
         app_state.preview_frame.connect(self._on_preview_frame)
         app_state.camera_state_changed.connect(self._on_camera_state)
+        self._on_driver_changed(self._driver.currentText())
         self.reload()
 
     # -------------------------------------------------------------- loading
@@ -215,6 +250,7 @@ class CameraPage(QWidget):
         try:
             self._name.setText(cfg.get("name", ""))
             self._driver.setCurrentText(cfg.get("driver", "simulated"))
+            self._image_source.setText(str(cfg.get("image_source", "")))
             self._conn_id.setText(str(cfg.get("connection_id", "")))
             self._enabled.setChecked(bool(cfg.get("enabled", True)))
             self._exposure.setValue(int(cfg.get("exposure_us", 10000)))
@@ -260,6 +296,11 @@ class CameraPage(QWidget):
                 },
             }
         )
+        image_source = self._image_source.text().strip()
+        if image_source:  # only the image_file driver uses it — keep other entries clean
+            cfg["image_source"] = image_source
+        else:
+            cfg.pop("image_source", None)
         return cfg
 
     # -------------------------------------------------------------- actions
@@ -295,6 +336,56 @@ class CameraPage(QWidget):
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Remove Camera", str(exc))
         self.reload()
+
+    # ---------------------------------------------------------- image source
+    def _on_driver_changed(self, driver: str) -> None:
+        """Only the ``image_file`` driver needs the picture picker."""
+        is_image = driver == CameraDriver.IMAGE_FILE.value
+        self._form.setRowVisible(self._image_widget, is_image)
+        self._image_hint.setVisible(is_image)
+
+    def _on_choose_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose Image", self._image_start_dir(), IMAGE_NAME_FILTER
+        )
+        if path:
+            self._set_image_source(path)
+
+    def _on_choose_folder(self) -> None:
+        path = QFileDialog.getExistingDirectory(
+            self, "Choose Image Folder", self._image_start_dir()
+        )
+        if path:
+            self._set_image_source(path)
+
+    def _image_start_dir(self) -> str:
+        current = Path(self._image_source.text().strip() or ".")
+        if current.is_dir():
+            return str(current)
+        return str(current.parent) if current.is_file() else ""
+
+    def _set_image_source(self, path: str) -> None:
+        """Adopt the chosen picture: switch to the image driver and preview it."""
+        self._image_source.setText(path)
+        self._driver.setCurrentText(CameraDriver.IMAGE_FILE.value)
+        frame = read_image(self._first_image(Path(path)))
+        if frame is None:
+            self._image_hint.setText("")
+            QMessageBox.warning(self, "Choose Image", f"Cannot read an image from:\n{path}")
+            return
+        self._preview.set_frame(frame)
+        self._image_hint.setText(
+            "Preview only — press “Save Configuration” to stream this image live "
+            "into the preview and the inspection pipeline."
+        )
+
+    @staticmethod
+    def _first_image(source: Path) -> Path:
+        """``source`` itself for a file, else its first image (folder case)."""
+        if not source.is_dir():
+            return source
+        candidates = sorted(p for pattern in IMAGE_PATTERNS for p in source.glob(pattern))
+        return candidates[0] if candidates else source
 
     def _lifecycle(self, action: str) -> None:
         index = self._current_index()

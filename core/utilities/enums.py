@@ -51,6 +51,7 @@ class CameraDriver(StrEnum):
     """Registered camera adapter implementations (see ``core/camera/``)."""
 
     SIMULATED = "simulated"
+    IMAGE_FILE = "image_file"  # replays an uploaded picture / folder of pictures
     USB = "usb"
     HIKROBOT = "hikrobot"
     BASLER = "basler"
