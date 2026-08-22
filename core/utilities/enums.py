@@ -65,6 +65,7 @@ class DetectorType(StrEnum):
     OPENCV = "opencv"
     TEMPLATE_MATCHING = "template_matching"
     YOLO = "yolo"
+    DARK_HOLE = "dark_hole"  # local-contrast; copes with partially visible bores
 
 
 class LogSource(StrEnum):

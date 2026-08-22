@@ -103,6 +103,7 @@ class DetectionPage(QWidget):
         self._stack.addWidget(self._build_opencv_form())
         self._stack.addWidget(self._build_template_form())
         self._stack.addWidget(self._build_yolo_form())
+        self._stack.addWidget(self._build_dark_hole_form())
         left.addWidget(self._stack)
 
         buttons = QHBoxLayout()
@@ -214,6 +215,44 @@ class DetectionPage(QWidget):
         form.addRow("Class ID", self._yolo_class)
         return box
 
+    def _build_dark_hole_form(self) -> QWidget:
+        box = QGroupBox("Dark Hole Parameters")
+        form = QFormLayout(box)
+        self._dh_channel = QComboBox()
+        self._dh_channel.addItems(["auto", "gray", "red", "green", "blue"])
+        self._dh_channel.setToolTip(
+            "Which channel carries the signal. 'auto' picks the widest-spread "
+            "channel — the right choice under a red or IR ring light"
+        )
+        self._dh_blur = _spin(1, 31)
+        self._dh_min_contrast = _spin(1, 255)
+        self._dh_min_contrast.setToolTip(
+            "How many grey levels darker than its surroundings a bore must be"
+        )
+        self._dh_otsu = QCheckBox("Also raise the threshold automatically (Otsu)")
+        self._dh_morph = _spin(1, 31)
+        self._dh_min_diameter = _spin(1, 4000)
+        self._dh_max_diameter = _spin(1, 4000)
+        self._dh_fill = _dspin(0.05, 1.0, 0.05)
+        self._dh_fill.setToolTip(
+            "Smallest visible share of the bore that still counts — 0.35 accepts "
+            "a bore whose rim is two thirds hidden"
+        )
+        self._dh_fit_error = _dspin(0.05, 1.0, 0.05)
+        self._dh_fit_error.setToolTip(
+            "How far the rim may stray from a circle (fraction of the radius)"
+        )
+        form.addRow("Channel", self._dh_channel)
+        form.addRow("Blur Kernel", self._dh_blur)
+        form.addRow("Min Contrast", self._dh_min_contrast)
+        form.addRow("", self._dh_otsu)
+        form.addRow("Morph Kernel", self._dh_morph)
+        form.addRow("Min Hole Diameter (px)", self._dh_min_diameter)
+        form.addRow("Max Hole Diameter (px)", self._dh_max_diameter)
+        form.addRow("Min Visible Fraction", self._dh_fill)
+        form.addRow("Max Fit Error", self._dh_fit_error)
+        return box
+
     def _browse(self, target: QLineEdit, name_filter: str) -> None:
         path, _ = QFileDialog.getOpenFileName(self, "Select File", "", name_filter)
         if path:
@@ -247,6 +286,17 @@ class DetectionPage(QWidget):
         self._tm_threshold.setValue(float(template.get("match_threshold", 0.8)))
         self._tm_method.setCurrentText(template.get("method", "TM_CCOEFF_NORMED"))
 
+        dark = cfg.get("dark_hole", {})
+        self._dh_channel.setCurrentText(str(dark.get("channel", "auto")))
+        self._dh_blur.setValue(int(dark.get("blur_kernel_size", 3)))
+        self._dh_min_contrast.setValue(int(dark.get("min_contrast", 18)))
+        self._dh_otsu.setChecked(bool(dark.get("use_otsu", True)))
+        self._dh_morph.setValue(int(dark.get("morphology_kernel_size", 3)))
+        self._dh_min_diameter.setValue(int(dark.get("min_hole_diameter_px", 15)))
+        self._dh_max_diameter.setValue(int(dark.get("max_hole_diameter_px", 120)))
+        self._dh_fill.setValue(float(dark.get("min_fill_ratio", 0.35)))
+        self._dh_fit_error.setValue(float(dark.get("max_fit_error", 0.25)))
+
         yolo = cfg.get("yolo", {})
         self._yolo_path.setText(yolo.get("model_path", ""))
         self._yolo_conf.setValue(float(yolo.get("confidence", 0.5)))
@@ -279,6 +329,17 @@ class DetectionPage(QWidget):
                 "template_path": self._tm_path.text().strip(),
                 "match_threshold": self._tm_threshold.value(),
                 "method": self._tm_method.currentText(),
+            },
+            "dark_hole": {
+                "channel": self._dh_channel.currentText(),
+                "blur_kernel_size": self._dh_blur.value(),
+                "min_contrast": self._dh_min_contrast.value(),
+                "use_otsu": self._dh_otsu.isChecked(),
+                "morphology_kernel_size": self._dh_morph.value(),
+                "min_hole_diameter_px": self._dh_min_diameter.value(),
+                "max_hole_diameter_px": self._dh_max_diameter.value(),
+                "min_fill_ratio": self._dh_fill.value(),
+                "max_fit_error": self._dh_fit_error.value(),
             },
             "yolo": {
                 "model_path": self._yolo_path.text().strip(),

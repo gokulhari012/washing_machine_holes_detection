@@ -1,9 +1,20 @@
 {
-  "active_detector": "opencv",
+  "active_detector": "dark_hole",
   "common": {
     "confidence_threshold": 0.6,
     "expected_hole_count": 1,
     "position_tolerance_mm": 2.5
+  },
+  "dark_hole": {
+    "channel": "auto",
+    "blur_kernel_size": 3,
+    "min_contrast": 18,
+    "use_otsu": true,
+    "morphology_kernel_size": 3,
+    "min_hole_diameter_px": 15,
+    "max_hole_diameter_px": 120,
+    "min_fill_ratio": 0.35,
+    "max_fit_error": 0.25
   },
   "opencv": {
     "detection_threshold": 60,

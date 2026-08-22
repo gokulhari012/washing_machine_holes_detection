@@ -13,21 +13,21 @@
       "width": 1280,
       "height": 1024,
       "roi": {
-        "x": 502,
-        "y": 510,
-        "width": 155,
-        "height": 110
+        "x": 469,
+        "y": 501,
+        "width": 217,
+        "height": 143
       },
       "trigger_mode": "software",
       "simulation": {
         "image_directory": "resources/sample_images/camera_1"
       },
-      "image_source": "C:/Users/gokul/MVS/Data/Image_20260820105917551.bmp"
+      "image_source": "C:/Users/gokul/Downloads/WhatsApp Image 2026-08-22 at 7.14.03 AM.jpeg"
     },
     {
       "index": 2,
       "name": "Camera 2 - Front Right",
-      "driver": "simulated",
+      "driver": "image_file",
       "connection_id": "1",
       "enabled": true,
       "exposure_us": 10000,
@@ -37,20 +37,21 @@
       "width": 1280,
       "height": 1024,
       "roi": {
-        "x": 0,
-        "y": 0,
-        "width": 0,
-        "height": 0
+        "x": 376,
+        "y": 380,
+        "width": 380,
+        "height": 259
       },
       "trigger_mode": "software",
       "simulation": {
         "image_directory": "resources/sample_images/camera_2"
-      }
+      },
+      "image_source": "C:/Users/gokul/MVS/Data/Image_20260820112524812.bmp"
     },
     {
       "index": 3,
       "name": "Camera 3 - Rear Left",
-      "driver": "simulated",
+      "driver": "image_file",
       "connection_id": "2",
       "enabled": true,
       "exposure_us": 10000,
@@ -60,20 +61,21 @@
       "width": 1280,
       "height": 1024,
       "roi": {
-        "x": 0,
-        "y": 0,
-        "width": 0,
-        "height": 0
+        "x": 587,
+        "y": 529,
+        "width": 168,
+        "height": 115
       },
       "trigger_mode": "software",
       "simulation": {
         "image_directory": "resources/sample_images/camera_3"
-      }
+      },
+      "image_source": "C:/Users/gokul/MVS/Data/Image_20260820113236860.bmp"
     },
     {
       "index": 4,
       "name": "Camera 4 - Rear Right",
-      "driver": "simulated",
+      "driver": "image_file",
       "connection_id": "3",
       "enabled": true,
       "exposure_us": 10000,
@@ -83,15 +85,16 @@
       "width": 1280,
       "height": 1024,
       "roi": {
-        "x": 0,
-        "y": 0,
-        "width": 0,
-        "height": 0
+        "x": 541,
+        "y": 506,
+        "width": 209,
+        "height": 133
       },
       "trigger_mode": "software",
       "simulation": {
         "image_directory": "resources/sample_images/camera_4"
-      }
+      },
+      "image_source": "C:/Users/gokul/MVS/Data/Image_20260820113304421.bmp"
     }
   ]
 }

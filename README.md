@@ -76,9 +76,37 @@ pytest
    calibrated cameras.
 
 4. **Detection** — tune thresholds on the Detection page with the live
-   test view. Strategies (`opencv`, `template_matching`, `yolo`) are
-   hot-swappable; adding one means implementing `HoleDetector` and
+   test view. Strategies (`dark_hole`, `opencv`, `template_matching`, `yolo`)
+   are hot-swappable; adding one means implementing `HoleDetector` and
    registering it in `core/vision/vision_engine.py` — no UI/PLC changes.
+
+   `dark_hole` is the default and the one to use on real parts. It scores each
+   pixel by how much darker it is than its *own surroundings*, so uneven
+   lighting, shadowed corners and specular bands do not need a threshold of
+   their own, and it fits a circle to whatever arc of the rim is visible — a
+   bore half-hidden behind a slot edge is still found, and still reports the
+   centre and diameter of the whole bore. `Hole.circularity` carries how much
+   of the rim was actually visible (1.0 = all of it, ~0.5 = half).
+
+   To match it to a station, run the sample images through the tuner — it
+   prints what was accepted, what was rejected and why, writes a stage-by-stage
+   montage to `logs/hole_debug/`, and suggests the size gates:
+
+   ```
+   python tools/hole_debug.py path/to/sample_images/
+   ```
+
+   `--camera N` runs the pictures through that camera's entry in camera.json
+   (resolution fit and ROI crop included), so the tuner judges the same pixels
+   the line will. The quickest way to try a photo end to end is the
+   `image_file` camera driver (step 2): choose the picture, save, then use
+   **Test on Camera** on the Detection page.
+
+   The size gates are in pixels **of the analysed frame** — after the ROI crop
+   and any resolution fit. Cameras with different fields of view therefore need
+   different numbers, and the detection parameters are global: tune them for
+   the optics you actually inspect with, and keep the four stations
+   comparable.
 
 ## Architecture
 

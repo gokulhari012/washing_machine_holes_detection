@@ -18,6 +18,7 @@ import numpy as np
 from core.logging import get_logger
 from core.utilities.enums import DetectorType, LogSource
 from core.utilities.exceptions import ConfigurationError
+from core.vision.dark_hole_detector import DarkHoleDetector
 from core.vision.detection_result import DetectionResult
 from core.vision.detector_base import HoleDetector
 from core.vision.opencv_hole_detector import OpenCVHoleDetector
@@ -30,6 +31,7 @@ _REGISTRY: dict[DetectorType, type[HoleDetector]] = {
     DetectorType.OPENCV: OpenCVHoleDetector,
     DetectorType.TEMPLATE_MATCHING: TemplateMatchingDetector,
     DetectorType.YOLO: YoloHoleDetector,
+    DetectorType.DARK_HOLE: DarkHoleDetector,
 }
 
 
