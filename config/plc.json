@@ -1,7 +1,7 @@
 {
   "connection": {
     "ip": "192.168.3.20",
-    "port": 7920,
+    "port": 502,
     "protocol": "modbus_tcp",
     "auto_cycle_interval_s": 0.0,
     "unit_id": 1,
