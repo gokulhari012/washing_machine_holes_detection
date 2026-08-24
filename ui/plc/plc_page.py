@@ -83,7 +83,8 @@ class PlcPage(QWidget):
         self._port = QSpinBox()
         self._port.setRange(1, 65535)
         self._protocol = QComboBox()
-        self._protocol.addItems(["modbus_tcp", "simulated"])
+        self._protocol.addItems(["modbus_tcp", "slmp", "simulated"])
+        self._protocol.currentTextChanged.connect(self._on_protocol_changed)
         self._unit = QSpinBox()
         self._unit.setRange(0, 255)
         self._timeout = QSpinBox()
@@ -226,7 +227,12 @@ class PlcPage(QWidget):
             y_spin.setValue(int(addresses.get("y", 0)))
         self._scale.setValue(int(scaling.get("position_scale", 10)))
         self._offset.setValue(int(scaling.get("position_offset", 10000)))
+        self._on_protocol_changed(self._protocol.currentText())
         self._state_led.set_state(self._svc.state, f"PLC {self._svc.state.value}")
+
+    def _on_protocol_changed(self, protocol: str) -> None:
+        """Unit ID is a Modbus concept; SLMP addresses the CPU by network/station."""
+        self._unit.setEnabled(protocol == "modbus_tcp")
 
     def _collect(self) -> dict:
         cfg = self._svc.get_config()

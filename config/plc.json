@@ -1,8 +1,8 @@
 {
   "connection": {
     "ip": "192.168.3.20",
-    "port": 502,
-    "protocol": "modbus_tcp",
+    "port": 5007,
+    "protocol": "slmp",
     "auto_cycle_interval_s": 0.0,
     "unit_id": 1,
     "timeout_ms": 1000,
