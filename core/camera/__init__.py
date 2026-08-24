@@ -24,8 +24,9 @@ __all__ = [
 def create_camera(settings: CameraSettings) -> CameraBase:
     """Factory: build the adapter named by ``settings.driver``.
 
-    The HikRobot adapter is imported lazily so stations without the MVS SDK
-    binding folder still start cleanly with simulated/USB cameras.
+    The vendor adapters are imported lazily so stations without the MVS SDK
+    binding folder (HikRobot) or pypylon (Basler) still start cleanly with
+    simulated/USB cameras.
     """
     if settings.driver is CameraDriver.SIMULATED:
         return SimulatedCamera(settings)
@@ -37,7 +38,11 @@ def create_camera(settings: CameraSettings) -> CameraBase:
         from core.camera.hikrobot_camera import HikRobotCamera
 
         return HikRobotCamera(settings)
-    # BASLER / DAHENG / IDS: add adapter modules and wire them here.
+    if settings.driver is CameraDriver.BASLER:
+        from core.camera.basler_camera import BaslerCamera
+
+        return BaslerCamera(settings)
+    # DAHENG / IDS: add adapter modules and wire them here.
     raise ConfigurationError(
         f"No adapter implemented for camera driver {settings.driver.value!r}"
     )
