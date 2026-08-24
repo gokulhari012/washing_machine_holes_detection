@@ -29,6 +29,8 @@ class AppState(QObject):
 
     # inspection flow
     trigger_received = Signal(int)             # machine number
+    camera_captured = Signal(int, object)      # camera index, freshly grabbed frame
+    camera_inspected = Signal(int, object)     # camera index, CameraInspectionData
     inspection_completed = Signal(object)      # InspectionCycleData
     counters_changed = Signal(int, int, int)   # total, good, ng
 
@@ -66,6 +68,14 @@ class AppState(QObject):
             self._last_trigger_at = datetime.now()
             self._last_machine_number = machine_number
         self.trigger_received.emit(machine_number)
+
+    def publish_camera_capture(self, camera_index: int, frame) -> None:
+        """One camera just took its picture (sequential capture progress)."""
+        self.camera_captured.emit(camera_index, frame)
+
+    def publish_camera_result(self, camera_index: int, data) -> None:
+        """One camera has been judged, before the whole cycle is finished."""
+        self.camera_inspected.emit(camera_index, data)
 
     def set_counters(self, total: int, good: int, ng: int) -> None:
         """Initialise counters from the database at startup / day rollover."""

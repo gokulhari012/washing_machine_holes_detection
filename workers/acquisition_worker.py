@@ -89,7 +89,15 @@ class AcquisitionWorker(QThread):
 def create_acquisition_workers(
     camera_manager: CameraManager, app_state: AppState, fps: float
 ) -> list[AcquisitionWorker]:
-    """One worker per configured camera (composition-root helper)."""
+    """One worker per configured camera (composition-root helper).
+
+    ``fps <= 0`` means "no live video": no worker is created, cameras are
+    touched only when an inspection triggers, and the dashboard shows the
+    pictures each cycle takes instead of a stream.
+    """
+    if fps <= 0:
+        logger.info("Live preview disabled (ui.live_preview_fps <= 0)")
+        return []
     return [
         AcquisitionWorker(camera_manager, index, app_state, fps)
         for index in sorted(camera_manager.cameras)

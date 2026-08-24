@@ -3,7 +3,7 @@
     "ip": "192.168.0.10",
     "port": 502,
     "protocol": "simulated",
-    "auto_cycle_interval_s": 5.0,
+    "auto_cycle_interval_s": 0.0,
     "unit_id": 1,
     "timeout_ms": 1000,
     "poll_interval_ms": 50,

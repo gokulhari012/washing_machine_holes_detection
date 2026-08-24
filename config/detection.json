@@ -25,7 +25,7 @@
     "method": "TM_CCOEFF_NORMED"
   },
   "dark_hole": {
-    "channel": "auto",
+    "channel": "gray",
     "blur_kernel_size": 3,
     "min_contrast": 18,
     "use_otsu": true,

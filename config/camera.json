@@ -3,22 +3,28 @@
     {
       "index": 1,
       "name": "Camera 1 - Front Left",
-      "driver": "image_file",
+      "driver": "basler",
       "connection_id": "0",
       "enabled": true,
-      "exposure_us": 10000,
+      "exposure_us": 50000,
       "gain_db": 0.0,
       "gamma": 1.0,
-      "brightness": 0,
-      "width": 1280,
-      "height": 1024,
+      "brightness": 100,
+      "width": 3648,
+      "height": 5472,
       "roi": {
-        "x": 469,
-        "y": 501,
-        "width": 217,
-        "height": 143
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
       },
       "trigger_mode": "software",
+      "basler": {
+        "packet_size": 1500,
+        "inter_packet_delay": 0,
+        "grab_timeout_ms": 5000,
+        "trigger_source": "Line1"
+      },
       "simulation": {
         "image_directory": "resources/sample_images/camera_1"
       },
@@ -27,20 +33,20 @@
     {
       "index": 2,
       "name": "Camera 2 - Front Right",
-      "driver": "image_file",
+      "driver": "basler",
       "connection_id": "1",
       "enabled": true,
-      "exposure_us": 10000,
+      "exposure_us": 50000,
       "gain_db": 0.0,
       "gamma": 1.0,
-      "brightness": 0,
-      "width": 1280,
-      "height": 1024,
+      "brightness": 100,
+      "width": 3648,
+      "height": 5472,
       "roi": {
-        "x": 376,
-        "y": 380,
-        "width": 380,
-        "height": 259
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
       },
       "trigger_mode": "software",
       "simulation": {
@@ -51,20 +57,20 @@
     {
       "index": 3,
       "name": "Camera 3 - Rear Left",
-      "driver": "image_file",
+      "driver": "basler",
       "connection_id": "2",
       "enabled": true,
-      "exposure_us": 10000,
+      "exposure_us": 50000,
       "gain_db": 0.0,
       "gamma": 1.0,
-      "brightness": 0,
-      "width": 1280,
-      "height": 1024,
+      "brightness": 100,
+      "width": 3648,
+      "height": 5472,
       "roi": {
-        "x": 587,
-        "y": 529,
-        "width": 168,
-        "height": 115
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
       },
       "trigger_mode": "software",
       "simulation": {
@@ -75,20 +81,20 @@
     {
       "index": 4,
       "name": "Camera 4 - Rear Right",
-      "driver": "image_file",
+      "driver": "basler",
       "connection_id": "3",
       "enabled": true,
-      "exposure_us": 10000,
+      "exposure_us": 50000,
       "gain_db": 0.0,
       "gamma": 1.0,
-      "brightness": 0,
-      "width": 1280,
-      "height": 1024,
+      "brightness": 100,
+      "width": 3648,
+      "height": 5472,
       "roi": {
-        "x": 541,
-        "y": 506,
-        "width": 209,
-        "height": 133
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
       },
       "trigger_mode": "software",
       "simulation": {

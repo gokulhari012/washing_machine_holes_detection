@@ -1,27 +1,44 @@
 {
   "connection": {
-    "ip": "192.168.0.10",
-    "port": 502,
-    "protocol": "simulated",
-    "auto_cycle_interval_s": 5.0,
+    "ip": "192.168.3.20",
+    "port": 7920,
+    "protocol": "modbus_tcp",
+    "auto_cycle_interval_s": 0.0,
     "unit_id": 1,
     "timeout_ms": 1000,
     "poll_interval_ms": 50,
     "heartbeat_interval_ms": 500,
-    "reconnect_backoff_ms": [1000, 2000, 5000, 10000]
+    "reconnect_backoff_ms": [
+      1000,
+      2000,
+      5000,
+      10000
+    ]
   },
   "registers": {
     "trigger": 100,
     "machine_number": 101,
     "heartbeat": 102,
-    "camera_positions": {
-      "1": { "x": 110, "y": 111 },
-      "2": { "x": 112, "y": 113 },
-      "3": { "x": 114, "y": 115 },
-      "4": { "x": 116, "y": 117 }
-    },
     "result": 118,
-    "vision_complete": 119
+    "vision_complete": 119,
+    "camera_positions": {
+      "1": {
+        "x": 110,
+        "y": 111
+      },
+      "2": {
+        "x": 112,
+        "y": 113
+      },
+      "3": {
+        "x": 114,
+        "y": 115
+      },
+      "4": {
+        "x": 116,
+        "y": 117
+      }
+    }
   },
   "scaling": {
     "position_scale": 10,

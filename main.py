@@ -148,7 +148,17 @@ class Application:
             on_simulate_trigger=self._simulate_trigger,
             on_shutdown=self.shutdown,
         )
-        self.window.add_page("Dashboard", "▦", DashboardPage(self.app_state, self.database, self.camera_configs))
+        self.window.add_page(
+            "Dashboard",
+            "▦",
+            DashboardPage(
+                self.app_state,
+                self.database,
+                self.camera_configs,
+                config_manager=self.config,
+                on_simulate_trigger=self._simulate_trigger,
+            ),
+        )
         self.window.add_page("Cameras", "◉", CameraPage(self.app_state, self.camera_service))
         self.window.add_page("PLC", "⇄", PlcPage(self.app_state, self.plc_service, self.auth_service))
         self.window.add_page("Detection", "◎", DetectionPage(self.config, self.vision, self.camera_service))

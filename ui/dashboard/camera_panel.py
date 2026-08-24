@@ -70,6 +70,18 @@ class CameraPanel(QFrame):
             return
         self._view.set_frame(self._downscale(frame))
 
+    def show_capture(self, frame: np.ndarray) -> None:
+        """Picture just taken for this cycle — shown at once, hold or not.
+
+        Displayed before detection runs, so on a sequential cycle the panel
+        lights up the instant its camera fires instead of at the end.
+        """
+        self._hold_until = 0.0
+        self._view.set_frame(self._downscale(frame))
+        self._result.setText("…")
+        self._result.setProperty("result", "")
+        self._repolish_result()
+
     def show_result(self, data: CameraInspectionData) -> None:
         """Annotated inspection outcome; freezes the view briefly."""
         if data.frame is not None:
@@ -90,11 +102,15 @@ class CameraPanel(QFrame):
             result.value if result is not InspectionResult.ERROR else "ERROR"
         )
         self._result.setProperty("result", result.value)
+        self._repolish_result()
+
+    # ------------------------------------------------------------- internal
+    def _repolish_result(self) -> None:
+        """Re-apply the stylesheet after the ``result`` property changed."""
         style = self._result.style()
         style.unpolish(self._result)
         style.polish(self._result)
 
-    # ------------------------------------------------------------- internal
     @staticmethod
     def _add_readout(layout: QHBoxLayout, caption: str) -> QLabel:
         cap = QLabel(caption)

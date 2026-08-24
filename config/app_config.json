@@ -22,12 +22,16 @@
     "save_ng_only": false,
     "export_directory": "exports"
   },
+  "inspection": {
+    "capture_mode": "sequential",
+    "camera_delay_ms": 200
+  },
   "security": {
     "settings_password_protected": true,
     "session_timeout_minutes": 30
   },
   "ui": {
-    "live_preview_fps": 15,
+    "live_preview_fps": 0,
     "recent_inspections_rows": 50,
     "alarm_auto_clear_seconds": 0
   },

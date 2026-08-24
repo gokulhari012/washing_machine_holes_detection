@@ -1,13 +1,24 @@
 """The inspection pipeline — the single place the production workflow lives.
 
-    trigger (machine number) ──► capture ×4 (parallel)
-                                 ──► detect ×4 (parallel)
+    trigger (machine number) ──► capture + detect per camera
+                                 (sequential, one camera at a time, or
+                                  all four in parallel — see capture_mode)
                                  ──► calibrate px→mm + judge per camera
                                  ──► overall result
                                  ──► write PLC outputs (positions/result/complete)
                                  ──► save annotated images (per storage policy)
                                  ──► persist to database
                                  ──► publish to AppState (dashboard)
+
+Capture modes (``app_config.inspection``):
+
+- ``sequential`` (default) — camera 1 is grabbed, judged and shown on the
+  dashboard, then ``camera_delay_ms`` passes, then camera 2, and so on. One
+  camera is busy at a time, which is what a station with four high-resolution
+  GigE cameras on a shared network link wants, and it lets the operator watch
+  the pictures arrive one by one.
+- ``parallel`` — all cameras grab and detect at once (fastest cycle, needs the
+  bandwidth for it).
 
 Fault policy (a production line must keep moving):
 - one dead camera            → that camera reports ERROR, others proceed
@@ -37,13 +48,16 @@ from core.logging import get_logger
 from core.plc import PlcManager
 from core.utilities import ConfigManager
 from core.utilities.enums import InspectionResult, LogSource, PlcResultCode
-from core.utilities.exceptions import DatabaseError, DetectionError, PlcError
+from core.utilities.exceptions import CameraError, DatabaseError, DetectionError, PlcError
 from core.vision import VisionEngine, draw_detection_overlay
 from models.app_state import AppState
 from models.dto import CameraInspectionData, InspectionCycleData
 from services.database_service import DatabaseService
 
 logger = get_logger(LogSource.VISION)
+
+SEQUENTIAL_MODE = "sequential"
+DEFAULT_CAMERA_DELAY_MS = 500
 
 _RESULT_TO_PLC = {
     InspectionResult.GOOD: PlcResultCode.GOOD,
@@ -84,27 +98,18 @@ class InspectionService:
         self._app_state.notify_trigger(machine_number)
         logger.info("Inspection started (machine %d)", machine_number)
 
-        # 1. capture all enabled+connected cameras in parallel
-        frames = self._cameras.capture_all()
-        enabled = [
+        enabled = sorted(
             index
             for index, camera in self._cameras.cameras.items()
             if camera.settings.enabled
-        ]
+        )
 
-        # 2. detect in parallel (engine serialises non-thread-safe strategies)
-        detect_started = time.perf_counter()
-        camera_results: dict[int, CameraInspectionData] = {}
-        with ThreadPoolExecutor(
-            max_workers=max(1, len(enabled)), thread_name_prefix="detect"
-        ) as pool:
-            futures = {
-                index: pool.submit(self._inspect_one, index, frames.get(index))
-                for index in enabled
-            }
-            for index, future in futures.items():
-                camera_results[index] = future.result()
-        detection_ms = (time.perf_counter() - detect_started) * 1000.0
+        # 1.+2. capture and detect, one camera at a time or all at once
+        inspection_cfg = app_cfg.get("inspection", {})
+        if str(inspection_cfg.get("capture_mode", SEQUENTIAL_MODE)).lower() == SEQUENTIAL_MODE:
+            camera_results, detection_ms = self._run_sequential(enabled, inspection_cfg)
+        else:
+            camera_results, detection_ms = self._run_parallel(enabled)
 
         # 3. overall judgement
         overall = self._overall_result(camera_results)
@@ -155,6 +160,70 @@ class InspectionService:
             detection_ms,
         )
         return cycle
+
+    # --------------------------------------------------------- capture modes
+    def _run_sequential(
+        self, enabled: list[int], inspection_cfg: dict
+    ) -> tuple[dict[int, CameraInspectionData], float]:
+        """One camera at a time: grab, show, judge, wait, next camera.
+
+        Each picture is published to the dashboard the moment it is taken, so
+        the operator sees the cameras working through the part in order rather
+        than four panels updating at the end.
+        """
+        delay_s = max(0, int(inspection_cfg.get("camera_delay_ms", DEFAULT_CAMERA_DELAY_MS))) / 1000.0
+        camera_results: dict[int, CameraInspectionData] = {}
+        detection_ms = 0.0
+
+        for position, index in enumerate(enabled, start=1):
+            if position > 1 and delay_s > 0:
+                time.sleep(delay_s)  # inspection thread only; the PLC keeps polling
+
+            camera = self._cameras.get(index)
+            self._app_state.post_status(
+                f"Capturing {camera.name} ({position}/{len(enabled)})"
+            )
+            try:
+                frame = self._cameras.capture(index)
+            except CameraError:
+                frame = None  # already logged and recorded in health by capture()
+            if frame is not None:
+                self._app_state.publish_camera_capture(index, frame)
+
+            detect_started = time.perf_counter()
+            data = self._inspect_one(index, frame)
+            detection_ms += (time.perf_counter() - detect_started) * 1000.0
+
+            camera_results[index] = data
+            self._app_state.publish_camera_result(index, data)
+
+        return camera_results, detection_ms
+
+    def _run_parallel(
+        self, enabled: list[int]
+    ) -> tuple[dict[int, CameraInspectionData], float]:
+        """All cameras grab together, then detect together (shortest cycle)."""
+        frames = self._cameras.capture_all()
+        for index, frame in frames.items():
+            if frame is not None:
+                self._app_state.publish_camera_capture(index, frame)
+
+        detect_started = time.perf_counter()
+        camera_results: dict[int, CameraInspectionData] = {}
+        with ThreadPoolExecutor(
+            max_workers=max(1, len(enabled)), thread_name_prefix="detect"
+        ) as pool:
+            futures = {
+                index: pool.submit(self._inspect_one, index, frames.get(index))
+                for index in enabled
+            }
+            for index, future in futures.items():
+                camera_results[index] = future.result()
+        detection_ms = (time.perf_counter() - detect_started) * 1000.0
+
+        for index, data in camera_results.items():
+            self._app_state.publish_camera_result(index, data)
+        return camera_results, detection_ms
 
     # ------------------------------------------------------------ per camera
     def _inspect_one(

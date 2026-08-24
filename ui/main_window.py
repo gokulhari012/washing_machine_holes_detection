@@ -177,6 +177,12 @@ class MainWindow(QMainWindow):
         state.status_message.connect(
             lambda message: self.statusBar().showMessage(message, STATUS_MESSAGE_MS)
         )
+        # one cycle at a time — the toolbar button follows the dashboard one
+        state.trigger_received.connect(lambda _machine: self._set_simulate_enabled(False))
+        state.inspection_completed.connect(lambda _cycle: self._set_simulate_enabled(True))
+
+    def _set_simulate_enabled(self, enabled: bool) -> None:
+        self._simulate_button.setEnabled(enabled and self._on_simulate_trigger is not None)
 
     def _on_camera_state(self, camera_index: int, state: str) -> None:
         led = self._camera_leds.get(camera_index)
