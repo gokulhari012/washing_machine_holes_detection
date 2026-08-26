@@ -24,7 +24,7 @@
   },
   "inspection": {
     "capture_mode": "sequential",
-    "camera_delay_ms": 200
+    "camera_delay_ms": 100
   },
   "security": {
     "settings_password_protected": true,
