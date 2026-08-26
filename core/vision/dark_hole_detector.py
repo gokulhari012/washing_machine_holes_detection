@@ -139,6 +139,11 @@ class DarkHoleDetector(HoleDetector):
         """
         return self._scan(image)
 
+    def debug_stages(self, image: np.ndarray) -> dict[str, np.ndarray]:
+        """Black-hat response + threshold mask, for the Detection page's debug overlay."""
+        stages, _candidates = self._scan(image)
+        return stages
+
     # ------------------------------------------------------------------ pass
     def _scan(self, image: np.ndarray) -> tuple[dict[str, np.ndarray], list["Candidate"]]:
         params = self._params

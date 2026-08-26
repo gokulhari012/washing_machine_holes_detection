@@ -109,6 +109,18 @@ class VisionEngine:
         result.holes = [hole for hole in result.holes if hole.confidence >= threshold]
         return result
 
+    def debug_stages(self, image: np.ndarray) -> dict[str, np.ndarray]:
+        """Intermediate mask/edges from the active strategy; ``{}`` when it has
+        none to show (see :meth:`HoleDetector.debug_stages`).
+
+        Raises:
+            DetectionError
+        """
+        with self._swap_lock:
+            assert self._detector is not None
+            detector = self._detector
+        return detector.debug_stages(image)
+
 
 # --------------------------------------------------------------------------- #
 # Overlay rendering (dashboard panels, calibration live test, saved NG images)
@@ -154,6 +166,45 @@ def draw_detection_overlay(
     if label:
         cv2.putText(
             out, label, (12, out.shape[0] - 12),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (235, 235, 235), 1, cv2.LINE_AA,
+        )
+    return out
+
+
+_EDGE_CYAN = (230, 210, 60)
+_CONTOUR_ORANGE = (0, 150, 255)
+
+
+def draw_debug_overlay(frame: np.ndarray, stages: dict[str, np.ndarray]) -> np.ndarray:
+    """Composite a detector's intermediate ``mask``/``edges`` onto *frame*.
+
+    Every contour the mask currently offers is drawn (not just the ones that
+    survive the detector's gates) — this is the "what is it reacting to right
+    now" view, complementary to :func:`draw_detection_overlay`'s "what did it
+    decide" view. ``stages`` is whatever :meth:`HoleDetector.debug_stages`
+    returned; missing keys are simply skipped.
+    """
+    out = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) if frame.ndim == 2 else frame.copy()
+
+    edges = stages.get("edges")
+    if edges is not None:
+        out[edges > 0] = _EDGE_CYAN
+
+    mask = stages.get("mask")
+    contour_count = 0
+    if mask is not None:
+        contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
+        cv2.drawContours(out, contours, -1, _CONTOUR_ORANGE, 1)
+        contour_count = len(contours)
+
+    if mask is None and edges is None:
+        cv2.putText(
+            out, "No debug view for this strategy", (12, 32),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (210, 210, 210), 1, cv2.LINE_AA,
+        )
+    else:
+        cv2.putText(
+            out, f"{contour_count} contour(s)", (12, out.shape[0] - 12),
             cv2.FONT_HERSHEY_SIMPLEX, 0.55, (235, 235, 235), 1, cv2.LINE_AA,
         )
     return out

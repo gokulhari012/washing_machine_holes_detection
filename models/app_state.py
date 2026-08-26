@@ -26,6 +26,7 @@ class AppState(QObject):
     # connection / hardware
     plc_state_changed = Signal(str)            # ConnectionState value
     camera_state_changed = Signal(int, str)    # camera index, ConnectionState value
+    active_machine_model_changed = Signal(str, int)  # profile name, PLC code
 
     # inspection flow
     trigger_received = Signal(int)             # machine number
@@ -51,6 +52,8 @@ class AppState(QObject):
         self._ng = 0
         self._last_trigger_at: datetime | None = None
         self._last_machine_number: int | None = None
+        self._active_machine_model: str = ""
+        self._active_machine_model_code: int | None = None
 
     # ------------------------------------------------------------- updaters
     def update_plc_state(self, state: ConnectionState) -> None:
@@ -62,6 +65,12 @@ class AppState(QObject):
         with self._lock:
             self._camera_states[camera_index] = state
         self.camera_state_changed.emit(camera_index, state.value)
+
+    def set_active_machine_model(self, name: str, plc_code: int) -> None:
+        with self._lock:
+            self._active_machine_model = name
+            self._active_machine_model_code = plc_code
+        self.active_machine_model_changed.emit(name, plc_code)
 
     def notify_trigger(self, machine_number: int) -> None:
         with self._lock:
@@ -134,3 +143,8 @@ class AppState(QObject):
     def last_machine_number(self) -> int | None:
         with self._lock:
             return self._last_machine_number
+
+    @property
+    def active_machine_model(self) -> tuple[str, int | None]:
+        with self._lock:
+            return self._active_machine_model, self._active_machine_model_code

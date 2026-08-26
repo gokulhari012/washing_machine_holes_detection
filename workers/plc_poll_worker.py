@@ -8,7 +8,12 @@ Runs a tight loop (default 50 ms) that:
    per **rising edge** — after a (re)connect the first value read is taken as
    baseline, never as an edge, so a trigger frozen high cannot re-fire,
 3. toggles the heartbeat register (default every 500 ms) so the PLC can
-   watchdog the PC.
+   watchdog the PC,
+4. reads the machine-model-select register (default every 1000 ms, skipped
+   entirely when unconfigured) and emits :attr:`machine_model_changed` on
+   every value seen that differs from the last — *including* the first read
+   after a (re)connect, unlike the trigger: we want whichever model is
+   already selected to load right away, not wait for the PLC to toggle it.
 
 The inspection itself runs on the InspectionWorker — this loop must never be
 blocked for longer than one poll interval, or the heartbeat would jitter.
@@ -33,20 +38,24 @@ class PlcPollWorker(QThread):
     """Owns the poll cadence; all PLC state flows out via PlcManager callbacks."""
 
     trigger_detected = Signal(int)  # machine number
+    machine_model_changed = Signal(int)  # new model_select value
 
     def __init__(
         self,
         plc_manager: PlcManager,
         poll_interval_ms: int = 50,
         heartbeat_interval_ms: int = 500,
+        model_poll_interval_ms: int = 1000,
     ) -> None:
         super().__init__()
         self.setObjectName("PlcPollWorker")
         self._manager = plc_manager
         self._poll_interval_s = max(0.01, poll_interval_ms / 1000.0)
         self._heartbeat_interval_s = max(0.1, heartbeat_interval_ms / 1000.0)
+        self._model_poll_interval_s = max(0.1, model_poll_interval_ms / 1000.0)
         self._stop_event = threading.Event()
         self._last_trigger: int | None = None  # None = re-baseline required
+        self._last_model: int | None = None  # None = not yet read this session
 
     # ------------------------------------------------------------------ api
     def stop(self, timeout_ms: int = 3000) -> None:
@@ -63,6 +72,7 @@ class PlcPollWorker(QThread):
             self._heartbeat_interval_s * 1000,
         )
         last_heartbeat = 0.0
+        last_model_poll = 0.0
 
         while not self._stop_event.is_set():
             tick_started = time.monotonic()
@@ -84,12 +94,22 @@ class PlcPollWorker(QThread):
                     if tick_started - last_heartbeat >= self._heartbeat_interval_s:
                         self._manager.toggle_heartbeat()
                         last_heartbeat = tick_started
+
+                    if tick_started - last_model_poll >= self._model_poll_interval_s:
+                        last_model_poll = tick_started
+                        model = self._manager.read_model_select()
+                        if model is not None and model != self._last_model:
+                            logger.info("Machine model select changed -> %d", model)
+                            self._last_model = model
+                            self.machine_model_changed.emit(model)
                 except PlcError:
                     # manager already logged, moved to ERROR state and armed
                     # its backoff; require a fresh baseline after recovery
                     self._last_trigger = None
+                    self._last_model = None
             else:
                 self._last_trigger = None
+                self._last_model = None
 
             elapsed = time.monotonic() - tick_started
             remaining = self._poll_interval_s - elapsed

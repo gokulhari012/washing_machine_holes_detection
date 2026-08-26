@@ -3,6 +3,7 @@
 from ui.widgets.alarm_banner import AlarmBanner
 from ui.widgets.image_view import ImageView, numpy_to_qpixmap
 from ui.widgets.led_indicator import LabeledLed, LedIndicator
+from ui.widgets.login_dialog import LoginDialog
 from ui.widgets.roi_editor import RoiEditor
 from ui.widgets.stat_tile import StatTile
 
@@ -12,6 +13,7 @@ __all__ = [
     "numpy_to_qpixmap",
     "LabeledLed",
     "LedIndicator",
+    "LoginDialog",
     "RoiEditor",
     "StatTile",
 ]

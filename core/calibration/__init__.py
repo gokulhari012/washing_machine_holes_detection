@@ -1,6 +1,6 @@
 """Calibration layer: pixel→mm model and per-camera manager."""
 
-from core.calibration.calibration_model import CameraCalibration
+from core.calibration.calibration_model import CameraCalibration, CheckerboardDetection
 from core.calibration.calibration_manager import CalibrationManager
 
-__all__ = ["CameraCalibration", "CalibrationManager"]
+__all__ = ["CameraCalibration", "CalibrationManager", "CheckerboardDetection"]

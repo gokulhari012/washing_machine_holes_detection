@@ -66,6 +66,10 @@ class CameraService:
         """One frame for the 'Test Camera' button. Raises CameraError."""
         return self._manager.capture(index)
 
+    def detect_resolution(self, index: int) -> tuple[int, int]:
+        """(width, height) for the 'Detect Resolution' button. Raises CameraError."""
+        return self._manager.detect_resolution(index)
+
     # --------------------------------------------------------- configuration
     def apply_live(self, camera_config: dict) -> None:
         """Push settings to a connected camera without persisting (preview tuning).

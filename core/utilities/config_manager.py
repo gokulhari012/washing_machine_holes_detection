@@ -33,7 +33,7 @@ class ConfigManager:
     """Loads, caches, saves and validates the application's JSON config files."""
 
     DEFAULTS_SUBDIR = "defaults"
-    KNOWN_CONFIGS = ("app_config", "plc", "camera", "detection")
+    KNOWN_CONFIGS = ("app_config", "plc", "camera", "detection", "machine_models")
 
     def __init__(self, config_dir: str | Path) -> None:
         self._config_dir = Path(config_dir)

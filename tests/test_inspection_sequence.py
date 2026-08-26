@@ -79,8 +79,12 @@ class FakeConfig:
 def service_parts():
     cameras = FakeCameraManager()
     app_state = AppState()
-    calibration = SimpleNamespace(evaluate=lambda index, x, y: (1.0, 2.0, 0.0))
-    plc = SimpleNamespace(write_inspection_output=lambda positions, result: None)
+    calibration = SimpleNamespace(
+        has=lambda index: True, evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0)
+    )
+    plc = SimpleNamespace(
+        write_inspection_output=lambda positions, camera_results, result: None
+    )
     database = SimpleNamespace(save_inspection=lambda cycle: 1)
     return cameras, app_state, calibration, plc, database
 
@@ -164,3 +168,62 @@ def test_parallel_mode_still_grabs_everything_at_once(service_parts) -> None:
 
     assert cameras.capture_all_calls == 1
     assert set(cycle.cameras) == set(CAMERA_INDEXES)
+
+
+# A station can legitimately have more than one real hole in its field of
+# view (see core/vision/detection_result.py: DetectionResult.best is plain
+# "highest confidence"). These two candidates are used to prove the pipeline
+# — not the detector — is responsible for picking the *right* one when a
+# calibrated reference point is available to tell them apart.
+_NEAR_REF_HOLE = Hole(x_px=50.0, y_px=50.0, diameter_px=30.0, circularity=0.9, confidence=0.70)
+_FAR_FROM_REF_HOLE = Hole(x_px=200.0, y_px=200.0, diameter_px=30.0, circularity=0.9, confidence=0.95)
+
+
+class MultiHoleVision(FakeVision):
+    """Reports two real holes per frame, sorted best-confidence-first."""
+
+    @staticmethod
+    def detect(frame) -> DetectionResult:
+        return DetectionResult(holes=[_FAR_FROM_REF_HOLE, _NEAR_REF_HOLE])
+
+
+def test_calibrated_camera_picks_the_hole_nearest_the_reference_point(service_parts) -> None:
+    """The higher-confidence candidate is the wrong hole for this station —
+    position-aware selection must still report the one near the reference
+    point, not just whichever scored higher."""
+    cameras, app_state, _, plc, database = service_parts
+
+    def evaluate(index: int, x: float, y: float, w=None, h=None):
+        deviation = 0.1 if (x, y) == (_NEAR_REF_HOLE.x_px, _NEAR_REF_HOLE.y_px) else 50.0
+        return x / 10.0, y / 10.0, deviation
+
+    calibration = SimpleNamespace(has=lambda index: True, evaluate=evaluate)
+    service = InspectionService(
+        cameras, MultiHoleVision(), calibration, plc, database, app_state,
+        FakeConfig(camera_delay_ms=0),
+    )
+
+    cycle = service.run_inspection(machine_number=7)
+
+    for data in cycle.cameras.values():
+        assert (data.x_px, data.y_px) == (_NEAR_REF_HOLE.x_px, _NEAR_REF_HOLE.y_px)
+        assert data.confidence == _NEAR_REF_HOLE.confidence
+
+
+def test_uncalibrated_camera_still_picks_the_highest_confidence_hole(service_parts) -> None:
+    """No reference point to judge distance against — behaviour is unchanged
+    from before position-aware selection existed."""
+    cameras, app_state, _, plc, database = service_parts
+    calibration = SimpleNamespace(
+        has=lambda index: False, evaluate=lambda index, x, y, w=None, h=None: (x, y, None)
+    )
+    service = InspectionService(
+        cameras, MultiHoleVision(), calibration, plc, database, app_state,
+        FakeConfig(camera_delay_ms=0),
+    )
+
+    cycle = service.run_inspection(machine_number=8)
+
+    for data in cycle.cameras.values():
+        assert (data.x_px, data.y_px) == (_FAR_FROM_REF_HOLE.x_px, _FAR_FROM_REF_HOLE.y_px)
+        assert data.confidence == _FAR_FROM_REF_HOLE.confidence

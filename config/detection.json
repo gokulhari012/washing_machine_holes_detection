@@ -1,22 +1,23 @@
 {
-  "active_detector": "dark_hole",
+  "active_detector": "opencv",
   "common": {
-    "confidence_threshold": 0.6,
+    "confidence_threshold": 0.4,
     "expected_hole_count": 1,
     "position_tolerance_mm": 2.5
   },
   "opencv": {
-    "detection_threshold": 60,
+    "detection_threshold": 20,
     "adaptive_threshold": false,
-    "blur_kernel_size": 5,
+    "blur_kernel_size": 7,
     "edge_threshold_low": 50,
     "edge_threshold_high": 150,
     "morphology_operation": "close",
     "morphology_kernel_size": 5,
-    "morphology_iterations": 1,
+    "morphology_iterations": 4,
     "min_hole_diameter_px": 20,
     "max_hole_diameter_px": 200,
-    "min_circularity": 0.7,
+    "min_circularity": 0.65,
+    "min_aspect_ratio": 0.35,
     "contour_retrieval_mode": "external"
   },
   "template_matching": {
@@ -25,12 +26,12 @@
     "method": "TM_CCOEFF_NORMED"
   },
   "dark_hole": {
-    "channel": "gray",
+    "channel": "auto",
     "blur_kernel_size": 3,
-    "min_contrast": 18,
+    "min_contrast": 5,
     "use_otsu": true,
     "morphology_kernel_size": 3,
-    "min_hole_diameter_px": 15,
+    "min_hole_diameter_px": 25,
     "max_hole_diameter_px": 120,
     "min_fill_ratio": 0.35,
     "max_fit_error": 0.25

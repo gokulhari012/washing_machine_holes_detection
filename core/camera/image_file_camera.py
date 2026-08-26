@@ -86,6 +86,33 @@ class ImageFileCamera(CameraBase):
     def _apply_to_device(self, settings: CameraSettings) -> None:
         pass  # settings are read live on every grab
 
+    def detect_resolution(self) -> tuple[int, int]:
+        """Actual pixel size of the configured picture — reads the file
+        directly, so unlike the base implementation this works even before
+        'Connect' is pressed.
+
+        Raises:
+            CameraConnectionError: no image chosen, or nothing found at the path.
+            CameraCaptureError: the image cannot be decoded.
+        """
+        source = source_path(self._settings)
+        if source is None:
+            raise CameraConnectionError(f"{self.name}: no image chosen")
+        if source.is_dir():
+            paths = sorted(p for pattern in IMAGE_PATTERNS for p in source.glob(pattern))
+            if not paths:
+                raise CameraConnectionError(f"{self.name}: no images in folder {source}")
+            path = paths[0]
+        elif source.is_file():
+            path = source
+        else:
+            raise CameraConnectionError(f"{self.name}: image not found: {source}")
+        frame = read_image(path)
+        if frame is None:
+            raise CameraCaptureError(f"{self.name}: cannot decode image {path}")
+        height, width = frame.shape[:2]
+        return width, height
+
     def _grab(self) -> np.ndarray:
         if not self._paths:
             raise CameraCaptureError(f"{self.name}: no image source")

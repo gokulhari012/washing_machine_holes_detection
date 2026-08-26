@@ -28,6 +28,7 @@
     "min_hole_diameter_px": 20,
     "max_hole_diameter_px": 200,
     "min_circularity": 0.7,
+    "min_aspect_ratio": 0.35,
     "contour_retrieval_mode": "external"
   },
   "template_matching": {

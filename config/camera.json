@@ -3,15 +3,15 @@
     {
       "index": 1,
       "name": "Camera 1 - Front Left",
-      "driver": "basler",
+      "driver": "image_file",
       "connection_id": "0",
       "enabled": true,
       "exposure_us": 50000,
       "gain_db": 0.0,
       "gamma": 1.0,
-      "brightness": 100,
-      "width": 3648,
-      "height": 5472,
+      "brightness": 0,
+      "width": 4024,
+      "height": 3036,
       "roi": {
         "x": 0,
         "y": 0,
@@ -23,84 +23,106 @@
         "packet_size": 1500,
         "inter_packet_delay": 0,
         "grab_timeout_ms": 5000,
+        "heartbeat_timeout_ms": 5000,
         "trigger_source": "Line1"
       },
       "simulation": {
         "image_directory": "resources/sample_images/camera_1"
       },
-      "image_source": "C:/Users/gokul/Downloads/WhatsApp Image 2026-08-22 at 7.14.03 AM.jpeg"
+      "image_source": "D:/washing_machine_holes_detection-main/washing_machine_holes_detection-main/test images"
     },
     {
       "index": 2,
       "name": "Camera 2 - Front Right",
-      "driver": "basler",
+      "driver": "image_file",
       "connection_id": "1",
       "enabled": true,
       "exposure_us": 50000,
       "gain_db": 0.0,
       "gamma": 1.0,
-      "brightness": 100,
-      "width": 3648,
-      "height": 5472,
+      "brightness": 0,
+      "width": 4024,
+      "height": 3036,
       "roi": {
-        "x": 0,
-        "y": 0,
-        "width": 0,
-        "height": 0
+        "x": 1288,
+        "y": 1661,
+        "width": 1099,
+        "height": 1105
       },
       "trigger_mode": "software",
+      "basler": {
+        "packet_size": 1500,
+        "inter_packet_delay": 0,
+        "grab_timeout_ms": 5000,
+        "heartbeat_timeout_ms": 5000,
+        "trigger_source": "Line1"
+      },
       "simulation": {
         "image_directory": "resources/sample_images/camera_2"
       },
-      "image_source": "C:/Users/gokul/MVS/Data/Image_20260820112524812.bmp"
+      "image_source": "D:/washing_machine_holes_detection-main/washing_machine_holes_detection-main/test images"
     },
     {
       "index": 3,
       "name": "Camera 3 - Rear Left",
-      "driver": "basler",
+      "driver": "image_file",
       "connection_id": "2",
       "enabled": true,
       "exposure_us": 50000,
       "gain_db": 0.0,
       "gamma": 1.0,
-      "brightness": 100,
-      "width": 3648,
-      "height": 5472,
+      "brightness": 0,
+      "width": 4024,
+      "height": 3036,
       "roi": {
-        "x": 0,
-        "y": 0,
-        "width": 0,
-        "height": 0
+        "x": 1158,
+        "y": 1694,
+        "width": 1275,
+        "height": 1217
       },
       "trigger_mode": "software",
+      "basler": {
+        "packet_size": 1500,
+        "inter_packet_delay": 0,
+        "grab_timeout_ms": 5000,
+        "heartbeat_timeout_ms": 5000,
+        "trigger_source": "Line1"
+      },
       "simulation": {
         "image_directory": "resources/sample_images/camera_3"
       },
-      "image_source": "C:/Users/gokul/MVS/Data/Image_20260820113236860.bmp"
+      "image_source": "D:/washing_machine_holes_detection-main/washing_machine_holes_detection-main/test images"
     },
     {
       "index": 4,
       "name": "Camera 4 - Rear Right",
-      "driver": "basler",
+      "driver": "image_file",
       "connection_id": "3",
       "enabled": true,
       "exposure_us": 50000,
       "gain_db": 0.0,
       "gamma": 1.0,
-      "brightness": 100,
-      "width": 3648,
-      "height": 5472,
+      "brightness": 0,
+      "width": 4024,
+      "height": 3036,
       "roi": {
-        "x": 0,
-        "y": 0,
-        "width": 0,
-        "height": 0
+        "x": 1243,
+        "y": 1720,
+        "width": 1164,
+        "height": 1210
       },
       "trigger_mode": "software",
+      "basler": {
+        "packet_size": 1500,
+        "inter_packet_delay": 0,
+        "grab_timeout_ms": 5000,
+        "heartbeat_timeout_ms": 5000,
+        "trigger_source": "Line1"
+      },
       "simulation": {
         "image_directory": "resources/sample_images/camera_4"
       },
-      "image_source": "C:/Users/gokul/MVS/Data/Image_20260820113304421.bmp"
+      "image_source": "D:/washing_machine_holes_detection-main/washing_machine_holes_detection-main/test images"
     }
   ]
 }

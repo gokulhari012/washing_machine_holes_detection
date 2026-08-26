@@ -86,6 +86,29 @@ class PlcService:
         """Raises PlcError; caller (UI) must gate this behind admin login."""
         self._manager.write_raw(address, value)
 
+    # ---------------------------------------------------------- camera jog
+    def jog_configured(self, camera_index: int) -> bool:
+        return self._manager.jog_configured(camera_index)
+
+    def jog_camera(self, camera_index: int, direction: str) -> tuple[int, int]:
+        """Raises ConfigurationError/PlcError; caller (UI) must gate this
+        behind admin login, same as write_register."""
+        return self._manager.jog_camera(camera_index, direction)
+
+    def home_camera(self, camera_index: int) -> tuple[int, int]:
+        """Raises ConfigurationError/PlcError; caller (UI) must gate this
+        behind admin login, same as write_register."""
+        return self._manager.home_camera(camera_index)
+
+    def read_camera_position(self, camera_index: int) -> tuple[int, int]:
+        """Raises ConfigurationError/PlcError."""
+        return self._manager.read_camera_jog_position(camera_index)
+
+    def set_camera_position(self, camera_index: int, x: int, y: int) -> tuple[int, int]:
+        """Raises ConfigurationError/PlcError; caller (UI) must gate this
+        behind admin login, same as write_register."""
+        return self._manager.set_camera_jog_position(camera_index, x, y)
+
     # -------------------------------------------------------------- internal
     def _mirror_to_database(self, plc_config: dict) -> None:
         connection = plc_config.get("connection", {})

@@ -23,6 +23,7 @@ import cv2
 import numpy as np
 
 from core.camera.camera_base import CameraBase, CameraSettings
+from core.utilities.exceptions import CameraConfigurationError
 
 # nominal hole centre per camera index, as a fraction of (width, height)
 _BASE_POSITIONS: dict[int, tuple[float, float]] = {
@@ -71,6 +72,21 @@ class SimulatedCamera(CameraBase):
 
     def _apply_to_device(self, settings: CameraSettings) -> None:
         pass  # settings are read live during synthesis
+
+    def _detect_resolution(self) -> tuple[int, int]:
+        """Only meaningful when replaying a directory of pictures; the pure
+        synthesis mode renders at whatever Width/Height is configured."""
+        if not self._image_files:
+            raise CameraConfigurationError(
+                f"{self.name}: synthetic frames have no fixed resolution — "
+                f"set Width/Height manually, or configure simulation.image_directory"
+            )
+        path = self._image_files[0]
+        frame = cv2.imread(str(path), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise CameraConfigurationError(f"{self.name}: cannot decode {path}")
+        height, width = frame.shape[:2]
+        return width, height
 
     def _grab(self) -> np.ndarray:
         if self._image_files:

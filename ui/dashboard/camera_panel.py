@@ -13,7 +13,8 @@ import time
 
 import cv2
 import numpy as np
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtCore import Signal
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from core.utilities.enums import ConnectionState, InspectionResult
 from models.dto import CameraInspectionData
@@ -26,6 +27,11 @@ PREVIEW_MAX_WIDTH = 640
 class CameraPanel(QFrame):
     """Live image + name/LED header + X/Y/confidence/result footer."""
 
+    #: emitted when the Home button is clicked, with this panel's camera index —
+    #: DashboardPage owns the PLC call (admin gate, error handling); the panel
+    #: itself knows nothing about PLC/auth.
+    home_requested = Signal(int)
+
     def __init__(self, camera_index: int, camera_name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setProperty("class", "panel")
@@ -36,13 +42,18 @@ class CameraPanel(QFrame):
         root.setContentsMargins(10, 8, 10, 8)
         root.setSpacing(6)
 
-        # header: LED + name + result badge
+        # header: LED + name + home button + result badge
         header = QHBoxLayout()
         self._led = LabeledLed(camera_name)
+        self._home_btn = QPushButton("⌂")
+        self._home_btn.setFixedWidth(28)
+        self._home_btn.setToolTip("Return this camera to its home position")
+        self._home_btn.clicked.connect(lambda: self.home_requested.emit(self.camera_index))
         self._result = QLabel("—")
         self._result.setProperty("result", "")
         header.addWidget(self._led)
         header.addStretch()
+        header.addWidget(self._home_btn)
         header.addWidget(self._result)
         root.addLayout(header)
 
@@ -63,6 +74,15 @@ class CameraPanel(QFrame):
     # ------------------------------------------------------------------ api
     def set_camera_state(self, state: ConnectionState | str) -> None:
         self._led.set_state(state)
+
+    def set_home_enabled(self, enabled: bool) -> None:
+        """Grey out Home when this camera has no jog registers configured."""
+        self._home_btn.setEnabled(enabled)
+        self._home_btn.setToolTip(
+            "Return this camera to its home position"
+            if enabled
+            else "No PLC jog registers configured for this camera"
+        )
 
     def update_preview(self, frame: np.ndarray) -> None:
         """Live frame from the acquisition worker; ignored during result hold."""

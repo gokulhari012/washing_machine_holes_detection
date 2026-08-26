@@ -10,6 +10,10 @@
                                  ──► persist to database
                                  ──► publish to AppState (dashboard)
 
+The x_mm/y_mm reported to the PLC, dashboard and database are relative to
+the analysed (ROI-cropped) image's own centre — a hole exactly centred in
+frame always reports (0, 0) — see ``CalibrationManager.evaluate``.
+
 Capture modes (``app_config.inspection``):
 
 - ``sequential`` (default) — camera 1 is grabbed, judged and shown on the
@@ -49,7 +53,7 @@ from core.plc import PlcManager
 from core.utilities import ConfigManager
 from core.utilities.enums import InspectionResult, LogSource, PlcResultCode
 from core.utilities.exceptions import CameraError, DatabaseError, DetectionError, PlcError
-from core.vision import VisionEngine, draw_detection_overlay
+from core.vision import DetectionResult, VisionEngine, draw_detection_overlay
 from models.app_state import AppState
 from models.dto import CameraInspectionData, InspectionCycleData
 from services.database_service import DatabaseService
@@ -114,14 +118,18 @@ class InspectionService:
         # 3. overall judgement
         overall = self._overall_result(camera_results)
 
-        # 4. PLC output — positions for found holes, sentinel otherwise
+        # 4. PLC output — positions for found holes, sentinel otherwise, plus
+        # each camera's own GOOD/NG/ERROR verdict alongside its position
         positions = {
             index: (data.x_mm, data.y_mm) if data.hole_found else None
             for index, data in camera_results.items()
         }
+        plc_camera_results = {
+            index: _RESULT_TO_PLC[data.result] for index, data in camera_results.items()
+        }
         plc_write_ok = True
         try:
-            self._plc.write_inspection_output(positions, _RESULT_TO_PLC[overall])
+            self._plc.write_inspection_output(positions, plc_camera_results, _RESULT_TO_PLC[overall])
         except PlcError as exc:
             plc_write_ok = False
             logger.error("PLC output write failed: %s", exc)
@@ -258,6 +266,7 @@ class InspectionService:
                 frame=draw_detection_overlay(frame, None, label=camera_name),
             )
 
+        self._select_hole(camera_index, detection)
         annotated = draw_detection_overlay(frame, detection, label=camera_name)
         best = detection.best
         if best is None or len(detection.holes) < self._vision.expected_hole_count:
@@ -270,8 +279,9 @@ class InspectionService:
                 frame=annotated,
             )
 
+        image_height, image_width = frame.shape[:2]
         x_mm, y_mm, deviation = self._calibration.evaluate(
-            camera_index, best.x_px, best.y_px
+            camera_index, best.x_px, best.y_px, image_width, image_height
         )
         tolerance = self._vision.position_tolerance_mm
         out_of_tolerance = (
@@ -292,6 +302,32 @@ class InspectionService:
             detection=detection,
             frame=annotated,
         )
+
+    def _select_hole(self, camera_index: int, detection: DetectionResult) -> None:
+        """Reorder ``detection.holes`` so the candidate the pipeline should
+        judge is first (:attr:`DetectionResult.best`), so it is also the one
+        drawn as the primary (green) circle by ``draw_detection_overlay``.
+
+        A station may legitimately have more than one real hole in frame —
+        without a calibrated reference point there is no way to tell them
+        apart, so an uncalibrated camera keeps the previous behaviour
+        (highest confidence, already ``holes[0]``). A calibrated camera picks
+        whichever accepted candidate lands closest to the reference point
+        instead: the highest-confidence candidate is not necessarily the
+        *right* hole for that station, and letting it win anyway is what
+        produces jumpy X/Y readings and spurious NG results when several real
+        holes score similarly.
+        """
+        holes = detection.holes
+        if len(holes) < 2 or not self._calibration.has(camera_index):
+            return
+        nearest = min(
+            holes,
+            key=lambda hole: self._calibration.evaluate(camera_index, hole.x_px, hole.y_px)[2],
+        )
+        if nearest is not holes[0]:
+            holes.remove(nearest)
+            holes.insert(0, nearest)
 
     # -------------------------------------------------------------- internal
     @staticmethod

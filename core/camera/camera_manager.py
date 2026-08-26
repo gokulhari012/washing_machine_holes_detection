@@ -159,6 +159,10 @@ class CameraManager:
         """Push new settings to one camera (Camera Configuration page)."""
         self.get(index).apply_settings(settings)
 
+    def detect_resolution(self, index: int) -> tuple[int, int]:
+        """(width, height) reported by the device or its image source; raises CameraError."""
+        return self.get(index).detect_resolution()
+
     def rebuild(self, camera_configs: list[dict]) -> None:
         """Tear down and rebuild all cameras after a configuration change."""
         from core.camera import create_camera

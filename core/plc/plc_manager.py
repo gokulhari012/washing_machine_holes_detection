@@ -8,11 +8,17 @@
   to be driven by the PLC poll thread calling :meth:`ensure_connected` each
   tick,
 - typed operations for the inspection workflow (trigger, machine number,
-  heartbeat, position/result writes) and raw access for the manual register
-  viewer on the PLC page.
+  heartbeat, position/result writes), camera jog/home for physical alignment,
+  and raw access for the manual register viewer on the PLC page.
 
-Thread ownership: all methods are intended to run on the single PLC worker
-thread; UI actions must be marshalled onto it by the worker.
+Thread ownership: connection-lifecycle methods (:meth:`connect`,
+:meth:`ensure_connected`, :meth:`disconnect`) are meant to run on the single
+PLC worker thread only. Individual register reads/writes are safe to call
+from the UI thread too — the underlying client (``ModbusTcpPlcClient``,
+``SimulatedPlc``) locks every transaction — which is what the PLC page's
+manual write and the camera jog/home buttons do; just note that a *sequence*
+of several register writes (like :meth:`write_inspection_output`) is not
+atomic across threads, so multi-register workflows stay on the worker thread.
 """
 
 from __future__ import annotations
@@ -23,9 +29,9 @@ from typing import Callable
 
 from core.logging import get_logger
 from core.plc.plc_client_base import PlcClientBase
-from core.plc.register_map import RegisterMap
+from core.plc.register_map import UINT16_MAX, RegisterMap
 from core.utilities.enums import ConnectionState, LogSource, PlcResultCode
-from core.utilities.exceptions import PlcError
+from core.utilities.exceptions import ConfigurationError, PlcError
 
 logger = get_logger(LogSource.PLC)
 
@@ -35,6 +41,16 @@ StateCallback = Callable[[ConnectionState], None]
 PositionMap = dict[int, tuple[float, float] | None]
 
 DEFAULT_BACKOFF_MS = (1000, 2000, 5000, 10000)
+
+# jog direction -> (dx_sign, dy_sign); the single place that decides which
+# way "up"/"down"/"left"/"right" moves the registers. If a real rig turns
+# out mirrored, flip the sign of "step" in plc.json rather than here.
+_JOG_DIRECTIONS: dict[str, tuple[int, int]] = {
+    "up": (0, -1),
+    "down": (0, 1),
+    "left": (-1, 0),
+    "right": (1, 0),
+}
 
 
 class PlcManager:
@@ -144,18 +160,33 @@ class PlcManager:
     def read_machine_number(self) -> int:
         return self._read(self._map.machine_number, 1)[0]
 
+    def read_model_select(self) -> int | None:
+        """Current machine-model code, or ``None`` when the register is not
+        configured (no I/O in that case — the feature is simply inert)."""
+        if self._map.model_select is None:
+            return None
+        return self._read(self._map.model_select, 1)[0]
+
     # ----------------------------------------------------- workflow writes
     def toggle_heartbeat(self) -> None:
         """Flip the heartbeat register (0↔1) so the PLC can watchdog the PC."""
         self._heartbeat_value ^= 1
         self._write(self._map.heartbeat, [self._heartbeat_value])
 
-    def write_inspection_output(self, positions: PositionMap, result: PlcResultCode) -> None:
+    def write_inspection_output(
+        self,
+        positions: PositionMap,
+        camera_results: dict[int, PlcResultCode],
+        result: PlcResultCode,
+    ) -> None:
         """Publish one complete inspection to the PLC.
 
         Writes every camera's X/Y (no-hole sentinel where *positions* holds
-        ``None``), then the result code, then raises vision_complete — order
-        matters: the PLC may read results the moment vision_complete goes high.
+        ``None``), then each camera's own GOOD/NG/ERROR verdict (``ERROR``
+        where *camera_results* holds nothing for that camera — not inspected
+        this cycle), then the overall result code, then raises
+        vision_complete — order matters: the PLC may read results the moment
+        vision_complete goes high.
         """
         for camera_index, (x_address, y_address) in sorted(self._map.camera_positions.items()):
             position = positions.get(camera_index)
@@ -171,9 +202,102 @@ class PlcManager:
                 self._write(x_address, [x_raw])
                 self._write(y_address, [y_raw])
 
+        for camera_index, result_address in sorted(self._map.camera_results.items()):
+            camera_result = camera_results.get(camera_index, PlcResultCode.ERROR)
+            self._write(result_address, [int(camera_result)])
+
         self._write(self._map.result, [int(result)])
         self._write(self._map.vision_complete, [1])
         logger.info("Inspection output written to PLC (result=%s)", result.name)
+
+    # --------------------------------------------------- camera jog / home
+    def jog_camera(self, camera_index: int, direction: str) -> tuple[int, int]:
+        """Nudge camera *camera_index*'s physical-position registers one
+        step in *direction* ('up'/'down'/'left'/'right'). Read-modify-write,
+        clamped to the register's uint16 range; only writes a register whose
+        value actually changed.
+
+        Returns:
+            The new (x, y) register values.
+
+        Raises:
+            ConfigurationError: no jog registers configured for this camera,
+                or an unknown direction.
+            PlcError: communication failure.
+        """
+        addresses = self._jog_addresses(camera_index)
+        if direction not in _JOG_DIRECTIONS:
+            raise ConfigurationError(f"Unknown jog direction: {direction!r}")
+        dx_sign, dy_sign = _JOG_DIRECTIONS[direction]
+        step = self._map.jog_step
+        return self._apply_jog(addresses, dx_sign * step, dy_sign * step)
+
+    def home_camera(self, camera_index: int) -> tuple[int, int]:
+        """Write camera *camera_index*'s configured home X/Y values outright.
+
+        Returns:
+            The (home_x, home_y) values written.
+
+        Raises:
+            ConfigurationError: no jog registers configured for this camera.
+        """
+        x_addr, y_addr = self._jog_addresses(camera_index)
+        home_x, home_y = self._map.camera_jog_home.get(camera_index, (0, 0))
+        self._write(x_addr, [home_x])
+        self._write(y_addr, [home_y])
+        logger.info("Camera %d homed -> (%d, %d)", camera_index, home_x, home_y)
+        return home_x, home_y
+
+    def read_camera_jog_position(self, camera_index: int) -> tuple[int, int]:
+        """Current physical jog position (x, y) for *camera_index* — the
+        value to snapshot as a machine model's default position.
+
+        Raises:
+            ConfigurationError: no jog registers configured for this camera.
+            PlcError: communication failure.
+        """
+        x_addr, y_addr = self._jog_addresses(camera_index)
+        x = self._read(x_addr, 1)[0]
+        y = self._read(y_addr, 1)[0]
+        return x, y
+
+    def set_camera_jog_position(self, camera_index: int, x: int, y: int) -> tuple[int, int]:
+        """Write camera *camera_index*'s jog X/Y registers directly to
+        *(x, y)* — used to restore a machine model's saved default position.
+
+        Raises:
+            ConfigurationError: no jog registers configured for this camera.
+            PlcError: communication failure.
+        """
+        x_addr, y_addr = self._jog_addresses(camera_index)
+        x = max(0, min(UINT16_MAX, int(x)))
+        y = max(0, min(UINT16_MAX, int(y)))
+        self._write(x_addr, [x])
+        self._write(y_addr, [y])
+        logger.info("Camera %d position set -> (%d, %d)", camera_index, x, y)
+        return x, y
+
+    def jog_configured(self, camera_index: int) -> bool:
+        return camera_index in self._map.camera_jog
+
+    def _jog_addresses(self, camera_index: int) -> tuple[int, int]:
+        addresses = self._map.camera_jog.get(camera_index)
+        if addresses is None:
+            raise ConfigurationError(f"No jog registers configured for camera {camera_index}")
+        return addresses
+
+    def _apply_jog(self, addresses: tuple[int, int], dx: int, dy: int) -> tuple[int, int]:
+        x_addr, y_addr = addresses
+        x = self._read(x_addr, 1)[0]
+        y = self._read(y_addr, 1)[0]
+        new_x = max(0, min(UINT16_MAX, x + dx))
+        new_y = max(0, min(UINT16_MAX, y + dy))
+        if new_x != x:
+            self._write(x_addr, [new_x])
+        if new_y != y:
+            self._write(y_addr, [new_y])
+        logger.info("Camera jog -> (%d, %d)", new_x, new_y)
+        return new_x, new_y
 
     # ------------------------------------------------- manual register access
     def read_raw(self, address: int, count: int = 1) -> list[int]:

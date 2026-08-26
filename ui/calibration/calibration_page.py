@@ -1,20 +1,26 @@
 """Calibration page: pixel→mm scale, reference point, perspective correction.
 
 Workflow (per camera):
-1. **Capture** a frame of a reference part.
-2. **Scale** — enter a known distance in px and mm ("Compute"), or type
-   pixels-per-mm directly.
-3. **Reference point** — "Detect Hole → Set Reference" runs the vision engine
+0. **Auto Calibrate** (optional, recommended) — place a checkerboard on/near
+   the inspection plane, capture, and "Auto Calibrate" detects its corners
+   and fills in the scale (Step 1) and homography (Step 3) from dozens of
+   correspondences in one shot. Remove the board and redo Step 2 afterwards —
+   the reference point must be captured through the fresh homography.
+1. **Scale** — enter a known distance in px and mm ("Compute"), or type
+   pixels-per-mm directly. Skippable if Auto Calibrate already filled it in.
+2. **Reference point** — "Detect Hole → Set Reference" runs the vision engine
    on the captured frame and stores the hole position (in mm, through the
    current scale/homography) as the nominal position.
-4. Optional **perspective**: enter 4 pixel↔mm point pairs and "Compute
-   Homography" (RMS shown; replaces plain scaling in the hot path).
-5. **Save Calibration** persists as the camera's active calibration.
-6. **Live Test** captures + detects + evaluates through the saved model.
+3. Optional **perspective**: enter 4 pixel↔mm point pairs and "Compute
+   Homography" (RMS shown; replaces plain scaling in the hot path) — or let
+   Auto Calibrate fill this in from the checkerboard instead of typing points.
+4. **Save Calibration** persists as the camera's active calibration.
+5. **Live Test** captures + detects + evaluates through the saved model.
 """
 
 from __future__ import annotations
 
+import cv2
 import numpy as np
 from PySide6.QtWidgets import (
     QComboBox,
@@ -26,6 +32,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -41,6 +48,12 @@ def _dspin(maximum: float = 100000.0, decimals: int = 2) -> QDoubleSpinBox:
     spin = QDoubleSpinBox()
     spin.setRange(-maximum, maximum)
     spin.setDecimals(decimals)
+    return spin
+
+
+def _spin(minimum: int, maximum: int) -> QSpinBox:
+    spin = QSpinBox()
+    spin.setRange(minimum, maximum)
     return spin
 
 
@@ -84,6 +97,41 @@ class CalibrationPage(QWidget):
         camera_row.addWidget(self._camera, stretch=1)
         camera_row.addWidget(capture_btn)
         left.addLayout(camera_row)
+
+        auto_box = QGroupBox("Auto Calibrate (checkerboard) — fills in Steps 1 && 3")
+        auto_form = QFormLayout(auto_box)
+        board_row = QHBoxLayout()
+        self._board_columns = _spin(2, 50)
+        self._board_columns.setValue(8)
+        self._board_rows = _spin(2, 50)
+        self._board_rows.setValue(5)
+        board_row.addWidget(self._board_columns)
+        board_row.addWidget(QLabel("x"))
+        board_row.addWidget(self._board_rows)
+        board_row.addStretch()
+        board_w = QWidget()
+        board_w.setLayout(board_row)
+        board_w.setToolTip(
+            "Inner corners, not squares — one less than the square count each "
+            "way (a 9x6-square board has 8x5 inner corners)"
+        )
+        self._board_square_mm = _dspin(500.0, 2)
+        self._board_square_mm.setValue(25.0)
+        auto_calibrate_btn = QPushButton("Capture && Auto Calibrate")
+        auto_calibrate_btn.setProperty("class", "primary")
+        auto_calibrate_btn.clicked.connect(self._on_auto_calibrate)
+        auto_form.addRow("Inner Corners (cols x rows)", board_w)
+        auto_form.addRow("Square Size (mm)", self._board_square_mm)
+        auto_form.addRow(auto_calibrate_btn)
+        hint = QLabel(
+            "Place a checkerboard flat on/near the inspection plane, filling "
+            "as much of the frame as practical, then run this. Afterwards "
+            "remove it, place the real part, and redo Step 2."
+        )
+        hint.setWordWrap(True)
+        hint.setProperty("class", "dim")
+        auto_form.addRow(hint)
+        left.addWidget(auto_box)
 
         scale_box = QGroupBox("Step 1 — Pixel to mm scale")
         scale_form = QFormLayout(scale_box)
@@ -211,6 +259,48 @@ class CalibrationPage(QWidget):
         self._view.set_frame(self._frame)
         self._status.setText("Frame captured")
 
+    def _on_auto_calibrate(self) -> None:
+        index = self._camera_index()
+        if index is None:
+            return
+        try:
+            self._frame = self._cameras.test_capture(index)
+        except VisionSystemError as exc:
+            QMessageBox.warning(self, "Auto Calibrate", str(exc))
+            return
+
+        columns = self._board_columns.value()
+        rows = self._board_rows.value()
+        try:
+            detection = CameraCalibration.find_checkerboard(
+                self._frame, columns, rows, self._board_square_mm.value()
+            )
+            self._homography, self._rms = CameraCalibration.compute_homography(
+                detection.pixel_points, detection.mm_points
+            )
+        except VisionSystemError as exc:
+            self._view.set_frame(self._frame)
+            QMessageBox.warning(self, "Auto Calibrate", str(exc))
+            return
+
+        self._ppmm_x.setValue(detection.pixels_per_mm_x)
+        self._ppmm_y.setValue(detection.pixels_per_mm_y)
+        self._hom_status.setText(
+            f"auto-calibrated (rms {self._rms:.3f} mm, {len(detection.pixel_points)} points)"
+        )
+
+        overlay = (
+            cv2.cvtColor(self._frame, cv2.COLOR_GRAY2BGR)
+            if self._frame.ndim == 2 else self._frame.copy()
+        )
+        cv2.drawChessboardCorners(overlay, (columns, rows), detection.corners_px, True)
+        self._view.set_frame(overlay)
+        self._status.setText(
+            f"Auto-calibrated from {len(detection.pixel_points)} checkerboard corners "
+            f"(rms {self._rms:.3f} mm). Remove the board, place the part, and redo "
+            f"Step 2 (reference) before saving."
+        )
+
     def _on_compute_scale(self) -> None:
         try:
             ppmm = CameraCalibration.scale_from_distance(
@@ -302,7 +392,10 @@ class CalibrationPage(QWidget):
         if best is None:
             self._status.setText("Live test: no hole found")
             return
-        x_mm, y_mm, deviation = self._manager.evaluate(index, best.x_px, best.y_px)
+        height, width = frame.shape[:2]
+        x_mm, y_mm, deviation = self._manager.evaluate(
+            index, best.x_px, best.y_px, width, height
+        )
         deviation_text = f"{deviation:.2f} mm" if deviation is not None else "n/a (uncalibrated)"
         self._status.setText(
             f"Live test: ({x_mm:.2f}, {y_mm:.2f}) mm — deviation {deviation_text}"

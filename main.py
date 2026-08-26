@@ -34,6 +34,7 @@ from core.logging import LogManager, get_logger
 from core.plc import PlcManager, RegisterMap, create_plc_client
 from core.utilities import ConfigManager
 from core.utilities.enums import LogSource
+from core.utilities.exceptions import VisionSystemError
 from core.vision import VisionEngine
 from models import AppState
 from services import (
@@ -43,6 +44,7 @@ from services import (
     DatabaseService,
     ExportService,
     InspectionService,
+    MachineModelService,
     PlcService,
 )
 from workers import (
@@ -52,12 +54,13 @@ from workers import (
     create_acquisition_workers,
 )
 from ui.dashboard import DashboardPage
-from ui.camera import CameraPage
+from ui.camera import CameraPage 
 from ui.plc import PlcPage
 from ui.detection import DetectionPage
 from ui.calibration import CalibrationPage
 from ui.database import DatabasePage
 from ui.logs import LogsPage
+from ui.machine_models import MachineModelsPage
 from ui.settings import SettingsPage
 from ui.main_window import MainWindow
 from ui.theme import apply_dark_theme
@@ -121,6 +124,9 @@ class Application:
         )
         self.camera_service = CameraService(self.cameras, self.config, self.database)
         self.plc_service = PlcService(self.plc, self.config, self.database)
+        self.machine_models = MachineModelService(
+            self.config, self.camera_service, self.vision, self.plc_service
+        )
         self.export_service = ExportService()
         self.backup_service = BackupService(self.db, self.database, self.config)
         self.auth_service = AuthService(self.database)
@@ -132,8 +138,10 @@ class Application:
             self.plc,
             poll_interval_ms=int(connection_cfg.get("poll_interval_ms", 50)),
             heartbeat_interval_ms=int(connection_cfg.get("heartbeat_interval_ms", 500)),
+            model_poll_interval_ms=int(connection_cfg.get("model_poll_interval_ms", 1000)),
         )
         self.poll_worker.trigger_detected.connect(self.inspection_worker.on_trigger)
+        self.poll_worker.machine_model_changed.connect(self._on_machine_model_changed)
         preview_fps = float(self.config.get_value("app_config", "ui.live_preview_fps", 15))
         self.acquisition_workers = create_acquisition_workers(
             self.cameras, self.app_state, preview_fps
@@ -143,11 +151,17 @@ class Application:
         self._manual_machine = itertools.count(9001)
         self.window = MainWindow(
             self.app_state,
+            self.auth_service,
             factory_name=str(app_cfg.get("application", {}).get("factory_name", "")),
             camera_indexes=[int(cfg["index"]) for cfg in self.camera_configs],
             on_simulate_trigger=self._simulate_trigger,
             on_shutdown=self.shutdown,
         )
+        # Dashboard/Database/Logs are what an operator needs day to day and
+        # stay visible always; the engineering consoles below (hardware
+        # tuning, PLC register map, detection algorithm parameters,
+        # calibration) are hidden from the nav rail until an administrator
+        # logs in via the toolbar — see MainWindow._refresh_nav_visibility.
         self.window.add_page(
             "Dashboard",
             "▦",
@@ -155,17 +169,42 @@ class Application:
                 self.app_state,
                 self.database,
                 self.camera_configs,
+                self.plc_service,
+                self.auth_service,
                 config_manager=self.config,
                 on_simulate_trigger=self._simulate_trigger,
             ),
         )
-        self.window.add_page("Cameras", "◉", CameraPage(self.app_state, self.camera_service))
-        self.window.add_page("PLC", "⇄", PlcPage(self.app_state, self.plc_service, self.auth_service))
-        self.window.add_page("Detection", "◎", DetectionPage(self.config, self.vision, self.camera_service))
-        self.window.add_page("Calibration", "⌖", CalibrationPage(self.camera_service, self.calibration, self.vision))
+        self.window.add_page(
+            "Cameras", "◉",
+            CameraPage(
+                self.app_state, self.camera_service, self.plc_service,
+                self.machine_models, self.auth_service,
+            ),
+            admin_only=True,
+        )
+        self.window.add_page(
+            "PLC", "⇄", PlcPage(self.app_state, self.plc_service, self.auth_service), admin_only=True
+        )
+        self.window.add_page(
+            "Detection", "◎", DetectionPage(self.config, self.vision, self.camera_service),
+            admin_only=True,
+        )
+        self.window.add_page(
+            "Calibration", "⌖", CalibrationPage(self.camera_service, self.calibration, self.vision),
+            admin_only=True,
+        )
+        self.window.add_page(
+            "Machine Models", "▣",
+            MachineModelsPage(self.machine_models, self.auth_service, self.app_state),
+            admin_only=True,
+        )
         self.window.add_page("Database", "▤", DatabasePage(self.database, self.export_service))
         self.window.add_page("Logs", "≡", LogsPage(self.app_state, self.database))
-        self.window.add_page("Settings", "⚙", SettingsPage(self.config, self.auth_service, self.backup_service))
+        self.window.add_page(
+            "Settings", "⚙", SettingsPage(self.config, self.auth_service, self.backup_service),
+            admin_only=True,
+        )
 
         # -------------------------------------------------- cross-cutting
         self.config.subscribe("camera", self._on_camera_config_saved)
@@ -175,7 +214,7 @@ class Application:
 
     # ------------------------------------------------------------ lifecycle
     def start(self) -> None:
-        self.window.show()
+        self.window.showMaximized()
 
         errors = self.cameras.connect_all()
         for index, message in errors.items():
@@ -230,6 +269,27 @@ class Application:
         )
         for worker in self.acquisition_workers:
             worker.start()
+
+    def _on_machine_model_changed(self, code: int) -> None:
+        """PLC reported a new model_select value (runs on the UI thread via
+        the queued Qt signal from PlcPollWorker's thread)."""
+        profile = self.machine_models.get_by_code(code)
+        if profile is None:
+            message = f"No machine model profile registered for PLC code {code}"
+            self.logger.warning(message)
+            self.app_state.raise_alarm("warning", message)
+            return
+        try:
+            warnings = self.machine_models.apply_profile(profile)
+        except VisionSystemError as exc:
+            message = f"Machine model {profile['name']!r} (code {code}) failed to apply: {exc}"
+            self.logger.error(message)
+            self.app_state.raise_alarm("error", message)
+            return
+        for warning in warnings:
+            self.logger.warning("Machine model %r: %s", profile["name"], warning)
+        self.app_state.set_active_machine_model(profile["name"], code)
+        self.logger.info("Machine model -> %r (code %d)", profile["name"], code)
 
     def _run_maintenance_async(self) -> None:
         threading.Thread(

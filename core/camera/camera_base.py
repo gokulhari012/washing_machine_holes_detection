@@ -24,6 +24,7 @@ from core.logging import get_logger
 from core.utilities.enums import CameraDriver, LogSource, TriggerMode
 from core.utilities.exceptions import (
     CameraCaptureError,
+    CameraConfigurationError,
     CameraConnectionError,
     ConfigurationError,
 )
@@ -171,6 +172,18 @@ class CameraBase(ABC):
             self._apply_to_device(settings)
             logger.info("%s: settings applied", self.name)
 
+    def detect_resolution(self) -> tuple[int, int]:
+        """Actual (width, height) reported by the device or file source,
+        independent of whatever Width/Height are currently configured to.
+
+        Raises:
+            CameraConnectionError: camera not connected.
+            CameraConfigurationError: this driver has none to report.
+        """
+        if not self._connected:
+            raise CameraConnectionError(f"{self.name} is not connected")
+        return self._detect_resolution()
+
     # ---------------------------------------------------------- driver hooks
     @abstractmethod
     def _connect_device(self) -> None:
@@ -187,6 +200,13 @@ class CameraBase(ABC):
     @abstractmethod
     def _apply_to_device(self, settings: CameraSettings) -> None:
         """Push exposure/gain/gamma/resolution/trigger-mode to the device."""
+
+    def _detect_resolution(self) -> tuple[int, int]:
+        """Driver hook for :meth:`detect_resolution`; default: nothing to report."""
+        raise CameraConfigurationError(
+            f"{self.name}: {self._settings.driver.value} cameras have no "
+            f"resolution to auto-detect — set Width/Height manually"
+        )
 
     # -------------------------------------------------------------- internal
     def _crop_roi(self, frame: np.ndarray) -> np.ndarray:

@@ -49,3 +49,14 @@ class HoleDetector(ABC):
             DetectionError: the algorithm itself failed (bad input, missing
                 model/template) — distinct from "no hole found".
         """
+
+    def debug_stages(self, image: np.ndarray) -> dict[str, np.ndarray]:
+        """Intermediate images (e.g. ``mask``, ``edges``) for a debug overlay
+        showing what the algorithm currently reacts to.
+
+        Base implementation: ``{}`` — no debug view. Strategies built on a
+        threshold mask / edge map override this (see ``OpenCVHoleDetector``,
+        ``DarkHoleDetector``); strategies with no such intermediate
+        representation (template matching, YOLO) leave it as-is.
+        """
+        return {}

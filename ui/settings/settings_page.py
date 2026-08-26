@@ -1,8 +1,11 @@
-"""Settings page: general options, storage/backup, admin login & password.
+"""Settings page: general options, storage/backup, change password.
 
-When ``security.settings_password_protected`` is enabled (default), the
-general and backup groups stay disabled until an administrator logs in.
-First run ships a default ``admin``/``admin`` account — change it here.
+Reachable only after an administrator logs in via the toolbar (this page is
+``admin_only`` in the nav rail — see ``MainWindow``), so unlike the PLC/
+Cameras pages it does not need its own "not logged in" gate for the general
+and backup groups. When ``security.settings_password_protected`` is
+disabled, editing is allowed without that admin session too. First run ships
+a default ``admin``/``admin`` account — change it here.
 """
 
 from __future__ import annotations
@@ -102,22 +105,9 @@ class SettingsPage(QWidget):
 
         # --------------------------------------------------------- security
         right = QVBoxLayout()
-        login_box = QGroupBox("Administrator Login")
-        login = QFormLayout(login_box)
-        self._username = QLineEdit()
-        self._username.setText("admin")
-        self._password = QLineEdit()
-        self._password.setEchoMode(QLineEdit.EchoMode.Password)
-        self._login_btn = QPushButton("Login")
-        self._login_btn.setProperty("class", "primary")
-        self._login_btn.clicked.connect(self._on_login)
-        self._session = QLabel("Not logged in")
+        self._session = QLabel()
         self._session.setProperty("class", "dim")
-        login.addRow("Username", self._username)
-        login.addRow("Password", self._password)
-        login.addRow(self._login_btn)
-        login.addRow(self._session)
-        right.addWidget(login_box)
+        right.addWidget(self._session)
 
         password_box = QGroupBox("Change Password")
         change = QFormLayout(password_box)
@@ -139,6 +129,13 @@ class SettingsPage(QWidget):
         columns.addStretch()
 
         self._load()
+        self._apply_protection()
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """Login now happens in the toolbar, outside this page — re-sync
+        session state and the enabled/disabled boxes every time an admin
+        navigates here, instead of only once at construction."""
+        super().showEvent(event)
         self._apply_protection()
 
     # ------------------------------------------------------------ load/save
@@ -196,35 +193,24 @@ class SettingsPage(QWidget):
         for box in (self._general_box, self._storage_box):
             box.setEnabled(allowed)
         self._save_btn.setEnabled(allowed)
-        if not allowed:
-            self._session.setText("Login required to edit settings (default: admin / admin)")
-
-    def _on_login(self) -> None:
-        if self._auth.current_user is not None:  # acting as logout
-            self._auth.logout()
-            self._login_btn.setText("Login")
-            self._session.setText("Not logged in")
-            self._apply_protection()
-            return
-        try:
-            user = self._auth.login(self._username.text(), self._password.text())
-        except VisionSystemError as exc:
-            QMessageBox.warning(self, "Login", str(exc))
-            return
-        self._password.clear()
-        self._login_btn.setText("Logout")
-        self._session.setText(f"Logged in as {user.username} ({user.role})")
-        self._apply_protection()
+        user = self._auth.current_user
+        if user is not None:
+            self._session.setText(f"Logged in as {user.username} ({user.role})")
+        elif allowed:
+            self._session.setText("Settings unprotected (security.settings_password_protected = false)")
+        else:
+            self._session.setText("Login required to edit settings — use Login in the toolbar")
 
     def _on_change_password(self) -> None:
         if self._new_password.text() != self._confirm_password.text():
             QMessageBox.warning(self, "Change Password", "New passwords do not match.")
             return
-        username = (
-            self._auth.current_user.username
-            if self._auth.current_user is not None
-            else self._username.text().strip()
-        )
+        if self._auth.current_user is None:
+            QMessageBox.warning(
+                self, "Change Password", "Log in first (toolbar Login button)."
+            )
+            return
+        username = self._auth.current_user.username
         try:
             self._auth.change_password(
                 username, self._old_password.text(), self._new_password.text()

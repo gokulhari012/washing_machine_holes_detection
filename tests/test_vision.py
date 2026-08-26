@@ -55,6 +55,26 @@ def test_size_gate_rejects_large_blobs() -> None:
     assert not result.found  # 60 px hole exceeds the 40 px maximum
 
 
+def test_aspect_ratio_gate_rejects_elongated_streaks() -> None:
+    """A thin dark streak (scratch/shadow) round enough to pass circularity
+    but far too elongated to be a hole."""
+    image = np.full((480, 640), 110, dtype=np.uint8)
+    cv2.ellipse(image, (320, 240), (50, 8), 0, 0, 360, 20, -1)
+    frame = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+
+    lenient = dict(PARAMS, min_circularity=0.05, min_aspect_ratio=0.05)
+    assert OpenCVHoleDetector(lenient).detect(frame).found
+
+    strict = dict(PARAMS, min_circularity=0.05, min_aspect_ratio=0.5)
+    assert not OpenCVHoleDetector(strict).detect(frame).found
+
+
+def test_debug_stages_exposes_mask_and_edges() -> None:
+    stages = OpenCVHoleDetector(PARAMS).debug_stages(make_frame())
+    assert set(stages) == {"mask", "edges"}
+    assert stages["mask"].shape == (480, 640)
+
+
 def test_template_detector_requires_template() -> None:
     detector = TemplateMatchingDetector({"match_threshold": 0.8})
     with pytest.raises(DetectionError):

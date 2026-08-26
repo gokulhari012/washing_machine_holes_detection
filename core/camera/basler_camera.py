@@ -186,6 +186,17 @@ class BaslerCamera(CameraBase):
         if camera.IsOpen():
             camera.Close()
 
+    def _detect_resolution(self) -> tuple[int, int]:
+        """Sensor's native (max) resolution — WidthMax/HeightMax — independent
+        of whatever Width/Height are currently configured to."""
+        width = self._read_int("WidthMax")
+        height = self._read_int("HeightMax")
+        if width is None or height is None:
+            raise CameraConfigurationError(
+                f"{self.name}: camera does not report WidthMax/HeightMax"
+            )
+        return width, height
+
     def _apply_to_device(self, settings: CameraSettings) -> None:
         camera = self._camera
         if camera is None:
@@ -416,6 +427,11 @@ class BaslerCamera(CameraBase):
             return False
         node.SetValue(min(max(float(value), node.GetMin()), node.GetMax()))
         return True
+
+    def _read_int(self, *names: str) -> int | None:
+        """Current value of an integer node, or ``None`` when unavailable."""
+        node = self._node(*names)
+        return int(node.GetValue()) if node is not None else None
 
     def _write_int(self, value: int, *names: str) -> bool:
         """Write an integer node, clamped to its range and snapped to its increment."""

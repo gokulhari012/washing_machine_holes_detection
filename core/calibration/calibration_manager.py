@@ -6,6 +6,10 @@ cache. When a camera has never been calibrated, ``evaluate`` falls back to
 the **identity mapping (1 px = 1 mm)** and reports no deviation, so the
 system runs out-of-the-box and the tolerance judgement stays disabled until
 a real calibration exists.
+
+``evaluate`` reports position relative to the analysed image's own centre
+(pass ``image_width``/``image_height``) rather than the calibration's raw
+coordinate frame — see its docstring.
 """
 
 from __future__ import annotations
@@ -63,9 +67,24 @@ class CalibrationManager:
 
     # ------------------------------------------------------------- hot path
     def evaluate(
-        self, camera_index: int, x_px: float, y_px: float
+        self,
+        camera_index: int,
+        x_px: float,
+        y_px: float,
+        image_width: float | None = None,
+        image_height: float | None = None,
     ) -> tuple[float, float, float | None]:
         """Convert a pixel position and judge it against the reference point.
+
+        When *image_width*/*image_height* are supplied (the dimensions of the
+        analysed image — the ROI crop, or the full frame with no ROI), the
+        returned ``(x_mm, y_mm)`` is re-based so the image's own centre reads
+        as ``(0, 0)`` — the convention the PLC output, dashboard and database
+        use, so a hole sitting exactly at the centre of frame always reports
+        ``(0, 0)`` regardless of the camera's calibrated coordinate frame.
+        The tolerance judgement (``deviation_mm``) is computed *before* that
+        re-basing, against the reference point in the calibration's own
+        (uncentred) frame, so re-basing never shifts the GOOD/NG verdict.
 
         Returns:
             ``(x_mm, y_mm, deviation_mm)`` — ``deviation_mm`` is ``None`` when
@@ -74,6 +93,15 @@ class CalibrationManager:
         """
         calibration = self.get(camera_index)
         if calibration is None:
-            return float(x_px), float(y_px), None
+            x_mm, y_mm = float(x_px), float(y_px)
+            if image_width and image_height:
+                x_mm -= image_width / 2
+                y_mm -= image_height / 2
+            return x_mm, y_mm, None
         x_mm, y_mm = calibration.pixel_to_mm(x_px, y_px)
-        return x_mm, y_mm, calibration.deviation_mm(x_mm, y_mm)
+        deviation = calibration.deviation_mm(x_mm, y_mm)
+        if image_width and image_height:
+            center_x_mm, center_y_mm = calibration.pixel_to_mm(image_width / 2, image_height / 2)
+            x_mm -= center_x_mm
+            y_mm -= center_y_mm
+        return x_mm, y_mm, deviation

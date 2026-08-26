@@ -59,10 +59,22 @@ pytest
    fault the PC writes result 3 (ERROR) so the PLC never dead-waits.
 
 2. **Cameras** — on the Cameras page set each camera's driver:
-   `usb` (OpenCV/DirectShow, `connection_id` = device index) or `hikrobot`
+   `usb` (OpenCV/DirectShow, `connection_id` = device index), `hikrobot`
    (requires the MVS SDK — see the integration checklist in
-   `core/camera/hikrobot_camera.py`). Basler/Daheng/IDS: implement a
-   `CameraBase` adapter and register it in `core/camera/__init__.py`.
+   `core/camera/hikrobot_camera.py`), or `basler` (GigE/USB3 Vision via
+   `pypylon` — see `core/camera/basler_camera.py` for station setup,
+   including the packet-size/jumbo-frames note below). Daheng/IDS: implement
+   a `CameraBase` adapter and register it in `core/camera/__init__.py`.
+
+   **Basler GigE packet size** — every camera ships with `packet_size: 1500`
+   in its `"basler"` block (the safe default). This is a real throughput/
+   reliability cost at production frame sizes (`core/camera/basler_camera.py`
+   estimates ~5x more interrupts than `8192` at even a modest 1280x1024).
+   Before raising it: enable **jumbo frames** (MTU 9014) on the NIC the
+   cameras share, confirm with `ping -f -l 8000 <camera IP>` (no
+   fragmentation errors) from that PC, *then* set `packet_size: 8192` for all
+   four cameras — raising it without jumbo frames enabled causes dropped
+   frames/grab timeouts, not a speedup.
 
    The `image_file` driver needs no hardware: press **Choose Image…** (or
    **Folder…**) to pick a picture, then **Save Configuration**. That picture

@@ -1,0 +1,63 @@
+"""CalibrationManager.evaluate: pixel->mm conversion re-based to image centre.
+
+The repository is never touched here — a stub with just enough surface for
+``CalibrationManager.__init__`` covers it, and calibrations are seeded
+directly into the cache, matching how the manager's own ``load_all`` would
+populate it.
+"""
+
+from types import SimpleNamespace
+
+import pytest
+
+from core.calibration.calibration_manager import CalibrationManager
+from core.calibration.calibration_model import CameraCalibration
+
+
+def make_manager(calibration: CameraCalibration | None) -> CalibrationManager:
+    manager = CalibrationManager(SimpleNamespace(get_all_active=lambda: {}))
+    if calibration is not None:
+        manager._calibrations[calibration.camera_index] = calibration
+    return manager
+
+
+def test_evaluate_without_image_dims_returns_raw_pixel_to_mm() -> None:
+    calibration = CameraCalibration(camera_index=1, pixels_per_mm_x=10.0, pixels_per_mm_y=10.0)
+    manager = make_manager(calibration)
+    x_mm, y_mm, deviation = manager.evaluate(1, 500.0, 400.0)
+    assert (x_mm, y_mm) == pytest.approx((50.0, 40.0))
+    assert deviation == pytest.approx((50.0**2 + 40.0**2) ** 0.5)
+
+
+def test_evaluate_with_image_dims_rebases_to_image_center() -> None:
+    calibration = CameraCalibration(camera_index=1, pixels_per_mm_x=10.0, pixels_per_mm_y=10.0)
+    manager = make_manager(calibration)
+    # a 1000x800 image's centre pixel (500, 400) -> (50, 40) mm raw -> (0, 0) rebased
+    x_mm, y_mm, _ = manager.evaluate(1, 500.0, 400.0, image_width=1000, image_height=800)
+    assert (x_mm, y_mm) == pytest.approx((0.0, 0.0))
+
+    # a hole 100px right / 80px below that centre pixel -> +10mm / +8mm from centre
+    x_mm, y_mm, _ = manager.evaluate(1, 600.0, 480.0, image_width=1000, image_height=800)
+    assert (x_mm, y_mm) == pytest.approx((10.0, 8.0))
+
+
+def test_evaluate_rebase_does_not_shift_deviation_or_tolerance_judgement() -> None:
+    calibration = CameraCalibration(
+        camera_index=1, pixels_per_mm_x=10.0, pixels_per_mm_y=10.0, ref_point_mm=(50.0, 40.0)
+    )
+    manager = make_manager(calibration)
+    _, _, deviation_rebased = manager.evaluate(1, 500.0, 400.0, image_width=1000, image_height=800)
+    _, _, deviation_raw = manager.evaluate(1, 500.0, 400.0)
+    assert deviation_rebased == pytest.approx(0.0)
+    assert deviation_raw == pytest.approx(0.0)
+
+
+def test_evaluate_uncalibrated_camera_falls_back_to_identity_rebased_to_center() -> None:
+    manager = make_manager(None)
+    x_mm, y_mm, deviation = manager.evaluate(9, 500.0, 400.0, image_width=1000, image_height=800)
+    assert (x_mm, y_mm) == pytest.approx((0.0, 0.0))
+    assert deviation is None
+
+    x_mm, y_mm, deviation = manager.evaluate(9, 500.0, 400.0)
+    assert (x_mm, y_mm) == (500.0, 400.0)
+    assert deviation is None

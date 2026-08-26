@@ -14,14 +14,15 @@ from core.camera import create_camera
 from core.camera.basler_camera import BaslerCamera
 from core.camera.camera_base import CameraSettings
 from core.utilities.enums import TriggerMode
+from core.utilities.exceptions import CameraConfigurationError
 
 
 class FakeNumberNode:
     """Stands in for a GenICam IInteger / IFloat node."""
 
-    def __init__(self, low, high, inc=1) -> None:
+    def __init__(self, low, high, inc=1, value=None) -> None:
         self._low, self._high, self._inc = low, high, inc
-        self.value = None
+        self.value = value
 
     def GetMin(self):
         return self._low
@@ -31,6 +32,9 @@ class FakeNumberNode:
 
     def GetInc(self):
         return self._inc
+
+    def GetValue(self):
+        return self.value if self.value is not None else self._high
 
     def SetValue(self, value):
         self.value = value
@@ -140,6 +144,22 @@ def test_brightness_maps_onto_the_node_range() -> None:
     assert node.value == pytest.approx(0.5)
     camera._write_scaled(-2.0, "BslBrightness")  # out of range
     assert node.value == pytest.approx(-1.0)
+
+
+def test_detect_resolution_reads_sensor_max_dimensions() -> None:
+    camera = make_camera()
+    camera._camera = SimpleNamespace(
+        WidthMax=FakeNumberNode(low=0, high=4096, value=4096),
+        HeightMax=FakeNumberNode(low=0, high=3000, value=3000),
+    )
+    assert camera._detect_resolution() == (4096, 3000)
+
+
+def test_detect_resolution_raises_when_nodes_absent() -> None:
+    camera = make_camera()
+    camera._camera = SimpleNamespace()
+    with pytest.raises(CameraConfigurationError):
+        camera._detect_resolution()
 
 
 def test_timeout_message_names_the_trigger_line_in_hardware_mode() -> None:

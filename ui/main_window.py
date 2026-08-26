@@ -13,12 +13,14 @@ from typing import Callable
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtWidgets import (
+    QDialog,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QMainWindow,
     QPushButton,
+    QScrollArea,
     QSizePolicy,
     QStackedWidget,
     QToolBar,
@@ -29,7 +31,8 @@ from PySide6.QtWidgets import (
 from core.logging import get_logger
 from core.utilities.enums import LogSource
 from models.app_state import AppState
-from ui.widgets import AlarmBanner, LabeledLed
+from services.auth_service import AuthService
+from ui.widgets import AlarmBanner, LabeledLed, LoginDialog
 
 logger = get_logger(LogSource.UI)
 
@@ -43,6 +46,7 @@ class MainWindow(QMainWindow):
     def __init__(
         self,
         app_state: AppState,
+        auth_service: AuthService,
         factory_name: str,
         camera_indexes: list[int],
         on_simulate_trigger: Callable[[], None] | None = None,
@@ -50,9 +54,11 @@ class MainWindow(QMainWindow):
     ) -> None:
         super().__init__()
         self._app_state = app_state
+        self._auth = auth_service
         self._on_simulate_trigger = on_simulate_trigger
         self._on_shutdown = on_shutdown
         self._shutdown_done = False
+        self._pages: list[tuple[QListWidgetItem, bool]] = []  # (nav item, admin_only)
 
         self.setWindowTitle("Washing Machine Bottom Hole Detection System")
         self.resize(1440, 900)
@@ -90,6 +96,20 @@ class MainWindow(QMainWindow):
         else:
             self._simulate_button.clicked.connect(self._on_simulate_trigger)
         toolbar.addWidget(self._simulate_button)
+
+        toolbar.addWidget(self._space(16))
+        self._session_label = QLabel()
+        self._session_label.setProperty("class", "dim")
+        toolbar.addWidget(self._session_label)
+        toolbar.addWidget(self._space(8))
+        self._login_button = QPushButton()
+        self._login_button.setToolTip(
+            "Administrator login — unlocks Cameras, PLC, Detection, "
+            "Calibration and Settings in the nav rail"
+        )
+        self._login_button.clicked.connect(self._on_login_clicked)
+        toolbar.addWidget(self._login_button)
+        self._update_session_label()
 
     # -------------------------------------------------------------- central
     def _build_central(self) -> None:
@@ -150,14 +170,36 @@ class MainWindow(QMainWindow):
         return spacer
 
     # ---------------------------------------------------------------- pages
-    def add_page(self, title: str, icon_glyph: str, page: QWidget) -> None:
-        """Register a page in the nav rail (order of calls = nav order)."""
+    def add_page(
+        self, title: str, icon_glyph: str, page: QWidget, admin_only: bool = False
+    ) -> None:
+        """Register a page in the nav rail (order of calls = nav order).
+
+        ``admin_only`` pages stay in the stack (so the composition root can
+        wire signals normally) but are hidden from the nav rail until an
+        administrator logs in — see :meth:`_refresh_nav_visibility`.
+
+        The page is wrapped in a borderless, resizable :class:`QScrollArea`:
+        several pages (PLC register map, Calibration's homography grid) are
+        tall enough to clip on a 1080p screen once DPI scaling or a taskbar
+        eats into the usable height. ``setWidgetResizable`` makes the page
+        fill the viewport and stretch normally when there is room, and only
+        a plain vertical scrollbar appears when there is not — so this
+        changes nothing on a screen tall enough for the page as-is.
+        """
         item = QListWidgetItem(f"{icon_glyph}  {title}")
         item.setSizeHint(QSize(0, 40))
         self._nav.addItem(item)
-        self._stack.addWidget(page)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setWidget(page)
+        self._stack.addWidget(scroll)
+        self._pages.append((item, admin_only))
         if self._nav.count() == 1:
             self._nav.setCurrentRow(0)
+        self._refresh_nav_visibility()
 
     def show_page(self, index: int) -> None:
         self._nav.setCurrentRow(index)
@@ -165,6 +207,46 @@ class MainWindow(QMainWindow):
     def _on_nav_changed(self, row: int) -> None:
         if 0 <= row < self._stack.count():
             self._stack.setCurrentIndex(row)
+
+    # ------------------------------------------------------------------ auth
+    def _refresh_nav_visibility(self) -> None:
+        """Show/hide admin-only nav entries for the current session.
+
+        Called after every ``add_page`` and every login/logout. If the
+        currently selected row just became hidden (an admin logged out while
+        looking at an admin-only page), falls back to the first visible row
+        — Dashboard is always visible, so this always finds one.
+        """
+        first_visible = None
+        for row, (item, admin_only) in enumerate(self._pages):
+            hidden = admin_only and not self._auth.is_admin
+            item.setHidden(hidden)
+            if not hidden and first_visible is None:
+                first_visible = row
+
+        current = self._nav.currentRow()
+        currently_hidden = not (0 <= current < len(self._pages)) or self._pages[current][0].isHidden()
+        if currently_hidden and first_visible is not None:
+            self._nav.setCurrentRow(first_visible)
+
+    def _update_session_label(self) -> None:
+        user = self._auth.current_user
+        if user is None:
+            self._session_label.setText("Not logged in")
+            self._login_button.setText("Log in")
+        else:
+            self._session_label.setText(f"{user.username} ({user.role})")
+            self._login_button.setText("Log out")
+
+    def _on_login_clicked(self) -> None:
+        if self._auth.current_user is not None:
+            self._auth.logout()
+        else:
+            dialog = LoginDialog(self._auth, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+        self._update_session_label()
+        self._refresh_nav_visibility()
 
     # --------------------------------------------------------------- wiring
     def _wire_app_state(self) -> None:

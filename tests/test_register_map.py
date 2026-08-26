@@ -50,3 +50,51 @@ def test_invalid_config_raises() -> None:
     del broken["registers"]["trigger"]
     with pytest.raises(ConfigurationError):
         RegisterMap.from_config(broken)
+
+
+def test_model_select_defaults_to_none() -> None:
+    rmap = RegisterMap.from_config(make_config())
+    assert rmap.model_select is None
+
+
+def test_model_select_parsed_when_present() -> None:
+    config = make_config()
+    config["registers"]["model_select"] = 103
+    rmap = RegisterMap.from_config(config)
+    assert rmap.model_select == 103
+
+
+def test_camera_jog_defaults_to_empty() -> None:
+    rmap = RegisterMap.from_config(make_config())
+    assert rmap.camera_jog == {}
+    assert rmap.camera_jog_home == {}
+    assert rmap.jog_step == 10
+
+
+def test_camera_jog_parsed_when_present() -> None:
+    config = make_config()
+    config["camera_jog"] = {
+        "step": 25,
+        "registers": {
+            "1": {"x": 120, "y": 121, "home_x": 5, "home_y": 6},
+            "2": {"x": 122, "y": 123},  # home_x/home_y default to 0
+        },
+    }
+    rmap = RegisterMap.from_config(config)
+    assert rmap.jog_step == 25
+    assert rmap.camera_jog[1] == (120, 121)
+    assert rmap.camera_jog[2] == (122, 123)
+    assert rmap.camera_jog_home[1] == (5, 6)
+    assert rmap.camera_jog_home[2] == (0, 0)
+
+
+def test_camera_results_defaults_to_empty() -> None:
+    rmap = RegisterMap.from_config(make_config())
+    assert rmap.camera_results == {}
+
+
+def test_camera_results_parsed_when_present() -> None:
+    config = make_config()
+    config["registers"]["camera_results"] = {"1": 128, "2": 129}
+    rmap = RegisterMap.from_config(config)
+    assert rmap.camera_results == {1: 128, 2: 129}

@@ -13,6 +13,7 @@ logs/
 images/
 exports/
 backups/
+scripts/output/
 
 # IDE
 .idea/
