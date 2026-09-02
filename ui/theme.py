@@ -6,6 +6,7 @@ The QSS covers the widgets we style explicitly; the palette keeps the rest
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
 
 from PySide6.QtGui import QColor, QPalette
@@ -16,7 +17,10 @@ from core.utilities.enums import LogSource
 
 logger = get_logger(LogSource.UI)
 
-QSS_PATH = Path(__file__).resolve().parent.parent / "resources" / "styles" / "dark_theme.qss"
+# ``sys._MEIPASS`` is the PyInstaller extraction root; in a normal checkout the
+# stylesheet simply lives two levels up from this module.
+_RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent))
+QSS_PATH = _RESOURCE_ROOT / "resources" / "styles" / "dark_theme.qss"
 
 # central colour constants for code that draws (LEDs, overlays, charts)
 COLOR_BG = "#14181d"

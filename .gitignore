@@ -4,6 +4,7 @@ __pycache__/
 *.egg-info/
 .venv/
 venv/
+.venv_build/
 
 # Runtime artifacts (never commit production data)
 data/
@@ -23,3 +24,4 @@ scripts/output/
 build/
 dist/
 *.spec
+!wmhd.spec

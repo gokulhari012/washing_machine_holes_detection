@@ -20,7 +20,12 @@ import sys
 import threading
 from pathlib import Path
 
-BASE_DIR = Path(__file__).resolve().parent
+# Frozen (PyInstaller) builds run from a temp extraction dir, so anchor on the
+# executable instead: config/ and the runtime artifacts sit beside the .exe.
+if getattr(sys, "frozen", False):
+    BASE_DIR = Path(sys.executable).resolve().parent
+else:
+    BASE_DIR = Path(__file__).resolve().parent
 os.chdir(BASE_DIR)  # runtime artifacts (data/, logs/, images/, backups/) live beside the app
 sys.path.insert(0, str(BASE_DIR))
 
