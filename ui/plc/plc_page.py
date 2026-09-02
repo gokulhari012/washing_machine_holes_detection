@@ -104,20 +104,24 @@ class PlcPage(QWidget):
 
         reg_box = QGroupBox("Registers")
         reg_grid = QGridLayout(reg_box)
-        self._reg = {
-            "trigger": _reg_spin(),
-            "machine_number": _reg_spin(),
-            "heartbeat": _reg_spin(),
-            "result": _reg_spin(),
-            "vision_complete": _reg_spin(),
+        # Editable register addresses, keyed by their plc.json name. Addresses
+        # the operator has no reason to retype are deliberately absent and are
+        # carried through untouched by _collect(): machine_number and
+        # model_select are fixed by the PLC program, not by this station.
+        reg_labels = {
+            "trigger": "Trigger",
+            "heartbeat": "Heartbeat",
+            "result": "Result",
+            "vision_complete": "Vision Complete",
         }
-        labels = ["Trigger", "Machine No", "Heartbeat", "Result", "Vision Complete"]
-        for row, (key, label) in enumerate(zip(self._reg, labels)):
+        self._reg = {key: _reg_spin() for key in reg_labels}
+        for row, (key, label) in enumerate(reg_labels.items()):
             reg_grid.addWidget(QLabel(label), row, 0)
             reg_grid.addWidget(self._reg[key], row, 1)
         self._cam_regs: dict[int, tuple[QSpinBox, QSpinBox, QSpinBox]] = {}
+        first_camera_row = len(reg_labels)
         for position, camera in enumerate((1, 2, 3, 4)):
-            row = 5 + position
+            row = first_camera_row + position
             x_spin, y_spin, result_spin = _reg_spin(), _reg_spin(), _reg_spin()
             self._cam_regs[camera] = (x_spin, y_spin, result_spin)
             reg_grid.addWidget(QLabel(f"Camera {camera} X / Y / Result"), row, 0)
@@ -130,10 +134,11 @@ class PlcPage(QWidget):
             reg_grid.addWidget(trio_w, row, 1)
         self._scale = _reg_spin(10)
         self._offset = _reg_spin(10000)
-        reg_grid.addWidget(QLabel("Position Scale"), 9, 0)
-        reg_grid.addWidget(self._scale, 9, 1)
-        reg_grid.addWidget(QLabel("Position Offset"), 10, 0)
-        reg_grid.addWidget(self._offset, 10, 1)
+        scale_row = first_camera_row + len(self._cam_regs)
+        reg_grid.addWidget(QLabel("Position Scale"), scale_row, 0)
+        reg_grid.addWidget(self._scale, scale_row, 1)
+        reg_grid.addWidget(QLabel("Position Offset"), scale_row + 1, 0)
+        reg_grid.addWidget(self._offset, scale_row + 1, 1)
         left.addWidget(reg_box)
 
         jog_box = QGroupBox("Camera Jog Registers")
@@ -277,6 +282,10 @@ class PlcPage(QWidget):
             "poll_interval_ms": self._poll.value(),
         }
         cfg["registers"] = {
+            # Keep addresses this page does not expose (machine_number,
+            # model_select) — rebuilding the block from the widgets alone
+            # would drop them, and machine_number is required by RegisterMap.
+            **cfg.get("registers", {}),
             **{key: spin.value() for key, spin in self._reg.items()},
             "camera_positions": {
                 str(camera): {"x": x_spin.value(), "y": y_spin.value()}
