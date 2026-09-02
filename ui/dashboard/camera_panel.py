@@ -13,15 +13,16 @@ import time
 
 import cv2
 import numpy as np
-from PySide6.QtCore import Signal
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from core.utilities.enums import ConnectionState, InspectionResult
 from models.dto import CameraInspectionData
-from ui.widgets import ImageView, LabeledLed
+from ui.widgets import ImageView, LabeledLed, home_icon, play_icon
 
 RESULT_HOLD_S = 1.5
 PREVIEW_MAX_WIDTH = 640
+ICON_PX = 15  # icon size inside the panel's square header buttons
 
 
 class CameraPanel(QFrame):
@@ -49,8 +50,13 @@ class CameraPanel(QFrame):
         # header: LED + name + trigger/home buttons + result badge
         header = QHBoxLayout()
         self._led = LabeledLed(camera_name)
-        self._trigger_btn = QPushButton("▶")
-        self._trigger_btn.setFixedWidth(28)
+        # Painted icons rather than text glyphs — see ui/widgets/icons.py for
+        # why (the old ⌂ is missing from several stock Windows UI fonts).
+        self._trigger_btn = QPushButton()
+        self._trigger_btn.setIcon(play_icon("#ffffff", "#7d8794"))
+        self._trigger_btn.setIconSize(QSize(ICON_PX, ICON_PX))
+        self._trigger_btn.setProperty("class", "panelIconAccent")
+        self._trigger_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._trigger_btn.setToolTip(
             f"Inspect camera {camera_index} on its own — the other cameras are "
             f"not captured and their results are left unchanged"
@@ -58,8 +64,11 @@ class CameraPanel(QFrame):
         self._trigger_btn.clicked.connect(
             lambda: self.trigger_requested.emit(self.camera_index)
         )
-        self._home_btn = QPushButton("⌂")
-        self._home_btn.setFixedWidth(28)
+        self._home_btn = QPushButton()
+        self._home_btn.setIcon(home_icon())
+        self._home_btn.setIconSize(QSize(ICON_PX, ICON_PX))
+        self._home_btn.setProperty("class", "panelIcon")
+        self._home_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self._home_btn.setToolTip("Return this camera to its home position")
         self._home_btn.clicked.connect(lambda: self.home_requested.emit(self.camera_index))
         self._result = QLabel("—")

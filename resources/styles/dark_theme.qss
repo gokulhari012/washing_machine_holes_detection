@@ -72,6 +72,30 @@ QPushButton[class="danger"] {
     color: #f85149;
 }
 QPushButton[class="danger"]:hover { background-color: #3d1418; }
+/* Square icon buttons in a camera panel header. The panel behind them is
+   darker than the page (#161a20), so these sit a step lighter than a normal
+   button or they read as empty holes. */
+QPushButton[class="panelIcon"], QPushButton[class="panelIconAccent"] {
+    padding: 0px;
+    min-width: 26px; max-width: 26px;
+    min-height: 24px; max-height: 24px;
+    border-radius: 4px;
+}
+QPushButton[class="panelIcon"] {
+    background-color: #2b333f;
+    border: 1px solid #46525f;
+}
+QPushButton[class="panelIcon"]:hover    { background-color: #38424f; border-color: #5b6a7c; }
+QPushButton[class="panelIcon"]:pressed  { background-color: #232a34; }
+QPushButton[class="panelIcon"]:disabled { background-color: #1c2128; border-color: #2e3642; }
+/* The trigger is the panel's action button, so it carries the accent. */
+QPushButton[class="panelIconAccent"] {
+    background-color: #2f81f7;
+    border: 1px solid #2f81f7;
+}
+QPushButton[class="panelIconAccent"]:hover    { background-color: #4694ff; border-color: #4694ff; }
+QPushButton[class="panelIconAccent"]:pressed  { background-color: #2469cc; border-color: #2469cc; }
+QPushButton[class="panelIconAccent"]:disabled { background-color: #24405f; border-color: #24405f; }
 QToolButton {
     background: transparent;
     border: none;
