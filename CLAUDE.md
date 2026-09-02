@@ -207,8 +207,16 @@ to uint16.
 | 128–131 | PC→PLC | **`camera_results`** — per-camera GOOD/NG/ERROR |
 | 132–135 | PLC→PC | **`camera_triggers`** — inspect camera N alone (0→1 edge) |
 | 136–139 | PC→PLC | **`camera_vision_complete`** — camera N's own completion handshake |
+| 140–143 | PC→PLC | **`camera_status`** — 1 = camera N usable, 0 = disconnected/failing |
 
 Bolded rows are **newer than [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, which documents only 100–119.
+
+**Camera status (140–143)** is pushed by `PlcPollWorker._publish_camera_status`, not by
+the camera state callbacks — that keeps all PLC I/O on the PLC thread, and a change
+that happens while the link is down is not lost (the cache clears on link loss, so the
+next healthy tick re-publishes every camera). Written only on change. The value comes
+from `CameraHealth.healthy` via `Application._camera_availability`, so **connected but
+failing to grab reports 0**, not 1 — the safe direction for a PLC gating the station.
 
 **Two independent handshakes.** Register 100 runs all four cameras and answers on
 118/119. Register 132+N runs *only* camera N and answers on 136+N — the other

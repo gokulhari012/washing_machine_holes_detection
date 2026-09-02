@@ -12,7 +12,9 @@ Runs a tight loop (default 50 ms) that:
    camera only (same baseline-after-reconnect rule as the global trigger),
 4. toggles the heartbeat register (default every 500 ms) so the PLC can
    watchdog the PC,
-5. reads the machine-model-select register (default every 1000 ms, skipped
+5. publishes each camera's availability to its status register whenever it
+   changes (and re-publishes all of them after a reconnect),
+6. reads the machine-model-select register (default every 1000 ms, skipped
    entirely when unconfigured) and emits :attr:`machine_model_changed` on
    every value seen that differs from the last — *including* the first read
    after a (re)connect, unlike the trigger: we want whichever model is
@@ -26,6 +28,7 @@ from __future__ import annotations
 
 import threading
 import time
+from typing import Callable
 
 from PySide6.QtCore import QThread, Signal
 
@@ -50,10 +53,12 @@ class PlcPollWorker(QThread):
         poll_interval_ms: int = 50,
         heartbeat_interval_ms: int = 500,
         model_poll_interval_ms: int = 1000,
+        camera_status_provider: "Callable[[], dict[int, bool]] | None" = None,
     ) -> None:
         super().__init__()
         self.setObjectName("PlcPollWorker")
         self._manager = plc_manager
+        self._camera_status_provider = camera_status_provider
         self._poll_interval_s = max(0.01, poll_interval_ms / 1000.0)
         self._heartbeat_interval_s = max(0.1, heartbeat_interval_ms / 1000.0)
         self._model_poll_interval_s = max(0.1, model_poll_interval_ms / 1000.0)
@@ -64,6 +69,9 @@ class PlcPollWorker(QThread):
         self._last_camera_triggers: dict[int, int | None] = {
             index: None for index in plc_manager.register_map.camera_triggers
         }
+        # last availability value actually written per camera; cleared on any
+        # link loss so the PLC is refreshed after a reconnect or power-cycle
+        self._last_camera_status: dict[int, bool] = {}
 
     # ------------------------------------------------------------------ api
     def stop(self, timeout_ms: int = 3000) -> None:
@@ -100,6 +108,7 @@ class PlcPollWorker(QThread):
                     self._last_trigger = value
 
                     self._poll_camera_triggers()
+                    self._publish_camera_status()
 
                     if tick_started - last_heartbeat >= self._heartbeat_interval_s:
                         self._manager.toggle_heartbeat()
@@ -118,10 +127,12 @@ class PlcPollWorker(QThread):
                     self._last_trigger = None
                     self._last_model = None
                     self._rebaseline_camera_triggers()
+                    self._last_camera_status.clear()
             else:
                 self._last_trigger = None
                 self._last_model = None
                 self._rebaseline_camera_triggers()
+                self._last_camera_status.clear()
 
             elapsed = time.monotonic() - tick_started
             remaining = self._poll_interval_s - elapsed
@@ -160,3 +171,27 @@ class PlcPollWorker(QThread):
     def _rebaseline_camera_triggers(self) -> None:
         for camera_index in self._last_camera_triggers:
             self._last_camera_triggers[camera_index] = None
+
+    # -------------------------------------------------------- camera status
+    def _publish_camera_status(self) -> None:
+        """Write each camera's availability, but only when it changed.
+
+        Camera state changes originate on whichever thread hit them (startup
+        connect, an acquisition grab, an inspection capture); pushing them to
+        the PLC from here instead keeps all PLC I/O on this thread and means a
+        change that happens while the link is down is not lost — the cache is
+        cleared on any link loss, so the next healthy tick re-publishes every
+        camera to a PLC that may have been power-cycled.
+        """
+        if self._camera_status_provider is None:
+            return
+        for camera_index, available in sorted(self._camera_status_provider().items()):
+            if self._last_camera_status.get(camera_index) == available:
+                continue
+            if self._manager.write_camera_status(camera_index, available):
+                logger.info(
+                    "Camera %d reported to PLC as %s",
+                    camera_index,
+                    "available" if available else "unavailable",
+                )
+            self._last_camera_status[camera_index] = available

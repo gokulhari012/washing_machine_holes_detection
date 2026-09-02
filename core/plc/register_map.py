@@ -27,6 +27,13 @@ class RegisterMap:
 
     NO_HOLE_RAW = 0  # class constant, written when a camera finds no hole
 
+    # Values written to a camera_status register. "Available" rather than
+    # merely "socket open": a camera that is connected but failing to grab is
+    # just as unusable to the line, so it reports UNAVAILABLE too — the safe
+    # direction for a PLC deciding whether to run the station.
+    CAMERA_AVAILABLE = 1
+    CAMERA_UNAVAILABLE = 0
+
     trigger: int
     machine_number: int
     heartbeat: int
@@ -47,6 +54,11 @@ class RegisterMap:
     # camera_vision_complete gets no completion flag written.
     camera_triggers: dict[int, int] = field(default_factory=dict)
     camera_vision_complete: dict[int, int] = field(default_factory=dict)
+    # Per-camera availability register — camera index -> address. Written by
+    # the PC (CAMERA_AVAILABLE / CAMERA_UNAVAILABLE) whenever a camera's state
+    # changes, so the PLC can refuse to run the station with a dead camera.
+    # Optional per camera, like every other block here.
+    camera_status: dict[int, int] = field(default_factory=dict)
     position_scale: int = 10
     position_offset: int = 10000
     # Machine-model select register: which part/model is mounted, written by
@@ -90,6 +102,10 @@ class RegisterMap:
                 int(index): int(address)
                 for index, address in registers.get("camera_vision_complete", {}).items()
             }
+            camera_status = {
+                int(index): int(address)
+                for index, address in registers.get("camera_status", {}).items()
+            }
             model_select = registers.get("model_select")
 
             jog_cfg = plc_config.get("camera_jog", {})
@@ -113,6 +129,7 @@ class RegisterMap:
                 camera_results=camera_results,
                 camera_triggers=camera_triggers,
                 camera_vision_complete=camera_vision_complete,
+                camera_status=camera_status,
                 position_scale=int(scaling.get("position_scale", 10)),
                 position_offset=int(scaling.get("position_offset", 10000)),
                 model_select=int(model_select) if model_select is not None else None,

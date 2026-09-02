@@ -32,10 +32,16 @@ def test_camera_handshake_parsed_when_present() -> None:
     config = make_config()
     config["registers"]["camera_triggers"] = {"1": 132, "2": 133}
     config["registers"]["camera_vision_complete"] = {"1": 136, "2": 137}
+    config["registers"]["camera_status"] = {"1": 140, "2": 141}
     rmap = RegisterMap.from_config(config)
 
     assert rmap.camera_triggers == {1: 132, 2: 133}
     assert rmap.camera_vision_complete == {1: 136, 2: 137}
+    assert rmap.camera_status == {1: 140, 2: 141}
+
+
+def test_camera_status_defaults_to_empty() -> None:
+    assert RegisterMap.from_config(make_config()).camera_status == {}
 
 
 # ----------------------------------------------------------------- PLC writes
@@ -45,6 +51,7 @@ def camera_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
     config["registers"]["camera_results"] = {"1": 128, "2": 129}
     config["registers"]["camera_triggers"] = {"1": 132, "2": 133}
     config["registers"]["camera_vision_complete"] = {"1": 136, "2": 137}
+    config["registers"]["camera_status"] = {"1": 140, "2": 141}
     rmap = RegisterMap.from_config(config)
     client = SimulatedPlc(register_map=rmap)
     manager = PlcManager(client, rmap)
@@ -88,6 +95,63 @@ def test_read_camera_trigger_is_inert_when_unconfigured(camera_stack) -> None:
     assert manager.read_camera_trigger(4) is None  # no register for camera 4
     assert manager.camera_trigger_configured(1) is True
     assert manager.camera_trigger_configured(4) is False
+
+
+# --------------------------------------------------------- camera status
+def test_write_camera_status(camera_stack) -> None:
+    client, manager, _rmap = camera_stack
+
+    assert manager.write_camera_status(1, True) is True
+    assert client.read_registers(140, 1)[0] == RegisterMap.CAMERA_AVAILABLE
+
+    assert manager.write_camera_status(1, False) is True
+    assert client.read_registers(140, 1)[0] == RegisterMap.CAMERA_UNAVAILABLE
+
+    # camera 4 has no status register: inert, no I/O, never an error
+    assert manager.write_camera_status(4, True) is False
+    assert manager.camera_status_configured(1) is True
+    assert manager.camera_status_configured(4) is False
+
+
+def test_poll_worker_publishes_status_only_on_change(camera_stack) -> None:
+    from workers.plc_poll_worker import PlcPollWorker
+
+    client, manager, _rmap = camera_stack
+    availability = {1: True, 2: True}
+    writes: list[tuple[int, bool]] = []
+    original = manager.write_camera_status
+
+    def spy(index: int, available: bool) -> bool:
+        writes.append((index, available))
+        return original(index, available)
+
+    manager.write_camera_status = spy
+    worker = PlcPollWorker(manager, camera_status_provider=lambda: dict(availability))
+
+    worker._publish_camera_status()
+    assert writes == [(1, True), (2, True)]  # first pass publishes both
+
+    worker._publish_camera_status()
+    assert len(writes) == 2  # unchanged -> no further traffic
+
+    availability[2] = False
+    worker._publish_camera_status()
+    assert writes[-1] == (2, False)
+    assert client.read_registers(141, 1)[0] == RegisterMap.CAMERA_UNAVAILABLE
+
+    # a link loss clears the cache, so everything is re-sent to a PLC that
+    # may have been power-cycled while we were away
+    worker._last_camera_status.clear()
+    worker._publish_camera_status()
+    assert writes[-2:] == [(1, True), (2, False)]
+
+
+def test_poll_worker_without_provider_is_inert(camera_stack) -> None:
+    from workers.plc_poll_worker import PlcPollWorker
+
+    _client, manager, _rmap = camera_stack
+    worker = PlcPollWorker(manager)
+    worker._publish_camera_status()  # must not raise
 
 
 # ------------------------------------------------------------- the cycle

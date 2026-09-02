@@ -132,7 +132,7 @@ class PlcPage(QWidget):
         # Two rows per camera: the inspection outputs it publishes, then the
         # handshake that lets the PLC run that camera on its own.
         self._cam_regs: dict[int, tuple[QSpinBox, QSpinBox, QSpinBox]] = {}
-        self._cam_handshake: dict[int, tuple[QSpinBox, QSpinBox]] = {}
+        self._cam_handshake: dict[int, tuple[QSpinBox, QSpinBox, QSpinBox]] = {}
         first_camera_row = len(reg_labels)
         for position, camera in enumerate((1, 2, 3, 4)):
             row = first_camera_row + position * 2
@@ -141,12 +141,20 @@ class PlcPage(QWidget):
             reg_grid.addWidget(QLabel(f"Camera {camera} X / Y / Result"), row, 0)
             reg_grid.addWidget(_row_of(x_spin, y_spin, result_spin), row, 1)
 
-            trigger_spin, complete_spin = _reg_spin(), _reg_spin()
-            self._cam_handshake[camera] = (trigger_spin, complete_spin)
-            reg_grid.addWidget(
-                QLabel(f"Camera {camera} Trigger / Vision Complete"), row + 1, 0
+            trigger_spin, complete_spin, status_spin = (
+                _reg_spin(), _reg_spin(), _reg_spin()
             )
-            reg_grid.addWidget(_row_of(trigger_spin, complete_spin), row + 1, 1)
+            status_spin.setToolTip(
+                "PC → PLC: 1 while this camera is connected and grabbing "
+                "normally, 0 when it is disconnected or failing"
+            )
+            self._cam_handshake[camera] = (trigger_spin, complete_spin, status_spin)
+            reg_grid.addWidget(
+                QLabel(f"Camera {camera} Trigger / Vision Complete / Status"), row + 1, 0
+            )
+            reg_grid.addWidget(
+                _row_of(trigger_spin, complete_spin, status_spin), row + 1, 1
+            )
         self._scale = _reg_spin(10)
         self._offset = _reg_spin(10000)
         scale_row = first_camera_row + len(self._cam_regs) * 2
@@ -269,9 +277,11 @@ class PlcPage(QWidget):
             result_spin.setValue(int(camera_results.get(str(camera), 0)))
         camera_triggers = registers.get("camera_triggers", {})
         camera_complete = registers.get("camera_vision_complete", {})
-        for camera, (trigger_spin, complete_spin) in self._cam_handshake.items():
+        camera_status = registers.get("camera_status", {})
+        for camera, (trigger_spin, complete_spin, status_spin) in self._cam_handshake.items():
             trigger_spin.setValue(int(camera_triggers.get(str(camera), 0)))
             complete_spin.setValue(int(camera_complete.get(str(camera), 0)))
+            status_spin.setValue(int(camera_status.get(str(camera), 0)))
         self._scale.setValue(int(scaling.get("position_scale", 10)))
         self._offset.setValue(int(scaling.get("position_offset", 10000)))
         jog_cfg = cfg.get("camera_jog", {})
@@ -316,12 +326,16 @@ class PlcPage(QWidget):
                 for camera, (_x_spin, _y_spin, result_spin) in self._cam_regs.items()
             },
             "camera_triggers": {
-                str(camera): trigger_spin.value()
-                for camera, (trigger_spin, _complete_spin) in self._cam_handshake.items()
+                str(camera): spins[0].value()
+                for camera, spins in self._cam_handshake.items()
             },
             "camera_vision_complete": {
-                str(camera): complete_spin.value()
-                for camera, (_trigger_spin, complete_spin) in self._cam_handshake.items()
+                str(camera): spins[1].value()
+                for camera, spins in self._cam_handshake.items()
+            },
+            "camera_status": {
+                str(camera): spins[2].value()
+                for camera, spins in self._cam_handshake.items()
             },
         }
         cfg["scaling"] = {

@@ -144,6 +144,7 @@ class Application:
             poll_interval_ms=int(connection_cfg.get("poll_interval_ms", 50)),
             heartbeat_interval_ms=int(connection_cfg.get("heartbeat_interval_ms", 500)),
             model_poll_interval_ms=int(connection_cfg.get("model_poll_interval_ms", 1000)),
+            camera_status_provider=self._camera_availability,
         )
         self.poll_worker.trigger_detected.connect(self.inspection_worker.on_trigger)
         self.poll_worker.camera_trigger_detected.connect(
@@ -261,6 +262,19 @@ class Application:
     # ------------------------------------------------------------- helpers
     def _simulate_trigger(self) -> None:
         self.inspection_worker.trigger_requested.emit(next(self._manual_machine))
+
+    def _camera_availability(self) -> dict[int, bool]:
+        """Per-camera usability for the PLC status registers, read by the poll
+        worker on its own thread.
+
+        Uses ``CameraHealth.healthy`` rather than the raw connection flag: a
+        camera whose link is open but whose grabs are failing is just as
+        unusable to the line, and reporting it as available would let the PLC
+        keep running the station against a camera that cannot answer.
+        """
+        return {
+            index: health.healthy for index, health in self.cameras.all_health().items()
+        }
 
     def _trigger_camera(self, camera_index: int) -> None:
         """Dashboard per-camera Trigger button — inspect that camera alone."""

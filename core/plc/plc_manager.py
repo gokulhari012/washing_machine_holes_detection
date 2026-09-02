@@ -266,6 +266,28 @@ class PlcManager:
             result.name,
         )
 
+    def write_camera_status(self, camera_index: int, available: bool) -> bool:
+        """Publish whether camera *camera_index* is usable right now.
+
+        Writes :attr:`RegisterMap.CAMERA_AVAILABLE` / ``CAMERA_UNAVAILABLE``.
+        Returns False (no I/O) when that camera has no status register
+        configured, so the feature is simply inert until it is wired up.
+
+        Raises:
+            PlcError: communication failure.
+        """
+        address = self._map.camera_status.get(camera_index)
+        if address is None:
+            return False
+        value = (
+            RegisterMap.CAMERA_AVAILABLE if available else RegisterMap.CAMERA_UNAVAILABLE
+        )
+        self._write(address, [value])
+        return True
+
+    def camera_status_configured(self, camera_index: int) -> bool:
+        return camera_index in self._map.camera_status
+
     # --------------------------------------------------- camera jog / home
     def jog_camera(self, camera_index: int, direction: str) -> tuple[int, int]:
         """Nudge camera *camera_index*'s physical-position registers one
