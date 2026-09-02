@@ -9,7 +9,12 @@
     "poll_interval_ms": 50,
     "heartbeat_interval_ms": 500,
     "model_poll_interval_ms": 1000,
-    "reconnect_backoff_ms": [1000, 2000, 5000, 10000]
+    "reconnect_backoff_ms": [
+      1000,
+      2000,
+      5000,
+      10000
+    ]
   },
   "registers": {
     "trigger": 100,
@@ -17,10 +22,22 @@
     "heartbeat": 102,
     "model_select": 103,
     "camera_positions": {
-      "1": { "x": 110, "y": 111 },
-      "2": { "x": 112, "y": 113 },
-      "3": { "x": 114, "y": 115 },
-      "4": { "x": 116, "y": 117 }
+      "1": {
+        "x": 110,
+        "y": 111
+      },
+      "2": {
+        "x": 112,
+        "y": 113
+      },
+      "3": {
+        "x": 114,
+        "y": 115
+      },
+      "4": {
+        "x": 116,
+        "y": 117
+      }
     },
     "camera_results": {
       "1": 128,
@@ -29,7 +46,19 @@
       "4": 131
     },
     "result": 118,
-    "vision_complete": 119
+    "vision_complete": 119,
+    "camera_triggers": {
+      "1": 132,
+      "2": 133,
+      "3": 134,
+      "4": 135
+    },
+    "camera_vision_complete": {
+      "1": 136,
+      "2": 137,
+      "3": 138,
+      "4": 139
+    }
   },
   "scaling": {
     "position_scale": 10,
@@ -38,10 +67,30 @@
   "camera_jog": {
     "step": 10,
     "registers": {
-      "1": { "x": 120, "y": 121, "home_x": 0, "home_y": 0 },
-      "2": { "x": 122, "y": 123, "home_x": 0, "home_y": 0 },
-      "3": { "x": 124, "y": 125, "home_x": 0, "home_y": 0 },
-      "4": { "x": 126, "y": 127, "home_x": 0, "home_y": 0 }
+      "1": {
+        "x": 120,
+        "y": 121,
+        "home_x": 0,
+        "home_y": 0
+      },
+      "2": {
+        "x": 122,
+        "y": 123,
+        "home_x": 0,
+        "home_y": 0
+      },
+      "3": {
+        "x": 124,
+        "y": 125,
+        "home_x": 0,
+        "home_y": 0
+      },
+      "4": {
+        "x": 126,
+        "y": 127,
+        "home_x": 0,
+        "home_y": 0
+      }
     }
   }
 }

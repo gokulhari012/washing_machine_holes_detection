@@ -46,6 +46,17 @@ def _reg_spin(value: int = 0) -> QSpinBox:
     return spin
 
 
+def _row_of(*widgets: QWidget) -> QWidget:
+    """Pack several address spin boxes into one grid cell, side by side."""
+    box = QHBoxLayout()
+    box.setContentsMargins(0, 0, 0, 0)
+    for widget in widgets:
+        box.addWidget(widget)
+    holder = QWidget()
+    holder.setLayout(box)
+    return holder
+
+
 class PlcPage(QWidget):
     """Connection + register map + live viewer + manual access."""
 
@@ -118,23 +129,27 @@ class PlcPage(QWidget):
         for row, (key, label) in enumerate(reg_labels.items()):
             reg_grid.addWidget(QLabel(label), row, 0)
             reg_grid.addWidget(self._reg[key], row, 1)
+        # Two rows per camera: the inspection outputs it publishes, then the
+        # handshake that lets the PLC run that camera on its own.
         self._cam_regs: dict[int, tuple[QSpinBox, QSpinBox, QSpinBox]] = {}
+        self._cam_handshake: dict[int, tuple[QSpinBox, QSpinBox]] = {}
         first_camera_row = len(reg_labels)
         for position, camera in enumerate((1, 2, 3, 4)):
-            row = first_camera_row + position
+            row = first_camera_row + position * 2
             x_spin, y_spin, result_spin = _reg_spin(), _reg_spin(), _reg_spin()
             self._cam_regs[camera] = (x_spin, y_spin, result_spin)
             reg_grid.addWidget(QLabel(f"Camera {camera} X / Y / Result"), row, 0)
-            trio = QHBoxLayout()
-            trio.addWidget(x_spin)
-            trio.addWidget(y_spin)
-            trio.addWidget(result_spin)
-            trio_w = QWidget()
-            trio_w.setLayout(trio)
-            reg_grid.addWidget(trio_w, row, 1)
+            reg_grid.addWidget(_row_of(x_spin, y_spin, result_spin), row, 1)
+
+            trigger_spin, complete_spin = _reg_spin(), _reg_spin()
+            self._cam_handshake[camera] = (trigger_spin, complete_spin)
+            reg_grid.addWidget(
+                QLabel(f"Camera {camera} Trigger / Vision Complete"), row + 1, 0
+            )
+            reg_grid.addWidget(_row_of(trigger_spin, complete_spin), row + 1, 1)
         self._scale = _reg_spin(10)
         self._offset = _reg_spin(10000)
-        scale_row = first_camera_row + len(self._cam_regs)
+        scale_row = first_camera_row + len(self._cam_regs) * 2
         reg_grid.addWidget(QLabel("Position Scale"), scale_row, 0)
         reg_grid.addWidget(self._scale, scale_row, 1)
         reg_grid.addWidget(QLabel("Position Offset"), scale_row + 1, 0)
@@ -252,6 +267,11 @@ class PlcPage(QWidget):
             x_spin.setValue(int(addresses.get("x", 0)))
             y_spin.setValue(int(addresses.get("y", 0)))
             result_spin.setValue(int(camera_results.get(str(camera), 0)))
+        camera_triggers = registers.get("camera_triggers", {})
+        camera_complete = registers.get("camera_vision_complete", {})
+        for camera, (trigger_spin, complete_spin) in self._cam_handshake.items():
+            trigger_spin.setValue(int(camera_triggers.get(str(camera), 0)))
+            complete_spin.setValue(int(camera_complete.get(str(camera), 0)))
         self._scale.setValue(int(scaling.get("position_scale", 10)))
         self._offset.setValue(int(scaling.get("position_offset", 10000)))
         jog_cfg = cfg.get("camera_jog", {})
@@ -294,6 +314,14 @@ class PlcPage(QWidget):
             "camera_results": {
                 str(camera): result_spin.value()
                 for camera, (_x_spin, _y_spin, result_spin) in self._cam_regs.items()
+            },
+            "camera_triggers": {
+                str(camera): trigger_spin.value()
+                for camera, (trigger_spin, _complete_spin) in self._cam_handshake.items()
+            },
+            "camera_vision_complete": {
+                str(camera): complete_spin.value()
+                for camera, (_trigger_spin, complete_spin) in self._cam_handshake.items()
             },
         }
         cfg["scaling"] = {

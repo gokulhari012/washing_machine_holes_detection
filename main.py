@@ -146,6 +146,9 @@ class Application:
             model_poll_interval_ms=int(connection_cfg.get("model_poll_interval_ms", 1000)),
         )
         self.poll_worker.trigger_detected.connect(self.inspection_worker.on_trigger)
+        self.poll_worker.camera_trigger_detected.connect(
+            self.inspection_worker.on_camera_trigger
+        )
         self.poll_worker.machine_model_changed.connect(self._on_machine_model_changed)
         preview_fps = float(self.config.get_value("app_config", "ui.live_preview_fps", 15))
         self.acquisition_workers = create_acquisition_workers(
@@ -178,6 +181,7 @@ class Application:
                 self.auth_service,
                 config_manager=self.config,
                 on_simulate_trigger=self._simulate_trigger,
+                on_camera_trigger=self._trigger_camera,
             ),
         )
         self.window.add_page(
@@ -257,6 +261,12 @@ class Application:
     # ------------------------------------------------------------- helpers
     def _simulate_trigger(self) -> None:
         self.inspection_worker.trigger_requested.emit(next(self._manual_machine))
+
+    def _trigger_camera(self, camera_index: int) -> None:
+        """Dashboard per-camera Trigger button — inspect that camera alone."""
+        self.inspection_worker.camera_trigger_requested.emit(
+            camera_index, next(self._manual_machine)
+        )
 
     def _on_camera_config_saved(self, camera_cfg: dict) -> None:
         """Rebuild the camera manager + acquisition workers after a save

@@ -157,6 +157,14 @@ PlcPollWorker sees trigger 0→1  (≤50 ms)
 - deviation > `position_tolerance_mm` (and tolerance > 0 and camera calibrated) → `NG`
 - else `GOOD`
 
+**Single-camera cycles** (`run_camera_inspection`): triggered by PLC register 132+N or
+the dashboard panel's ▶ button. Captures and judges one camera, writes only that
+camera's registers, and marks the cycle `partial=True` — it is stored and shown in
+history like any other inspection but **does not increment the product counters**
+(`AppState.publish_inspection` returns early), because one camera is not a finished
+machine. The inspection worker shares one busy flag across both trigger kinds, so a
+per-camera and a full cycle can never overlap.
+
 **Hole selection** (`_select_hole`): an *uncalibrated* camera keeps the
 highest-confidence candidate. A *calibrated* camera instead picks the candidate
 nearest the reference point — the highest-confidence hole is not necessarily the
@@ -197,8 +205,17 @@ to uint16.
 | 119 | PC→PLC | Vision complete (PC sets 1; PLC reads, resets 119 + trigger) |
 | 120–127 | PC→PLC | **`camera_jog`** — physical camera *mount* X/Y (actuators) |
 | 128–131 | PC→PLC | **`camera_results`** — per-camera GOOD/NG/ERROR |
+| 132–135 | PLC→PC | **`camera_triggers`** — inspect camera N alone (0→1 edge) |
+| 136–139 | PC→PLC | **`camera_vision_complete`** — camera N's own completion handshake |
 
 Bolded rows are **newer than [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, which documents only 100–119.
+
+**Two independent handshakes.** Register 100 runs all four cameras and answers on
+118/119. Register 132+N runs *only* camera N and answers on 136+N — the other
+cameras' registers and the overall 118/119 are deliberately left untouched, because
+those cameras were not inspected and their last values still stand. Per-camera
+triggers are polled on every 50 ms tick with the same baseline-after-reconnect rule as
+the global trigger.
 
 Do not confuse `camera_positions` (110–117, the *detected hole* coordinate, an
 inspection output) with `camera_jog` (120–127, the *camera mount's* physical

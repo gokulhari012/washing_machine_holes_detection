@@ -7,9 +7,12 @@ Runs a tight loop (default 50 ms) that:
 2. reads the trigger register and emits :attr:`trigger_detected` exactly once
    per **rising edge** — after a (re)connect the first value read is taken as
    baseline, never as an edge, so a trigger frozen high cannot re-fire,
-3. toggles the heartbeat register (default every 500 ms) so the PLC can
+3. reads each configured per-camera trigger register and emits
+   :attr:`camera_trigger_detected` on its **rising edge**, to inspect that one
+   camera only (same baseline-after-reconnect rule as the global trigger),
+4. toggles the heartbeat register (default every 500 ms) so the PLC can
    watchdog the PC,
-4. reads the machine-model-select register (default every 1000 ms, skipped
+5. reads the machine-model-select register (default every 1000 ms, skipped
    entirely when unconfigured) and emits :attr:`machine_model_changed` on
    every value seen that differs from the last — *including* the first read
    after a (re)connect, unlike the trigger: we want whichever model is
@@ -38,6 +41,7 @@ class PlcPollWorker(QThread):
     """Owns the poll cadence; all PLC state flows out via PlcManager callbacks."""
 
     trigger_detected = Signal(int)  # machine number
+    camera_trigger_detected = Signal(int, int)  # camera index, machine number
     machine_model_changed = Signal(int)  # new model_select value
 
     def __init__(
@@ -56,6 +60,10 @@ class PlcPollWorker(QThread):
         self._stop_event = threading.Event()
         self._last_trigger: int | None = None  # None = re-baseline required
         self._last_model: int | None = None  # None = not yet read this session
+        # per-camera trigger edge state, same baseline rule as _last_trigger
+        self._last_camera_triggers: dict[int, int | None] = {
+            index: None for index in plc_manager.register_map.camera_triggers
+        }
 
     # ------------------------------------------------------------------ api
     def stop(self, timeout_ms: int = 3000) -> None:
@@ -91,6 +99,8 @@ class PlcPollWorker(QThread):
                         self.trigger_detected.emit(machine_number)
                     self._last_trigger = value
 
+                    self._poll_camera_triggers()
+
                     if tick_started - last_heartbeat >= self._heartbeat_interval_s:
                         self._manager.toggle_heartbeat()
                         last_heartbeat = tick_started
@@ -107,9 +117,11 @@ class PlcPollWorker(QThread):
                     # its backoff; require a fresh baseline after recovery
                     self._last_trigger = None
                     self._last_model = None
+                    self._rebaseline_camera_triggers()
             else:
                 self._last_trigger = None
                 self._last_model = None
+                self._rebaseline_camera_triggers()
 
             elapsed = time.monotonic() - tick_started
             remaining = self._poll_interval_s - elapsed
@@ -117,3 +129,34 @@ class PlcPollWorker(QThread):
                 self._stop_event.wait(remaining)
 
         logger.info("PLC poll worker stopped")
+
+    # ------------------------------------------------------ camera triggers
+    def _poll_camera_triggers(self) -> None:
+        """Rising-edge detection on each configured per-camera trigger.
+
+        Same baseline rule as the global trigger: the first value seen after a
+        (re)connect is adopted, never fired, so a camera trigger left high
+        cannot re-fire on reconnect. Runs on every poll tick, so a per-camera
+        trigger is picked up as fast as the global one.
+        """
+        for camera_index in sorted(self._last_camera_triggers):
+            value = self._manager.read_camera_trigger(camera_index)
+            if value is None:  # register not configured
+                continue
+            previous = self._last_camera_triggers[camera_index]
+            if previous is None:
+                self._last_camera_triggers[camera_index] = value
+                continue
+            if value == 1 and previous == 0:
+                machine_number = self._manager.read_machine_number()
+                logger.info(
+                    "Camera %d trigger edge detected (machine %d)",
+                    camera_index,
+                    machine_number,
+                )
+                self.camera_trigger_detected.emit(camera_index, machine_number)
+            self._last_camera_triggers[camera_index] = value
+
+    def _rebaseline_camera_triggers(self) -> None:
+        for camera_index in self._last_camera_triggers:
+            self._last_camera_triggers[camera_index] = None

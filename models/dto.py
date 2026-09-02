@@ -55,6 +55,10 @@ class InspectionCycleData:
     shift: str = ""
     plc_write_ok: bool = True
     inspection_id: int | None = None  # database id, set after persistence
+    #: True for a single-camera cycle (per-camera PLC trigger or dashboard
+    #: button): stored and displayed like any other inspection, but excluded
+    #: from the product counters — one camera is not a finished product.
+    partial: bool = False
 
 
 @dataclass(frozen=True)

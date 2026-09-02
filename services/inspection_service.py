@@ -169,6 +169,90 @@ class InspectionService:
         )
         return cycle
 
+    def run_camera_inspection(
+        self, camera_index: int, machine_number: int
+    ) -> InspectionCycleData:
+        """Inspect **one** camera and publish only that camera's registers.
+
+        Raised by a per-camera PLC trigger register, or by the dashboard's
+        per-camera Trigger button. The other cameras are not captured, not
+        judged and not written — their PLC registers keep the values from
+        whichever cycle last set them.
+
+        The resulting cycle is marked :attr:`InspectionCycleData.partial`, so
+        it is stored and shown like any other inspection but does not count
+        towards the product counters — one camera is not a finished product.
+
+        Never raises — faults degrade the result, exactly as in the full cycle.
+        """
+        cycle_started = time.perf_counter()
+        started_at = datetime.now()
+        app_cfg = self._config.load("app_config")
+        application = app_cfg.get("application", {})
+
+        self._app_state.notify_trigger(machine_number)
+        camera = self._cameras.get(camera_index)
+        logger.info(
+            "Single-camera inspection started (camera %d, machine %d)",
+            camera_index,
+            machine_number,
+        )
+        self._app_state.post_status(f"Capturing {camera.name} (single)")
+
+        try:
+            frame = self._cameras.capture(camera_index)
+        except CameraError:
+            frame = None  # already logged and recorded in health by capture()
+        if frame is not None:
+            self._app_state.publish_camera_capture(camera_index, frame)
+
+        detect_started = time.perf_counter()
+        data = self._inspect_one(camera_index, frame)
+        detection_ms = (time.perf_counter() - detect_started) * 1000.0
+        self._app_state.publish_camera_result(camera_index, data)
+
+        plc_write_ok = True
+        try:
+            self._plc.write_camera_inspection_output(
+                camera_index,
+                (data.x_mm, data.y_mm) if data.hole_found else None,
+                _RESULT_TO_PLC[data.result],
+            )
+        except PlcError as exc:
+            plc_write_ok = False
+            logger.error("PLC output write failed for camera %d: %s", camera_index, exc)
+            self._app_state.raise_alarm("error", f"PLC write failed: {exc}")
+
+        cycle = InspectionCycleData(
+            machine_number=machine_number,
+            serial_number=self._serial_number(application, machine_number),
+            started_at=started_at,
+            overall_result=data.result,
+            cameras={camera_index: data},
+            plc_cycle_time_ms=(time.perf_counter() - cycle_started) * 1000.0,
+            detection_time_ms=detection_ms,
+            operator=str(application.get("operator_name", "")),
+            shift=str(application.get("shift", "")),
+            plc_write_ok=plc_write_ok,
+            partial=True,
+        )
+
+        self._save_images(cycle, app_cfg.get("storage", {}))
+        try:
+            self._database.save_inspection(cycle)
+        except DatabaseError as exc:
+            logger.error("Inspection persistence failed: %s", exc)
+            self._app_state.raise_alarm("error", f"Database write failed: {exc}")
+
+        self._app_state.publish_inspection(cycle)
+        logger.info(
+            "Single-camera inspection finished (camera %d): %s in %.0f ms",
+            camera_index,
+            data.result.value,
+            cycle.plc_cycle_time_ms,
+        )
+        return cycle
+
     # --------------------------------------------------------- capture modes
     def _run_sequential(
         self, enabled: list[int], inspection_cfg: dict

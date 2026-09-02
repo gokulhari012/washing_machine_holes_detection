@@ -66,6 +66,7 @@ class DashboardPage(QWidget):
         auth_service: AuthService,
         config_manager: ConfigManager | None = None,
         on_simulate_trigger=None,
+        on_camera_trigger=None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -75,6 +76,7 @@ class DashboardPage(QWidget):
         self._auth = auth_service
         self._config = config_manager
         self._on_simulate_trigger = on_simulate_trigger
+        self._on_camera_trigger = on_camera_trigger
         self._loading = False
 
         root = QVBoxLayout(self)
@@ -127,7 +129,9 @@ class DashboardPage(QWidget):
             index = int(cfg["index"])
             panel = CameraPanel(index, str(cfg.get("name", f"Camera {cfg['index']}")))
             panel.set_home_enabled(self._plc.jog_configured(index))
+            panel.set_trigger_enabled(on_camera_trigger is not None)
             panel.home_requested.connect(self._on_home_requested)
+            panel.trigger_requested.connect(self._on_camera_trigger_clicked)
             self._panels[index] = panel
             grid.addWidget(panel, position // 2, position % 2)
         content.addLayout(grid, stretch=3)
@@ -234,17 +238,33 @@ class DashboardPage(QWidget):
             self._app_state.raise_alarm("warning", f"Could not save the camera delay: {exc}")
 
     def _on_simulate_clicked(self) -> None:
-        self._simulate_button.setEnabled(False)  # re-enabled when the cycle ends
+        self._set_triggers_enabled(False)  # re-enabled when the cycle ends
         self._arm_button_watchdog()
         self._on_simulate_trigger()
+
+    def _on_camera_trigger_clicked(self, camera_index: int) -> None:
+        """Per-camera Trigger button: inspect this camera alone.
+
+        Locks every trigger button for the duration, because the inspection
+        worker runs one cycle at a time — a second request while one is in
+        flight would simply be dropped.
+        """
+        if self._on_camera_trigger is None:
+            return
+        self._set_triggers_enabled(False)
+        self._arm_button_watchdog()
+        self._on_camera_trigger(camera_index)
+
+    def _set_triggers_enabled(self, enabled: bool) -> None:
+        """Enable/disable every manual trigger control at once."""
+        self._simulate_button.setEnabled(enabled and self._on_simulate_trigger is not None)
+        for panel in self._panels.values():
+            panel.set_trigger_enabled(enabled and self._on_camera_trigger is not None)
 
     def _arm_button_watchdog(self) -> None:
         """Never leave the operator without a button if a cycle dies silently."""
         budget_ms = 60000 + len(self._panels) * self._delay.value()
-        QTimer.singleShot(
-            budget_ms,
-            lambda: self._simulate_button.setEnabled(self._on_simulate_trigger is not None),
-        )
+        QTimer.singleShot(budget_ms, lambda: self._set_triggers_enabled(True))
 
     # ------------------------------------------------------------- initial
     def _load_initial(self) -> None:
@@ -286,10 +306,10 @@ class DashboardPage(QWidget):
         self._tile_status.set_value("RUNNING")
         self._tile_status.set_accent(COLOR_ACCENT)
         self._tile_serial.set_value(str(machine_number))
-        self._simulate_button.setEnabled(False)  # one cycle at a time
+        self._set_triggers_enabled(False)  # one cycle at a time
 
     def _on_inspection(self, cycle: InspectionCycleData) -> None:
-        self._simulate_button.setEnabled(self._on_simulate_trigger is not None)
+        self._set_triggers_enabled(True)
         result = cycle.overall_result.value
         self._tile_status.set_value(result)
         self._tile_status.set_accent(_RESULT_COLORS.get(result, COLOR_DIM))

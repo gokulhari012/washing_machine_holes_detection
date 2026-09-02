@@ -29,6 +29,9 @@ class InspectionWorker(QObject):
 
     #: emit to run a cycle from any thread (UI "Simulate Trigger" button)
     trigger_requested = Signal(int)
+    #: emit to inspect one camera from any thread (dashboard per-camera button);
+    #: arguments are (camera_index, machine_number)
+    camera_trigger_requested = Signal(int, int)
     #: InspectionCycleData, after the cycle fully completed
     inspection_finished = Signal(object)
 
@@ -40,6 +43,7 @@ class InspectionWorker(QObject):
         self._thread.setObjectName("InspectionWorker")
         self.moveToThread(self._thread)
         self.trigger_requested.connect(self.on_trigger)
+        self.camera_trigger_requested.connect(self.on_camera_trigger)
 
     # ------------------------------------------------------------ lifecycle
     def start(self) -> None:
@@ -67,6 +71,24 @@ class InspectionWorker(QObject):
         self._busy = True
         try:
             cycle = self._service.run_inspection(machine_number)
+            self.inspection_finished.emit(cycle)
+        finally:
+            self._busy = False
+
+    @Slot(int, int)
+    def on_camera_trigger(self, camera_index: int, machine_number: int) -> None:
+        """Inspect a single camera. Shares the busy flag with :meth:`on_trigger`
+        so a per-camera trigger and a full cycle can never overlap on the same
+        cameras — whichever arrives second is dropped loudly."""
+        if self._busy:
+            logger.warning(
+                "Camera %d trigger ignored — inspection already running",
+                camera_index,
+            )
+            return
+        self._busy = True
+        try:
+            cycle = self._service.run_camera_inspection(camera_index, machine_number)
             self.inspection_finished.emit(cycle)
         finally:
             self._busy = False

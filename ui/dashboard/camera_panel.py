@@ -32,6 +32,10 @@ class CameraPanel(QFrame):
     #: itself knows nothing about PLC/auth.
     home_requested = Signal(int)
 
+    #: emitted when the Trigger button is clicked, with this panel's camera
+    #: index — inspect this camera alone. DashboardPage owns the dispatch.
+    trigger_requested = Signal(int)
+
     def __init__(self, camera_index: int, camera_name: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setProperty("class", "panel")
@@ -42,9 +46,18 @@ class CameraPanel(QFrame):
         root.setContentsMargins(10, 8, 10, 8)
         root.setSpacing(6)
 
-        # header: LED + name + home button + result badge
+        # header: LED + name + trigger/home buttons + result badge
         header = QHBoxLayout()
         self._led = LabeledLed(camera_name)
+        self._trigger_btn = QPushButton("▶")
+        self._trigger_btn.setFixedWidth(28)
+        self._trigger_btn.setToolTip(
+            f"Inspect camera {camera_index} on its own — the other cameras are "
+            f"not captured and their results are left unchanged"
+        )
+        self._trigger_btn.clicked.connect(
+            lambda: self.trigger_requested.emit(self.camera_index)
+        )
         self._home_btn = QPushButton("⌂")
         self._home_btn.setFixedWidth(28)
         self._home_btn.setToolTip("Return this camera to its home position")
@@ -53,6 +66,7 @@ class CameraPanel(QFrame):
         self._result.setProperty("result", "")
         header.addWidget(self._led)
         header.addStretch()
+        header.addWidget(self._trigger_btn)
         header.addWidget(self._home_btn)
         header.addWidget(self._result)
         root.addLayout(header)
@@ -74,6 +88,10 @@ class CameraPanel(QFrame):
     # ------------------------------------------------------------------ api
     def set_camera_state(self, state: ConnectionState | str) -> None:
         self._led.set_state(state)
+
+    def set_trigger_enabled(self, enabled: bool) -> None:
+        """Disabled while any inspection is running — one cycle at a time."""
+        self._trigger_btn.setEnabled(enabled)
 
     def set_home_enabled(self, enabled: bool) -> None:
         """Grey out Home when this camera has no jog registers configured."""

@@ -38,6 +38,15 @@ class RegisterMap:
     # gets no individual result register written, same as an absent entry
     # in camera_positions gets no X/Y written.
     camera_results: dict[int, int] = field(default_factory=dict)
+    # Per-camera handshake, mirroring `trigger`/`vision_complete` but scoped to
+    # a single camera: the PLC raises camera_triggers[i] to inspect *only*
+    # camera i, and the PC answers on camera_vision_complete[i] once that
+    # camera's X/Y and result registers hold the new values. Both optional and
+    # independent per camera — a camera absent from camera_triggers simply
+    # cannot be triggered on its own, and one absent from
+    # camera_vision_complete gets no completion flag written.
+    camera_triggers: dict[int, int] = field(default_factory=dict)
+    camera_vision_complete: dict[int, int] = field(default_factory=dict)
     position_scale: int = 10
     position_offset: int = 10000
     # Machine-model select register: which part/model is mounted, written by
@@ -73,6 +82,14 @@ class RegisterMap:
                 int(index): int(address)
                 for index, address in registers.get("camera_results", {}).items()
             }
+            camera_triggers = {
+                int(index): int(address)
+                for index, address in registers.get("camera_triggers", {}).items()
+            }
+            camera_vision_complete = {
+                int(index): int(address)
+                for index, address in registers.get("camera_vision_complete", {}).items()
+            }
             model_select = registers.get("model_select")
 
             jog_cfg = plc_config.get("camera_jog", {})
@@ -94,6 +111,8 @@ class RegisterMap:
                 vision_complete=int(registers["vision_complete"]),
                 camera_positions=camera_positions,
                 camera_results=camera_results,
+                camera_triggers=camera_triggers,
+                camera_vision_complete=camera_vision_complete,
                 position_scale=int(scaling.get("position_scale", 10)),
                 position_offset=int(scaling.get("position_offset", 10000)),
                 model_select=int(model_select) if model_select is not None else None,

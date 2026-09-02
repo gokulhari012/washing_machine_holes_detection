@@ -93,6 +93,12 @@ class AppState(QObject):
         self.counters_changed.emit(total, good, ng)
 
     def publish_inspection(self, cycle: InspectionCycleData) -> None:
+        """Publish a finished cycle. A ``partial`` cycle (single camera) is
+        emitted like any other but leaves the product counters alone — it
+        inspected one camera, not a whole machine."""
+        if cycle.partial:
+            self.inspection_completed.emit(cycle)
+            return
         with self._lock:
             self._total += 1
             if cycle.overall_result is InspectionResult.GOOD:

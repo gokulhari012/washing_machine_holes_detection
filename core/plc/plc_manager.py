@@ -160,6 +160,17 @@ class PlcManager:
     def read_machine_number(self) -> int:
         return self._read(self._map.machine_number, 1)[0]
 
+    def read_camera_trigger(self, camera_index: int) -> int | None:
+        """Current per-camera trigger value, or ``None`` when that camera has
+        no trigger register configured (no I/O in that case)."""
+        address = self._map.camera_triggers.get(camera_index)
+        if address is None:
+            return None
+        return self._read(address, 1)[0]
+
+    def camera_trigger_configured(self, camera_index: int) -> bool:
+        return camera_index in self._map.camera_triggers
+
     def read_model_select(self) -> int | None:
         """Current machine-model code, or ``None`` when the register is not
         configured (no I/O in that case — the feature is simply inert)."""
@@ -209,6 +220,51 @@ class PlcManager:
         self._write(self._map.result, [int(result)])
         self._write(self._map.vision_complete, [1])
         logger.info("Inspection output written to PLC (result=%s)", result.name)
+
+    def write_camera_inspection_output(
+        self,
+        camera_index: int,
+        position: tuple[float, float] | None,
+        result: PlcResultCode,
+    ) -> None:
+        """Publish a *single* camera's inspection to the PLC.
+
+        The per-camera counterpart of :meth:`write_inspection_output`: writes
+        only this camera's X/Y (no-hole sentinel when *position* is ``None``)
+        and its own result register, then raises its own vision_complete —
+        the other cameras' registers and the overall result/vision_complete
+        registers are left untouched, because the other cameras were not
+        inspected this cycle and their last values still stand.
+
+        Registers this camera has not been given are skipped silently, the
+        same way :meth:`write_inspection_output` skips absent entries.
+        """
+        addresses = self._map.camera_positions.get(camera_index)
+        if addresses is not None:
+            x_address, y_address = addresses
+            if position is None:
+                x_raw = y_raw = RegisterMap.NO_HOLE_RAW
+            else:
+                x_raw = self._map.encode_position(position[0])
+                y_raw = self._map.encode_position(position[1])
+            if y_address == x_address + 1:  # contiguous pair -> one transaction
+                self._write(x_address, [x_raw, y_raw])
+            else:
+                self._write(x_address, [x_raw])
+                self._write(y_address, [y_raw])
+
+        result_address = self._map.camera_results.get(camera_index)
+        if result_address is not None:
+            self._write(result_address, [int(result)])
+
+        complete_address = self._map.camera_vision_complete.get(camera_index)
+        if complete_address is not None:
+            self._write(complete_address, [1])
+        logger.info(
+            "Camera %d inspection output written to PLC (result=%s)",
+            camera_index,
+            result.name,
+        )
 
     # --------------------------------------------------- camera jog / home
     def jog_camera(self, camera_index: int, direction: str) -> tuple[int, int]:
