@@ -32,7 +32,7 @@ from core.logging import get_logger
 from core.utilities.enums import LogSource
 from models.app_state import AppState
 from services.auth_service import AuthService
-from ui.widgets import AlarmBanner, LabeledLed, LoginDialog
+from ui.widgets import AlarmBanner, LabeledLed, LoginDialog, install_wheel_guard
 
 logger = get_logger(LogSource.UI)
 
@@ -186,10 +186,18 @@ class MainWindow(QMainWindow):
         fill the viewport and stretch normally when there is room, and only
         a plain vertical scrollbar appears when there is not — so this
         changes nothing on a screen tall enough for the page as-is.
+
+        Because of that wrapping the page also gets a wheel guard, so
+        scrolling past a spin box or combo box cannot silently edit it —
+        see :func:`ui.widgets.install_wheel_guard`.
         """
         item = QListWidgetItem(f"{icon_glyph}  {title}")
         item.setSizeHint(QSize(0, 40))
         self._nav.addItem(item)
+
+        # Called once the page is fully built, so a single walk catches every
+        # spin box / combo box / slider on it.
+        install_wheel_guard(page)
 
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)

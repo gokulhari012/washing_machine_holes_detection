@@ -7,6 +7,7 @@ from ui.widgets.led_indicator import LabeledLed, LedIndicator
 from ui.widgets.login_dialog import LoginDialog
 from ui.widgets.roi_editor import RoiEditor
 from ui.widgets.stat_tile import StatTile
+from ui.widgets.wheel_guard import install_wheel_guard
 
 __all__ = [
     "AlarmBanner",
@@ -19,4 +20,5 @@ __all__ = [
     "LoginDialog",
     "RoiEditor",
     "StatTile",
+    "install_wheel_guard",
 ]
