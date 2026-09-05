@@ -65,20 +65,20 @@
     {
       "index": 3,
       "name": "Camera 3 - Rear Left",
-      "driver": "image_file",
-      "connection_id": "2",
+      "driver": "basler",
+      "connection_id": "3",
       "enabled": true,
-      "exposure_us": 50000,
+      "exposure_us": 15000,
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 0,
-      "width": 4024,
-      "height": 3036,
+      "width": 5496,
+      "height": 3672,
       "roi": {
-        "x": 1158,
-        "y": 1694,
-        "width": 1275,
-        "height": 1217
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
       },
       "trigger_mode": "software",
       "basler": {
