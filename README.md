@@ -51,16 +51,17 @@ pytest
    | 100  | PLC → PC  | Trigger (0→1 rising edge starts an inspection) |
    | 101  | PLC → PC  | Machine number |
    | 102  | PC → PLC  | Heartbeat (toggles every 500 ms) |
-   | 110–117 | PC → PLC | Camera 1–4 hole X/Y magnitude. `raw = abs(mm) × 10`, always positive |
+   | 110–117 | PC → PLC | Camera 1–4 hole X/Y as a servo target (see below); `0` = no hole |
    | 118  | PC → PLC  | Result: 1 = GOOD, 2 = NG, 3 = ERROR |
    | 119  | PC → PLC  | Vision complete (PC sets 1; PLC reads results, resets 119 and the trigger) |
-   | 144–151 | PC → PLC | Sign of camera 1–4's X/Y: `1` = negative, `2` = positive, `0` = no hole |
+   | 144–151 | PLC → PC | Servo 1–4 home position X/Y — the datum for 110–117 |
 
-   Registers are unsigned, so a coordinate is carried as a positive magnitude
-   in 110–117 plus its sign in 144–151 — e.g. −3.2 mm reads as `32` in the
-   magnitude register and `1` in its sign register. Because `0` is a valid
-   magnitude (a hole exactly on centre), "no hole found" is signalled by `0`
-   in the **sign** register, not by the magnitude.
+   Registers are unsigned, so a hole's offset from the image centre is written
+   relative to that axis's servo home rather than with a sign. The PC reads
+   144–151 immediately before each write and sends
+   `home + mm × position_scale`: with home `6000`, a hole `2.0` mm off centre
+   and scale `100`, register 110 gets `6200`; `−2.0` mm gets `5800`. A camera
+   that found no hole writes `0` instead.
 
    The PC toggles the heartbeat so the PLC can watchdog it; on any vision
    fault the PC writes result 3 (ERROR) so the PLC never dead-waits.

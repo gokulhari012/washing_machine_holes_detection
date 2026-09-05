@@ -52,7 +52,7 @@ def camera_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
     config["registers"]["camera_triggers"] = {"1": 132, "2": 133}
     config["registers"]["camera_vision_complete"] = {"1": 136, "2": 137}
     config["registers"]["camera_status"] = {"1": 140, "2": 141}
-    config["registers"]["camera_position_signs"] = {
+    config["registers"]["servo_home_positions"] = {
         "1": {"x": 144, "y": 145},
         "2": {"x": 146, "y": 147},
     }
@@ -65,21 +65,17 @@ def camera_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
 
 def test_camera_write_touches_only_that_camera(camera_stack) -> None:
     client, manager, rmap = camera_stack
+    client.set_register(144, 30000)  # camera 1 servo home X
+    client.set_register(145, 30000)  # camera 1 servo home Y
     manager.write_camera_inspection_output(1, (12.3, -4.5), PlcResultCode.GOOD)
 
     x_addr, y_addr = rmap.camera_positions[1]
-    x_sign_addr, y_sign_addr = rmap.camera_position_signs[1]
-    x_sign = client.read_registers(x_sign_addr, 1)[0]
-    y_sign = client.read_registers(y_sign_addr, 1)[0]
-    assert x_sign == RegisterMap.SIGN_POSITIVE
-    assert y_sign == RegisterMap.SIGN_NEGATIVE
-    assert client.read_registers(x_addr, 1)[0] == 123  # magnitude only, no sign
-    assert client.read_registers(y_addr, 1)[0] == 45
+    x_home, y_home = manager.read_servo_home(1)
     assert rmap.decode_position(
-        client.read_registers(x_addr, 1)[0], x_sign
+        client.read_registers(x_addr, 1)[0], x_home
     ) == pytest.approx(12.3)
     assert rmap.decode_position(
-        client.read_registers(y_addr, 1)[0], y_sign
+        client.read_registers(y_addr, 1)[0], y_home
     ) == pytest.approx(-4.5)
     assert client.read_registers(128, 1)[0] == int(PlcResultCode.GOOD)
     assert client.read_registers(136, 1)[0] == 1  # this camera's completion flag
@@ -101,11 +97,6 @@ def test_camera_write_uses_no_hole_sentinel(camera_stack) -> None:
     x_addr, y_addr = rmap.camera_positions[1]
     assert client.read_registers(x_addr, 1)[0] == RegisterMap.NO_HOLE_RAW
     assert client.read_registers(y_addr, 1)[0] == RegisterMap.NO_HOLE_RAW
-    # Zero is a legitimate magnitude (a hole exactly on centre), so no-hole is
-    # only unambiguous in the sign registers.
-    x_sign_addr, y_sign_addr = rmap.camera_position_signs[1]
-    assert client.read_registers(x_sign_addr, 1)[0] == RegisterMap.SIGN_NONE
-    assert client.read_registers(y_sign_addr, 1)[0] == RegisterMap.SIGN_NONE
     assert client.read_registers(128, 1)[0] == int(PlcResultCode.NG)
 
 

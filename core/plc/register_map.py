@@ -2,26 +2,28 @@
 
 Position encoding
 -----------------
-Hole positions are millimetres with one decimal. A 16-bit holding register
-is unsigned, so each coordinate is carried as **two** registers: a magnitude
-and a sign.
+A hole position is the offset in millimetres from the centre of the analysed
+image. A 16-bit holding register is unsigned, so a negative offset cannot be
+written directly; instead the value is expressed **relative to that axis's
+servo home position**, which the PLC publishes in its own register and the PC
+reads back each time it writes a result:
 
-    magnitude = round(abs(mm) * position_scale)             (default ×10)
-    sign      = SIGN_NEGATIVE (1) | SIGN_POSITIVE (2)
+    raw = servo_home + round(mm * position_scale)     (clamped to uint16)
 
-With the default scale that covers 0.0 .. 6553.5 mm either side of zero,
-which is far more range than any of these fields of view need.
+e.g. servo home 6000, hole 2.0 mm right of centre, scale 100 -> 6200. A hole
+2.0 mm the other way writes 5800. The PLC therefore reads one absolute servo
+target per axis, in the servo's own units, with no sign handling and no
+arithmetic to undo — and because home is read live rather than baked into a
+config offset, moving the axis needs no change on the PC side.
 
-Splitting the sign out this way, rather than biasing the magnitude by a
-fixed offset, means the PLC program reads a plain unsigned millimetre value
-it can display or compare directly, with no arithmetic to undo first.
+Raw ``0`` remains the **no-hole sentinel** (see :attr:`RegisterMap.NO_HOLE_RAW`).
+An axis whose home position sits at or very near 0 would make that sentinel
+ambiguous with a real measurement; every servo home in this station is far
+from zero, which is what makes the sentinel safe.
 
-``SIGN_NONE`` (0) is the **no-hole sentinel**: written to both sign
-registers, with the magnitudes zeroed, when a camera found no hole. Zero is
-a legitimate magnitude (a hole exactly on centre), so the sign register is
-the only unambiguous place to say "no measurement" — a station that has not
-wired up sign registers therefore reports no-hole as a plain 0/0, which is
-indistinguishable from a centred hole. Wire the sign registers.
+A camera with no servo-home registers configured falls back to a home of 0,
+i.e. plain ``mm * position_scale``, and can then only express positions on the
+positive side of centre.
 """
 
 from __future__ import annotations
@@ -37,15 +39,7 @@ UINT16_MAX = 65535
 class RegisterMap:
     """Immutable register layout + position codec."""
 
-    NO_HOLE_RAW = 0  # magnitude written when a camera finds no hole
-
-    # Sign-register codes. The PLC reads an unsigned magnitude plus one of
-    # these; 0 is not a sign at all, it means "this camera reported no hole
-    # this cycle", so a PLC that sees it must not treat the 0 magnitude
-    # beside it as a measured position.
-    SIGN_NONE = 0
-    SIGN_NEGATIVE = 1
-    SIGN_POSITIVE = 2
+    NO_HOLE_RAW = 0  # written to both position registers when no hole is found
 
     # Values written to a camera_status register. "Available" rather than
     # merely "socket open": a camera that is connected but failing to grab is
@@ -60,12 +54,12 @@ class RegisterMap:
     result: int
     vision_complete: int
     camera_positions: dict[int, tuple[int, int]] = field(default_factory=dict)
-    # Sign registers for the coordinates above — camera index -> (x_sign_addr,
-    # y_sign_addr). Optional per camera: a camera absent here still gets its
-    # magnitudes written, it just cannot express a negative coordinate (see
-    # the module docstring). Kept separate from camera_positions so an
-    # existing plc.json with no sign block keeps loading.
-    camera_position_signs: dict[int, tuple[int, int]] = field(default_factory=dict)
+    # Servo home position registers — camera index -> (x_addr, y_addr). These
+    # are PLC→PC *inputs*: the PLC publishes where each axis's home sits, and
+    # every position written to camera_positions is measured from it (see the
+    # module docstring). Optional per camera: a camera absent here encodes
+    # against a home of 0, so an existing plc.json keeps loading.
+    servo_home_positions: dict[int, tuple[int, int]] = field(default_factory=dict)
     # Per-camera GOOD/NG/ERROR result register — camera index -> address.
     # Optional/independent of camera_positions: a camera absent here simply
     # gets no individual result register written, same as an absent entry
@@ -115,9 +109,9 @@ class RegisterMap:
                 int(index): (int(addrs["x"]), int(addrs["y"]))
                 for index, addrs in registers["camera_positions"].items()
             }
-            camera_position_signs = {
+            servo_home_positions = {
                 int(index): (int(addrs["x"]), int(addrs["y"]))
-                for index, addrs in registers.get("camera_position_signs", {}).items()
+                for index, addrs in registers.get("servo_home_positions", {}).items()
             }
             camera_results = {
                 int(index): int(address)
@@ -155,7 +149,7 @@ class RegisterMap:
                 result=int(registers["result"]),
                 vision_complete=int(registers["vision_complete"]),
                 camera_positions=camera_positions,
-                camera_position_signs=camera_position_signs,
+                servo_home_positions=servo_home_positions,
                 camera_results=camera_results,
                 camera_triggers=camera_triggers,
                 camera_vision_complete=camera_vision_complete,
@@ -170,25 +164,21 @@ class RegisterMap:
             raise ConfigurationError(f"Invalid PLC register configuration: {exc}") from exc
 
     # ----------------------------------------------------------------- codec
-    def encode_position(self, mm: float) -> tuple[int, int]:
-        """Millimetres → ``(magnitude, sign_code)``.
+    def encode_position(self, mm: float, servo_home: int = 0) -> int:
+        """Millimetres from image centre → raw register value.
 
-        The magnitude is clamped to the uint16 range; the sign is
-        :attr:`SIGN_NEGATIVE` or :attr:`SIGN_POSITIVE`. Exactly ``0.0`` is
-        reported positive — it is a real measurement, and only
-        :attr:`SIGN_NONE` means "no hole".
+        *servo_home* is the value just read from that axis's servo home
+        register; the result is that home biased by the scaled offset, clamped
+        to the uint16 range. A negative offset therefore encodes as a raw
+        value *below* home rather than needing a sign.
         """
-        magnitude = round(abs(mm) * self.position_scale)
-        magnitude = max(0, min(UINT16_MAX, magnitude))
-        sign = self.SIGN_NEGATIVE if mm < 0 else self.SIGN_POSITIVE
-        return magnitude, sign
+        raw = servo_home + round(mm * self.position_scale)
+        return max(0, min(UINT16_MAX, raw))
 
-    def decode_position(self, magnitude: int, sign: int = SIGN_POSITIVE) -> float:
-        """``(magnitude, sign_code)`` → millimetres.
+    def decode_position(self, raw: int, servo_home: int = 0) -> float:
+        """Raw register value → millimetres from image centre.
 
-        Any sign code that is not :attr:`SIGN_NEGATIVE` decodes positive, so
-        a station with no sign registers wired up (which reads back 0) still
-        gets sensible positive values rather than an exception.
+        The inverse of :meth:`encode_position`, and it needs the same
+        *servo_home* the value was written against.
         """
-        value = magnitude / self.position_scale
-        return -value if sign == self.SIGN_NEGATIVE else value
+        return (raw - servo_home) / self.position_scale

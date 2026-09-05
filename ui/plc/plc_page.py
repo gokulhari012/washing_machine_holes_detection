@@ -145,11 +145,11 @@ class PlcPage(QWidget):
         model_row = len(reg_labels)
         reg_grid.addWidget(QLabel("Machine Model Select"), model_row, 0)
         reg_grid.addWidget(self._model_select, model_row, 1)
-        # Three rows per camera: the inspection outputs it publishes, the sign
-        # of those coordinates, then the handshake that lets the PLC run that
-        # camera on its own.
+        # Three rows per camera: the inspection outputs it publishes, the servo
+        # home position those outputs are measured from, then the handshake
+        # that lets the PLC run that camera on its own.
         self._cam_regs: dict[int, tuple[QSpinBox, QSpinBox, QSpinBox]] = {}
-        self._cam_signs: dict[int, tuple[QSpinBox, QSpinBox]] = {}
+        self._cam_servo_home: dict[int, tuple[QSpinBox, QSpinBox]] = {}
         self._cam_handshake: dict[int, tuple[QSpinBox, QSpinBox, QSpinBox]] = {}
         rows_per_camera = 3
         first_camera_row = model_row + 1
@@ -158,24 +158,26 @@ class PlcPage(QWidget):
             x_spin, y_spin, result_spin = _reg_spin(), _reg_spin(), _reg_spin()
             for spin in (x_spin, y_spin):
                 spin.setToolTip(
-                    "PC → PLC: hole offset from the image centre in tenths of "
-                    "a millimetre, always positive — the sign lives in the "
-                    "sign register on the row below"
+                    "PC → PLC: absolute servo target — the home position from "
+                    "the row below, plus the hole's offset from the image "
+                    "centre × the position scale"
                 )
             self._cam_regs[camera] = (x_spin, y_spin, result_spin)
             reg_grid.addWidget(QLabel(f"Camera {camera} X / Y / Result"), row, 0)
             reg_grid.addWidget(_row_of(x_spin, y_spin, result_spin), row, 1)
 
-            x_sign_spin, y_sign_spin = _reg_spin(), _reg_spin()
-            for spin in (x_sign_spin, y_sign_spin):
+            home_x_spin, home_y_spin = _reg_spin(), _reg_spin()
+            for spin in (home_x_spin, home_y_spin):
                 spin.setToolTip(
-                    "PC → PLC: sign of the coordinate on the row above — "
-                    "1 = negative, 2 = positive, 0 = no hole found "
-                    "(the magnitude beside it is then meaningless)"
+                    "PLC → PC: where this axis's servo home sits. Read before "
+                    "every position write and used as the datum — a hole 2 mm "
+                    "off centre with home 6000 and scale 100 writes 6200"
                 )
-            self._cam_signs[camera] = (x_sign_spin, y_sign_spin)
-            reg_grid.addWidget(QLabel(f"Camera {camera} X Sign / Y Sign"), row + 1, 0)
-            reg_grid.addWidget(_row_of(x_sign_spin, y_sign_spin), row + 1, 1)
+            self._cam_servo_home[camera] = (home_x_spin, home_y_spin)
+            reg_grid.addWidget(
+                QLabel(f"Servo {camera} Home Position X / Y"), row + 1, 0
+            )
+            reg_grid.addWidget(_row_of(home_x_spin, home_y_spin), row + 1, 1)
 
             trigger_spin, complete_spin, status_spin = (
                 _reg_spin(), _reg_spin(), _reg_spin()
@@ -193,8 +195,8 @@ class PlcPage(QWidget):
             )
         self._scale = _reg_spin(10)
         self._scale.setToolTip(
-            "Millimetres are multiplied by this before being written "
-            "(10 = one decimal place)"
+            "Millimetres are multiplied by this before being added to the "
+            "servo home position (10 = one decimal place)"
         )
         scale_row = first_camera_row + len(self._cam_regs) * rows_per_camera
         reg_grid.addWidget(QLabel("Position Scale"), scale_row, 0)
@@ -317,11 +319,11 @@ class PlcPage(QWidget):
             x_spin.setValue(int(addresses.get("x", 0)))
             y_spin.setValue(int(addresses.get("y", 0)))
             result_spin.setValue(int(camera_results.get(str(camera), 0)))
-        camera_signs = registers.get("camera_position_signs", {})
-        for camera, (x_sign_spin, y_sign_spin) in self._cam_signs.items():
-            addresses = camera_signs.get(str(camera), {})
-            x_sign_spin.setValue(int(addresses.get("x", 0)))
-            y_sign_spin.setValue(int(addresses.get("y", 0)))
+        servo_home = registers.get("servo_home_positions", {})
+        for camera, (home_x_spin, home_y_spin) in self._cam_servo_home.items():
+            addresses = servo_home.get(str(camera), {})
+            home_x_spin.setValue(int(addresses.get("x", 0)))
+            home_y_spin.setValue(int(addresses.get("y", 0)))
         camera_triggers = registers.get("camera_triggers", {})
         camera_complete = registers.get("camera_vision_complete", {})
         camera_status = registers.get("camera_status", {})
@@ -370,9 +372,9 @@ class PlcPage(QWidget):
                 str(camera): {"x": x_spin.value(), "y": y_spin.value()}
                 for camera, (x_spin, y_spin, _result_spin) in self._cam_regs.items()
             },
-            "camera_position_signs": {
-                str(camera): {"x": x_sign_spin.value(), "y": y_sign_spin.value()}
-                for camera, (x_sign_spin, y_sign_spin) in self._cam_signs.items()
+            "servo_home_positions": {
+                str(camera): {"x": home_x_spin.value(), "y": home_y_spin.value()}
+                for camera, (home_x_spin, home_y_spin) in self._cam_servo_home.items()
             },
             "camera_results": {
                 str(camera): result_spin.value()

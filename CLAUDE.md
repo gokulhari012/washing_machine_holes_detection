@@ -185,22 +185,26 @@ tolerance check disabled. The system runs out of the box.
 
 ### Position encoding (`core/plc/register_map.py`)
 
-A holding register is unsigned, so each coordinate takes **two** registers — an
-unsigned magnitude and a separate sign register:
+A holding register is unsigned, so a negative offset cannot be written directly.
+Instead every coordinate is expressed relative to that axis's **servo home
+position**, which the PLC publishes in its own register and the PC reads back
+immediately before each write:
 
 ```
-magnitude = round(abs(mm) × position_scale)     # default ×10, clamped to uint16
-sign      = 1 (negative) | 2 (positive)
+raw = servo_home + round(mm × position_scale)    # clamped to uint16
 ```
-Range with the default scale: 0.0 … 6553.5 mm either side of zero. There is no
-position offset — it was removed so the PLC reads a plain millimetre value with no
-arithmetic to undo.
+e.g. home 6000, hole 2.0 mm right of centre, scale 100 → 6200; 2.0 mm the other way
+→ 5800. The PLC gets an absolute servo target in the servo's own units, with no
+sign handling and nothing to undo. There is **no `position_offset`** — it was
+replaced by this live per-axis datum, so moving an axis needs no PC-side change.
 
-**Sign `0` (`SIGN_NONE`) is the no-hole sentinel**, written to both sign registers
-with the magnitudes zeroed. Zero is a legitimate magnitude (a hole exactly on
-centre), so the sign register is the *only* unambiguous place to say "no
-measurement". A station with no sign registers wired up therefore reports no-hole
-as a plain 0/0, indistinguishable from a centred hole — wire the sign registers.
+**Raw `0` is the no-hole sentinel** (`RegisterMap.NO_HOLE_RAW`), written to both
+position registers with no servo read at all. That stays unambiguous only because
+every servo home sits far from 0; an axis homed at ~0 would break it.
+
+A camera with no `servo_home_positions` entry encodes against a home of `0`
+(plain `mm × position_scale`) and can then only express the positive side of
+centre — `PlcManager.read_servo_home` returns `(0, 0)` rather than failing.
 
 ### Register map — live `config/plc.json`
 
@@ -210,7 +214,7 @@ as a plain 0/0, indistinguishable from a centred hole — wire the sign register
 | 101 | PLC→PC | Machine number |
 | 102 | PC→PLC | Heartbeat (toggles every 500 ms — PLC watchdogs the PC) |
 | 103 | PLC→PC | **`model_select`** — machine-model code, polled every 1000 ms |
-| 110–117 | PC→PLC | Camera 1–4 hole X/Y — unsigned magnitude (encoded as above) |
+| 110–117 | PC→PLC | Camera 1–4 hole X/Y as a servo target (encoded as above) |
 | 118 | PC→PLC | Overall result: 1=GOOD, 2=NG, 3=ERROR |
 | 119 | PC→PLC | Vision complete (PC sets 1; PLC reads, resets 119 + trigger) |
 | 120–127 | PC→PLC | **`camera_jog`** — physical camera *mount* X/Y (actuators) |
@@ -218,7 +222,7 @@ as a plain 0/0, indistinguishable from a centred hole — wire the sign register
 | 132–135 | PLC→PC | **`camera_triggers`** — inspect camera N alone (0→1 edge) |
 | 136–139 | PC→PLC | **`camera_vision_complete`** — camera N's own completion handshake |
 | 140–143 | PC→PLC | **`camera_status`** — 1 = camera N usable, 0 = disconnected/failing |
-| 144–151 | PC→PLC | **`camera_position_signs`** — sign of 110–117: 1=neg, 2=pos, 0=no hole |
+| 144–151 | PLC→PC | **`servo_home_positions`** — servo 1–4 home X/Y, the datum for 110–117 |
 
 Bolded rows are **newer than [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, which documents only 100–119.
 
@@ -236,22 +240,28 @@ those cameras were not inspected and their last values still stand. Per-camera
 triggers are polled on every 50 ms tick with the same baseline-after-reconnect rule as
 the global trigger.
 
-`camera_position_signs` (144–151) pairs one-to-one with `camera_positions`: 144/145
-carry the sign of camera 1's X/Y, 146/147 camera 2's, and so on. It is optional per
-camera — `RegisterMap.camera_position_signs` simply has no entry, and
-`PlcManager._write_position` skips the sign write — so an older `plc.json` keeps
-loading. It is written in the same transaction as the magnitudes when the pair is
-contiguous, immediately after them.
+`servo_home_positions` (144–151) pairs one-to-one with `camera_positions`: 144/145
+hold servo 1's home X/Y, 146/147 servo 2's, and so on. Unlike every other
+per-camera block these are **inputs** — the PC reads them, never writes them.
+`PlcManager.read_servo_home` fetches the pair in one transaction when contiguous,
+on the inspection thread, immediately before the position write; it is deliberately
+never cached, because the PLC may move the axis between cycles. Optional per camera
+(absent → home `0`), so an older `plc.json` keeps loading.
+
+Do not confuse `servo_home_positions` (144–151, PLC→PC, the *datum* a reported hole
+position is measured from) with `camera_jog_home` (a pair of *values* in
+`config/plc.json`'s `camera_jog` block that the Home button writes to the jog
+registers). Similar names, opposite directions.
 
 Do not confuse `camera_positions` (110–117, the *detected hole* coordinate, an
 inspection output) with `camera_jog` (120–127, the *camera mount's* physical
 position, driven by PLC actuators). Both are per-camera X/Y pairs; they mean
 completely different things.
 
-Write order in `write_inspection_output` matters: positions (magnitudes then signs)
-→ per-camera results → overall result → `vision_complete=1` last, because the PLC may
-read the moment `vision_complete` goes high. Contiguous X/Y pairs are written in one
-transaction.
+Write order in `write_inspection_output` matters: positions → per-camera results →
+overall result → `vision_complete=1` last, because the PLC may read the moment
+`vision_complete` goes high. Contiguous X/Y pairs are written in one transaction.
+Each position write is preceded by a servo-home *read* on the same thread.
 
 ### Fault policy
 Heartbeat loss lets the PLC stop the line. On any vision fault the PC writes

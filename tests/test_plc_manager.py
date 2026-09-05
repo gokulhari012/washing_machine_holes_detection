@@ -19,12 +19,13 @@ def stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
 
 
 @pytest.fixture()
-def signs_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
+def servo_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
     config = make_config()
-    config["registers"]["camera_position_signs"] = {
+    config["registers"]["servo_home_positions"] = {
         "1": {"x": 144, "y": 145},
         "2": {"x": 146, "y": 147},
     }
+    config["scaling"]["position_scale"] = 100
     rmap = RegisterMap.from_config(config)
     client = SimulatedPlc(register_map=rmap)
     manager = PlcManager(client, rmap)
@@ -80,36 +81,61 @@ def test_write_inspection_output(stack) -> None:
         {1: PlcResultCode.GOOD, 2: PlcResultCode.NG, 3: PlcResultCode.GOOD, 4: PlcResultCode.GOOD},
         PlcResultCode.NG,
     )
-    assert client.get_register(110) == 125  # 12.5 mm as a positive magnitude
-    assert client.get_register(111) == 32  # 3.2 mm; the minus sign lives elsewhere
+    # No servo-home registers in this fixture, so home is 0 and the raw value
+    # is just mm x scale. Negatives clamp at 0 without a home to sit below.
+    assert client.get_register(110) == 125
+    assert client.get_register(111) == 0
     assert client.get_register(112) == 0  # no-hole sentinel
     assert client.get_register(rmap.result) == int(PlcResultCode.NG)
     assert client.get_register(rmap.vision_complete) == 1
 
 
-def test_write_inspection_output_writes_position_signs(signs_stack) -> None:
-    client, manager, _rmap = signs_stack
+def test_position_is_written_relative_to_servo_home(servo_stack) -> None:
+    """home 6000 + 2.0 mm x scale 100 -> 6200; the negative axis lands below home."""
+    client, manager, _rmap = servo_stack
+    client.set_register(144, 6000)  # camera 1 X home
+    client.set_register(145, 4000)  # camera 1 Y home
+
     manager.write_inspection_output(
-        {1: (12.5, -3.2), 2: None},
-        {1: PlcResultCode.GOOD, 2: PlcResultCode.NG},
-        PlcResultCode.NG,
+        {1: (2.0, -3.5)}, {1: PlcResultCode.GOOD}, PlcResultCode.GOOD
     )
-    assert client.get_register(110) == 125
-    assert client.get_register(144) == RegisterMap.SIGN_POSITIVE
-    assert client.get_register(111) == 32
-    assert client.get_register(145) == RegisterMap.SIGN_NEGATIVE
-    # Camera 2 found nothing: zeroed magnitudes *and* SIGN_NONE, so the PLC
-    # cannot mistake it for a hole sitting exactly on centre.
-    assert client.get_register(112) == 0
-    assert client.get_register(146) == RegisterMap.SIGN_NONE
-    assert client.get_register(147) == RegisterMap.SIGN_NONE
+    assert client.get_register(110) == 6200
+    assert client.get_register(111) == 3650
 
 
-def test_write_inspection_output_without_sign_registers_still_writes(stack) -> None:
-    """A plc.json with no sign block is not an error — magnitudes still go out."""
-    client, manager, _rmap = stack
+def test_servo_home_is_re_read_for_every_write(servo_stack) -> None:
+    """The PLC may move the axis between cycles, so home is never cached."""
+    client, manager, _rmap = servo_stack
+    client.set_register(144, 6000)
+    client.set_register(145, 6000)
     manager.write_inspection_output(
-        {1: (12.5, -3.2)}, {1: PlcResultCode.GOOD}, PlcResultCode.GOOD
+        {1: (1.0, 1.0)}, {1: PlcResultCode.GOOD}, PlcResultCode.GOOD
+    )
+    assert client.get_register(110) == 6100
+
+    client.set_register(144, 9000)
+    manager.write_inspection_output(
+        {1: (1.0, 1.0)}, {1: PlcResultCode.GOOD}, PlcResultCode.GOOD
+    )
+    assert client.get_register(110) == 9100
+
+
+def test_no_hole_writes_the_sentinel_not_servo_home(servo_stack) -> None:
+    """A camera that found nothing must not look like a hole sitting at home."""
+    client, manager, _rmap = servo_stack
+    client.set_register(144, 6000)
+    client.set_register(145, 6000)
+    manager.write_inspection_output({1: None}, {1: PlcResultCode.NG}, PlcResultCode.NG)
+    assert client.get_register(110) == RegisterMap.NO_HOLE_RAW
+    assert client.get_register(111) == RegisterMap.NO_HOLE_RAW
+
+
+def test_read_servo_home_is_zero_when_unconfigured(stack) -> None:
+    """No servo-home block: encoding falls back to plain scaled millimetres."""
+    client, manager, _rmap = stack
+    assert manager.read_servo_home(1) == (0, 0)
+    manager.write_inspection_output(
+        {1: (12.5, 3.2)}, {1: PlcResultCode.GOOD}, PlcResultCode.GOOD
     )
     assert client.get_register(110) == 125
     assert client.get_register(111) == 32

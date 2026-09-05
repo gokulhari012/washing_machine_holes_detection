@@ -34,50 +34,58 @@ def test_from_config() -> None:
 
 def test_codec_round_trip() -> None:
     rmap = RegisterMap.from_config(make_config())
-    for mm in (0.0, 123.4, -5.0, 999.9, -6553.5):
-        assert rmap.decode_position(*rmap.encode_position(mm)) == pytest.approx(mm)
+    for mm in (0.0, 123.4, -5.0, 999.9):
+        # Home has to leave room for the offset in both directions; with
+        # home 0 a negative offset clamps at 0, which is the point of having
+        # the servo datum in the first place.
+        for home in (30000, 40000):
+            assert rmap.decode_position(
+                rmap.encode_position(mm, home), home
+            ) == pytest.approx(mm)
 
 
-def test_codec_magnitude_is_always_positive() -> None:
-    """The magnitude register never carries the sign — that is the whole point."""
+def test_negative_offset_clamps_without_a_servo_home() -> None:
+    """No home means no room below zero — the register cannot go negative."""
     rmap = RegisterMap.from_config(make_config())
-    assert rmap.encode_position(12.3) == (123, RegisterMap.SIGN_POSITIVE)
-    assert rmap.encode_position(-12.3) == (123, RegisterMap.SIGN_NEGATIVE)
-    # Exactly zero is a real measurement, not the no-hole case.
-    assert rmap.encode_position(0.0) == (0, RegisterMap.SIGN_POSITIVE)
+    assert rmap.encode_position(-5.0) == 0
 
 
-def test_sign_codes() -> None:
-    assert RegisterMap.SIGN_NONE == 0
-    assert RegisterMap.SIGN_NEGATIVE == 1
-    assert RegisterMap.SIGN_POSITIVE == 2
+def test_encode_is_servo_home_plus_scaled_offset() -> None:
+    """The worked example from the spec: home 6000, +2.0 mm, scale 100 -> 6200."""
+    config = make_config()
+    config["scaling"]["position_scale"] = 100
+    rmap = RegisterMap.from_config(config)
+    assert rmap.encode_position(2.0, 6000) == 6200
+    # A negative offset lands below home — that is how the unsigned register
+    # carries a negative measurement.
+    assert rmap.encode_position(-2.0, 6000) == 5800
+    assert rmap.encode_position(0.0, 6000) == 6000
+
+
+def test_encode_without_servo_home_is_plain_scaled_mm() -> None:
+    rmap = RegisterMap.from_config(make_config())
+    assert rmap.encode_position(12.3) == 123
     assert RegisterMap.NO_HOLE_RAW == 0
-
-
-def test_decode_treats_a_missing_sign_as_positive() -> None:
-    """A station with no sign registers wired up reads back 0 everywhere."""
-    rmap = RegisterMap.from_config(make_config())
-    assert rmap.decode_position(123, RegisterMap.SIGN_NONE) == pytest.approx(12.3)
 
 
 def test_codec_clamps_to_uint16() -> None:
     rmap = RegisterMap.from_config(make_config())
-    assert rmap.encode_position(99999.0) == (65535, RegisterMap.SIGN_POSITIVE)
-    assert rmap.encode_position(-99999.0) == (65535, RegisterMap.SIGN_NEGATIVE)
+    assert rmap.encode_position(99999.0, 6000) == 65535
+    assert rmap.encode_position(-99999.0, 6000) == 0
 
 
-def test_camera_position_signs_default_to_empty() -> None:
-    assert RegisterMap.from_config(make_config()).camera_position_signs == {}
+def test_servo_home_positions_default_to_empty() -> None:
+    assert RegisterMap.from_config(make_config()).servo_home_positions == {}
 
 
-def test_camera_position_signs_parsed_when_present() -> None:
+def test_servo_home_positions_parsed_when_present() -> None:
     config = make_config()
-    config["registers"]["camera_position_signs"] = {
+    config["registers"]["servo_home_positions"] = {
         "1": {"x": 144, "y": 145},
         "2": {"x": 146, "y": 147},
     }
     rmap = RegisterMap.from_config(config)
-    assert rmap.camera_position_signs == {1: (144, 145), 2: (146, 147)}
+    assert rmap.servo_home_positions == {1: (144, 145), 2: (146, 147)}
 
 
 def test_invalid_config_raises() -> None:

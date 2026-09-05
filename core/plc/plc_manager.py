@@ -184,14 +184,34 @@ class PlcManager:
         self._heartbeat_value ^= 1
         self._write(self._map.heartbeat, [self._heartbeat_value])
 
+    def read_servo_home(self, camera_index: int) -> tuple[int, int]:
+        """Current servo home position for a camera's X and Y axes.
+
+        The PLC owns these values; a hole position is written relative to
+        them (see :mod:`core.plc.register_map`). Returns ``(0, 0)`` when the
+        camera has no servo-home registers configured, which makes the
+        encoding fall back to plain ``mm * position_scale``.
+        """
+        addresses = self._map.servo_home_positions.get(camera_index)
+        if addresses is None:
+            return 0, 0
+        x_address, y_address = addresses
+        if y_address == x_address + 1:  # contiguous pair -> one transaction
+            values = self._read(x_address, 2)
+            return values[0], values[1]
+        return self._read(x_address, 1)[0], self._read(y_address, 1)[0]
+
     def _write_position(
         self, camera_index: int, position: tuple[float, float] | None
     ) -> None:
-        """Write one camera's X/Y magnitudes and their sign registers.
+        """Write one camera's X/Y, biased by its servo home position.
 
-        ``position`` of ``None`` is the no-hole case: zeroed magnitudes and
-        :attr:`RegisterMap.SIGN_NONE` in both sign registers. Cameras with no
-        position (or no sign) addresses configured are skipped silently.
+        Reads the servo home registers first, so the value the PLC receives is
+        an absolute servo target: ``home + mm * position_scale``. ``position``
+        of ``None`` is the no-hole case and writes
+        :attr:`RegisterMap.NO_HOLE_RAW` to both registers instead — no servo
+        read is needed, and none is done. Cameras with no position addresses
+        configured are skipped silently.
         """
         addresses = self._map.camera_positions.get(camera_index)
         if addresses is None:
@@ -199,26 +219,16 @@ class PlcManager:
         x_address, y_address = addresses
         if position is None:
             x_raw = y_raw = RegisterMap.NO_HOLE_RAW
-            x_sign = y_sign = RegisterMap.SIGN_NONE
         else:
-            x_raw, x_sign = self._map.encode_position(position[0])
-            y_raw, y_sign = self._map.encode_position(position[1])
+            x_home, y_home = self.read_servo_home(camera_index)
+            x_raw = self._map.encode_position(position[0], x_home)
+            y_raw = self._map.encode_position(position[1], y_home)
 
         if y_address == x_address + 1:  # contiguous pair -> one transaction
             self._write(x_address, [x_raw, y_raw])
         else:
             self._write(x_address, [x_raw])
             self._write(y_address, [y_raw])
-
-        sign_addresses = self._map.camera_position_signs.get(camera_index)
-        if sign_addresses is None:
-            return
-        x_sign_address, y_sign_address = sign_addresses
-        if y_sign_address == x_sign_address + 1:
-            self._write(x_sign_address, [x_sign, y_sign])
-        else:
-            self._write(x_sign_address, [x_sign])
-            self._write(y_sign_address, [y_sign])
 
     def write_inspection_output(
         self,
@@ -228,7 +238,7 @@ class PlcManager:
     ) -> None:
         """Publish one complete inspection to the PLC.
 
-        Writes every camera's X/Y magnitude and sign (no-hole sentinel where
+        Writes every camera's X/Y as a servo target (no-hole sentinel where
         *positions* holds ``None``), then each camera's own GOOD/NG/ERROR
         verdict (``ERROR`` where *camera_results* holds nothing for that
         camera — not inspected this cycle), then the overall result code,
@@ -255,8 +265,8 @@ class PlcManager:
         """Publish a *single* camera's inspection to the PLC.
 
         The per-camera counterpart of :meth:`write_inspection_output`: writes
-        only this camera's X/Y magnitude and sign (no-hole sentinel when
-        *position* is ``None``) and its own result register, then raises its
+        only this camera's X/Y (no-hole sentinel when *position* is ``None``)
+        and its own result register, then raises its
         own vision_complete — the other cameras' registers and the overall
         result/vision_complete registers are left untouched, because the
         other cameras were not inspected this cycle and their last values
