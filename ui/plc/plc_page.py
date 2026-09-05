@@ -3,9 +3,10 @@
 Left: connection settings + full register map + scaling, with Test/Save/
 Reconnect. Right: live register viewer (auto-refresh while the page is
 visible) and manual read/write — writes require an admin login (toolbar
-Login button). Connection-level changes take effect after an application
-restart; the register map is re-read per save by the composition root's
-subscription.
+Login button). Saving writes plc.json (and the audit mirror); the running
+client, register map and poll worker are built once at startup, so every
+change on this page — connection *and* register addresses — needs an
+application restart to take effect.
 """
 
 from __future__ import annotations
@@ -115,10 +116,10 @@ class PlcPage(QWidget):
 
         reg_box = QGroupBox("Registers")
         reg_grid = QGridLayout(reg_box)
-        # Editable register addresses, keyed by their plc.json name. Addresses
-        # the operator has no reason to retype are deliberately absent and are
-        # carried through untouched by _collect(): machine_number and
-        # model_select are fixed by the PLC program, not by this station.
+        # Editable register addresses, keyed by their plc.json name.
+        # machine_number is deliberately absent — it is fixed by the PLC
+        # program and RegisterMap requires it, so _collect() carries it
+        # through untouched.
         reg_labels = {
             "trigger": "Trigger",
             "heartbeat": "Heartbeat",
@@ -129,11 +130,26 @@ class PlcPage(QWidget):
         for row, (key, label) in enumerate(reg_labels.items()):
             reg_grid.addWidget(QLabel(label), row, 0)
             reg_grid.addWidget(self._reg[key], row, 1)
+        # Machine-model select gets its own widget rather than a reg_labels
+        # entry because it is the one *optional* address: RegisterMap stores
+        # None for "feature not wired up", and 0 here means exactly that.
+        self._model_select = _reg_spin()
+        self._model_select.setSpecialValueText("Not used")
+        self._model_select.setToolTip(
+            "PLC → PC: machine-model code, polled every "
+            "model_poll_interval_ms. The profile whose PLC Code matches the "
+            "value read here is applied (Machine Models page). Set to 0 "
+            "(\"Not used\") to disable model switching — the register is "
+            "then never read."
+        )
+        model_row = len(reg_labels)
+        reg_grid.addWidget(QLabel("Machine Model Select"), model_row, 0)
+        reg_grid.addWidget(self._model_select, model_row, 1)
         # Two rows per camera: the inspection outputs it publishes, then the
         # handshake that lets the PLC run that camera on its own.
         self._cam_regs: dict[int, tuple[QSpinBox, QSpinBox, QSpinBox]] = {}
         self._cam_handshake: dict[int, tuple[QSpinBox, QSpinBox, QSpinBox]] = {}
-        first_camera_row = len(reg_labels)
+        first_camera_row = model_row + 1
         for position, camera in enumerate((1, 2, 3, 4)):
             row = first_camera_row + position * 2
             x_spin, y_spin, result_spin = _reg_spin(), _reg_spin(), _reg_spin()
@@ -194,7 +210,10 @@ class PlcPage(QWidget):
         buttons.addWidget(reconnect_btn)
         buttons.addWidget(save_btn)
         left.addLayout(buttons)
-        note = QLabel("Connection changes apply after application restart.")
+        note = QLabel(
+            "Connection and register-map changes apply after an "
+            "application restart."
+        )
         note.setProperty("class", "dim")
         left.addWidget(note)
         left.addStretch()
@@ -269,6 +288,8 @@ class PlcPage(QWidget):
         self._poll.setValue(int(connection.get("poll_interval_ms", 50)))
         for key, spin in self._reg.items():
             spin.setValue(int(registers.get(key, 0)))
+        # Absent/null in plc.json (feature off) shows as the 0 special value.
+        self._model_select.setValue(int(registers.get("model_select") or 0))
         camera_results = registers.get("camera_results", {})
         for camera, (x_spin, y_spin, result_spin) in self._cam_regs.items():
             addresses = registers.get("camera_positions", {}).get(str(camera), {})
@@ -312,11 +333,14 @@ class PlcPage(QWidget):
             "poll_interval_ms": self._poll.value(),
         }
         cfg["registers"] = {
-            # Keep addresses this page does not expose (machine_number,
-            # model_select) — rebuilding the block from the widgets alone
-            # would drop them, and machine_number is required by RegisterMap.
+            # Keep addresses this page does not expose (machine_number) —
+            # rebuilding the block from the widgets alone would drop them,
+            # and machine_number is required by RegisterMap.
             **cfg.get("registers", {}),
             **{key: spin.value() for key, spin in self._reg.items()},
+            # 0 in the spin box means "not wired up"; RegisterMap spells that
+            # None, and PlcManager.read_model_select then does no I/O at all.
+            "model_select": self._model_select.value() or None,
             "camera_positions": {
                 str(camera): {"x": x_spin.value(), "y": y_spin.value()}
                 for camera, (x_spin, y_spin, _result_spin) in self._cam_regs.items()
@@ -374,7 +398,10 @@ class PlcPage(QWidget):
             QMessageBox.warning(self, "Save", str(exc))
             return
         QMessageBox.information(
-            self, "Save", "PLC configuration saved.\nConnection changes apply after restart."
+            self,
+            "Save",
+            "PLC configuration saved.\n"
+            "Connection and register-map changes apply after restart.",
         )
 
     def _on_manual_write(self) -> None:
