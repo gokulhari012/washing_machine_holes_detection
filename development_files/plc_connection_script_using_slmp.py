@@ -16,9 +16,10 @@ from __future__ import annotations
 
 import socket
 
-PLC_IP = "192.168.3.20"
-PLC_PORT = 5007  # whatever port the SLMP connection was given in GX Works3
+PLC_IP = "192.168.3.100"
+# PLC_PORT = 5007  # whatever port the SLMP connection was given in GX Works3
 # PLC_PORT = 7920  # whatever port the SLMP connection was given in GX Works3
+PLC_PORT = 7029  # whatever port the SLMP connection was given in GX Works3
 TIMEOUT_S = 3.0
 
 WRITE_ADDRESS = 121  # D104
