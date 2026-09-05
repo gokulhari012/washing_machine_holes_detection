@@ -75,10 +75,10 @@
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 0,
-        "y": 0,
-        "width": 0,
-        "height": 0
+        "x": 1216,
+        "y": 1127,
+        "width": 1103,
+        "height": 754
       },
       "trigger_mode": "software",
       "basler": {

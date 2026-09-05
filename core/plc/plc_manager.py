@@ -171,6 +171,35 @@ class PlcManager:
     def camera_trigger_configured(self, camera_index: int) -> bool:
         return camera_index in self._map.camera_triggers
 
+    def clear_trigger(self) -> None:
+        """Acknowledge the global trigger by writing 0 back to it.
+
+        Called by the poll loop the moment the edge is detected, so a 0 here
+        means *received*. This is deliberately unlike
+        :meth:`clear_camera_trigger`, which is released only once that
+        camera's cycle has finished.
+        """
+        self._write(self._map.trigger, [0])
+
+    def clear_camera_trigger(self, camera_index: int) -> bool:
+        """Release one per-camera trigger by writing 0 back to it.
+
+        Called from :meth:`write_camera_inspection_output` once that camera's
+        inspection is finished and its results are on the wire — *not* when
+        the poll loop first saw the edge. A camera trigger still reading 1
+        therefore means that camera is mid-inspection. Each camera is released
+        on its own, independently of the global trigger and of every other
+        camera.
+
+        Returns False (no I/O) when the camera has no trigger register
+        configured, matching :meth:`read_camera_trigger`.
+        """
+        address = self._map.camera_triggers.get(camera_index)
+        if address is None:
+            return False
+        self._write(address, [0])
+        return True
+
     def read_model_select(self) -> int | None:
         """Current machine-model code, or ``None`` when the register is not
         configured (no I/O in that case — the feature is simply inert)."""
@@ -266,11 +295,20 @@ class PlcManager:
 
         The per-camera counterpart of :meth:`write_inspection_output`: writes
         only this camera's X/Y (no-hole sentinel when *position* is ``None``)
-        and its own result register, then raises its
-        own vision_complete — the other cameras' registers and the overall
-        result/vision_complete registers are left untouched, because the
-        other cameras were not inspected this cycle and their last values
+        and its own result register, then releases this camera's trigger and
+        raises its own vision_complete — the other cameras' registers and the
+        overall result/vision_complete registers are left untouched, because
+        the other cameras were not inspected this cycle and their last values
         still stand.
+
+        Write order: position → result → **trigger back to 0** →
+        vision_complete. The trigger is released here, at the end of the
+        cycle, rather than when the poll loop first saw it, so a camera
+        trigger sitting high means "this camera is still being inspected".
+        It is cleared just *before* vision_complete so that by the moment the
+        PLC is told the results are ready, the trigger it raised is already
+        released — vision_complete stays strictly last, because the PLC may
+        read everything the instant it goes high.
 
         Registers this camera has not been given are skipped silently, the
         same way :meth:`write_inspection_output` skips absent entries.
@@ -280,6 +318,8 @@ class PlcManager:
         result_address = self._map.camera_results.get(camera_index)
         if result_address is not None:
             self._write(result_address, [int(result)])
+
+        self.clear_camera_trigger(camera_index)
 
         complete_address = self._map.camera_vision_complete.get(camera_index)
         if complete_address is not None:

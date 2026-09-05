@@ -210,7 +210,7 @@ centre — `PlcManager.read_servo_home` returns `(0, 0)` rather than failing.
 
 | Addr | Dir | Purpose |
 |---|---|---|
-| 100 | PLC→PC | Trigger (0→1 rising edge starts a cycle) |
+| 100 | PLC→PC | Trigger (0→1 rising edge starts a cycle; **PC writes 0 back on detection**) |
 | 101 | PLC→PC | Machine number |
 | 102 | PC→PLC | Heartbeat (toggles every 500 ms — PLC watchdogs the PC) |
 | 103 | PLC→PC | **`model_select`** — machine-model code, polled every 1000 ms |
@@ -219,7 +219,7 @@ centre — `PlcManager.read_servo_home` returns `(0, 0)` rather than failing.
 | 119 | PC→PLC | Vision complete (PC sets 1; PLC reads, resets 119 + trigger) |
 | 120–127 | PC→PLC | **`camera_jog`** — physical camera *mount* X/Y (actuators) |
 | 128–131 | PC→PLC | **`camera_results`** — per-camera GOOD/NG/ERROR |
-| 132–135 | PLC→PC | **`camera_triggers`** — inspect camera N alone (0→1 edge) |
+| 132–135 | PLC→PC | **`camera_triggers`** — inspect camera N alone (0→1 edge; PC writes 0 back **at end of cycle**) |
 | 136–139 | PC→PLC | **`camera_vision_complete`** — camera N's own completion handshake |
 | 140–143 | PC→PLC | **`camera_status`** — 1 = camera N usable, 0 = disconnected/failing |
 | 144–151 | PLC→PC | **`servo_home_positions`** — servo 1–4 home X/Y, the datum for 110–117 |
@@ -238,7 +238,7 @@ failing to grab reports 0**, not 1 — the safe direction for a PLC gating the s
 cameras' registers and the overall 118/119 are deliberately left untouched, because
 those cameras were not inspected and their last values still stand. Per-camera
 triggers are polled on every 50 ms tick with the same baseline-after-reconnect rule as
-the global trigger.
+the global trigger, but are released at a different point in the cycle (see above).
 
 `servo_home_positions` (144–151) pairs one-to-one with `camera_positions`: 144/145
 hold servo 1's home X/Y, 146/147 servo 2's, and so on. Unlike every other
@@ -268,11 +268,42 @@ Heartbeat loss lets the PLC stop the line. On any vision fault the PC writes
 result 3 (ERROR) so the PLC never dead-waits. `PlcManager` auto-reconnects with
 escalating backoff (1s/2s/5s/10s), driven by `ensure_connected()` on each poll tick.
 
+### Trigger acknowledgement — the PC clears its own triggers
+The PC writes **0** back to every trigger register it acts on, so the PLC only has
+to raise one, never lower it. A PLC program that still lowers its own stays correct;
+it just writes 0 over a 0. Each register is independent — releasing 132 never
+touches 100 or 133. **The two kinds of trigger are cleared at different moments, on
+purpose:**
+
+| Register | Cleared by | When | So a `1` means |
+|---|---|---|---|
+| 100 (global) | `PlcPollWorker` → `PlcManager.clear_trigger` | the 50 ms tick that detects the edge, *before* the cycle runs | not yet seen |
+| 132–135 (per camera) | `PlcManager.write_camera_inspection_output` → `clear_camera_trigger` | end of that camera's cycle, just before its vision_complete | that camera is **mid-inspection** |
+
+For the global trigger, **0 means *received*, not *finished*** — wait on 119. For a
+camera trigger, 0 does mean that camera finished, but 136+N is still the signal to
+read results on, because it is written last and the PLC may read the instant it
+goes high.
+
+Two consequences that are easy to break:
+- The global trigger's clear **re-baselines the edge state on the 0 it wrote**, not
+  on the 1 just read — otherwise the next 1 looks like a continuation of the old
+  high and the following cycle never fires.
+- A camera trigger is baselined on the **1** it was read at, precisely so the
+  end-of-cycle release registers as a falling edge and the PLC's next 1 as a fresh
+  rising one. Holding it high across many poll ticks does not re-fire the cycle.
+- The camera release happens on the **inspection thread**, not the poll thread. That
+  is safe (the client locks per transaction), but it means a failed PLC write leaves
+  the trigger high; the link is down in that case anyway, and the
+  baseline-after-reconnect rule stops it re-firing on recovery.
+
 ### Edge detection subtlety
 After a (re)connect, `PlcPollWorker` takes the first trigger value as a **baseline,
-never an edge** — a trigger frozen high cannot re-fire. `model_select` behaves the
-*opposite* way on purpose: the first read after reconnect **does** fire, so whichever
-model is already selected loads immediately.
+never an edge** — a trigger frozen high cannot re-fire. Such a trigger is
+deliberately **not** acknowledged either: writing 0 to it would fake a handshake
+that never happened. `model_select` behaves the *opposite* way on purpose: the first
+read after reconnect **does** fire, so whichever model is already selected loads
+immediately.
 
 ### Protocols
 `simulated` (**current**), `modbus_tcp` (pymodbus, lazy import), `slmp`

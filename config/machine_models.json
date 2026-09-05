@@ -7,10 +7,10 @@
       "cameras": {
         "1": {
           "roi": {
-            "x": 1125,
-            "y": 1655,
-            "width": 1255,
-            "height": 935
+            "x": 0,
+            "y": 0,
+            "width": 0,
+            "height": 0
           },
           "exposure_us": 50000,
           "gain_db": 0.0,
@@ -37,17 +37,17 @@
         },
         "3": {
           "roi": {
-            "x": 1158,
-            "y": 1694,
-            "width": 1275,
-            "height": 1217
+            "x": 1216,
+            "y": 1127,
+            "width": 1103,
+            "height": 754
           },
-          "exposure_us": 50000,
+          "exposure_us": 15000,
           "gain_db": 0.0,
           "gamma": 1.0,
           "brightness": 0,
-          "width": 4024,
-          "height": 3036,
+          "width": 5496,
+          "height": 3672,
           "trigger_mode": "software"
         },
         "4": {
@@ -113,7 +113,8 @@
       },
       "created_by": "admin",
       "created_at": "2026-08-25T10:06:50",
-      "updated_at": "2026-08-25T10:06:50"
+      "updated_at": "2026-09-06T01:32:10",
+      "updated_by": "admin"
     },
     {
       "id": 3,

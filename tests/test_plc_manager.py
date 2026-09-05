@@ -159,6 +159,34 @@ def test_write_inspection_output_defaults_missing_camera_result_to_error(results
     assert client.get_register(129) == int(PlcResultCode.ERROR)  # camera 2 not in camera_results
 
 
+def test_clear_trigger_writes_zero(stack) -> None:
+    client, manager, rmap = stack
+    client.set_register(rmap.trigger, 1)
+    manager.clear_trigger()
+    assert client.get_register(rmap.trigger) == 0
+
+
+def test_clear_camera_trigger_writes_zero_to_that_camera_only() -> None:
+    config = make_config()
+    config["registers"]["camera_triggers"] = {"1": 132, "2": 133}
+    rmap = RegisterMap.from_config(config)
+    client = SimulatedPlc(register_map=rmap)
+    manager = PlcManager(client, rmap)
+    manager.connect()
+
+    client.set_register(132, 1)
+    client.set_register(133, 1)
+    assert manager.clear_camera_trigger(1) is True
+    assert client.get_register(132) == 0
+    assert client.get_register(133) == 1  # untouched
+
+
+def test_clear_camera_trigger_is_inert_when_unconfigured(stack) -> None:
+    """No trigger register for that camera means no I/O, not an error."""
+    _client, manager, _rmap = stack
+    assert manager.clear_camera_trigger(1) is False
+
+
 def test_read_model_select_returns_none_when_unconfigured(stack) -> None:
     _client, manager, _rmap = stack
     assert manager.read_model_select() is None

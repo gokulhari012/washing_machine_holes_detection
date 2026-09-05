@@ -100,6 +100,53 @@ def test_camera_write_uses_no_hole_sentinel(camera_stack) -> None:
     assert client.read_registers(128, 1)[0] == int(PlcResultCode.NG)
 
 
+def test_completion_releases_that_camera_trigger(camera_stack) -> None:
+    """The trigger is held for the whole cycle and dropped at the end of it."""
+    client, manager, _rmap = camera_stack
+    client.set_register(132, 1)  # camera 1 trigger raised by the PLC
+    client.set_register(133, 1)  # camera 2's, still mid-cycle
+
+    manager.write_camera_inspection_output(1, (1.0, 1.0), PlcResultCode.GOOD)
+
+    assert client.read_registers(132, 1)[0] == 0
+    assert client.read_registers(133, 1)[0] == 1  # untouched
+    assert client.read_registers(136, 1)[0] == 1  # this camera's completion
+
+
+def test_trigger_is_released_before_vision_complete_goes_high(camera_stack) -> None:
+    """The PLC may read everything the instant completion goes high, so the
+    trigger it raised must already be released by then."""
+    client, manager, _rmap = camera_stack
+    client.set_register(132, 1)
+    seen: list[tuple[int, int]] = []
+
+    original = client.write_register  # single-value writes take this path
+
+    def recording(address, value):
+        original(address, value)
+        if address in (132, 136):
+            seen.append((address, value))
+
+    client.write_register = recording  # type: ignore[method-assign]
+    manager.write_camera_inspection_output(1, (1.0, 1.0), PlcResultCode.GOOD)
+
+    assert seen == [(132, 0), (136, 1)]
+
+
+def test_completion_release_is_inert_without_a_trigger_register() -> None:
+    """A camera with no trigger register configured still completes normally."""
+    config = make_config()
+    config["registers"]["camera_results"] = {"1": 128}
+    config["registers"]["camera_vision_complete"] = {"1": 136}
+    rmap = RegisterMap.from_config(config)  # no camera_triggers at all
+    client = SimulatedPlc(register_map=rmap)
+    manager = PlcManager(client, rmap)
+    manager.connect()
+
+    manager.write_camera_inspection_output(1, (1.0, 1.0), PlcResultCode.GOOD)
+    assert client.read_registers(136, 1)[0] == 1
+
+
 def test_read_camera_trigger_is_inert_when_unconfigured(camera_stack) -> None:
     _client, manager, _rmap = camera_stack
     assert manager.read_camera_trigger(1) == 0

@@ -7,9 +7,11 @@ Runs a tight loop (default 50 ms) that:
 2. reads the trigger register and emits :attr:`trigger_detected` exactly once
    per **rising edge** — after a (re)connect the first value read is taken as
    baseline, never as an edge, so a trigger frozen high cannot re-fire,
+   and writes 0 back to the register to acknowledge it,
 3. reads each configured per-camera trigger register and emits
    :attr:`camera_trigger_detected` on its **rising edge**, to inspect that one
-   camera only (same baseline-after-reconnect rule as the global trigger),
+   camera only (same baseline-after-reconnect rule as the global trigger);
+   unlike the global trigger it is *not* cleared here — see below,
 4. toggles the heartbeat register (default every 500 ms) so the PLC can
    watchdog the PC,
 5. publishes each camera's availability to its status register whenever it
@@ -19,6 +21,24 @@ Runs a tight loop (default 50 ms) that:
    every value seen that differs from the last — *including* the first read
    after a (re)connect, unlike the trigger: we want whichever model is
    already selected to load right away, not wait for the PLC to toggle it.
+
+Trigger acknowledgement
+-----------------------
+The PC clears every trigger register it acts on, so the PLC only has to raise
+one, never lower it. A PLC program that still clears its own triggers stays
+correct — it is simply writing 0 over a 0. *When* the 0 is written differs
+between the two kinds of trigger, on purpose:
+
+* the **global trigger** is cleared here, on the tick that detects the edge
+  and before the inspection has run, so a 0 means *received*. Completion is
+  the separate signal on vision_complete, which is what the PLC waits on.
+* a **per-camera trigger** is cleared at the *end* of that camera's cycle, by
+  ``PlcManager.write_camera_inspection_output`` on the inspection thread, just
+  before that camera's vision_complete goes high. A camera trigger still
+  reading 1 therefore means that camera is mid-inspection.
+
+Each register is handled independently: releasing camera 2's trigger touches
+neither camera 3's nor the global one.
 
 The inspection itself runs on the InspectionWorker — this loop must never be
 blocked for longer than one poll interval, or the heartbeat would jitter.
@@ -105,6 +125,14 @@ class PlcPollWorker(QThread):
                             "Trigger edge detected (machine %d)", machine_number
                         )
                         self.trigger_detected.emit(machine_number)
+                        # Acknowledge immediately: the PLC only has to raise
+                        # the trigger, and the register is free for the next
+                        # cycle right away. The value we just read is stale
+                        # after this, so baseline on the 0 we wrote rather
+                        # than on `value` — otherwise the next 1 would look
+                        # like a continuation, not an edge.
+                        self._manager.clear_trigger()
+                        value = 0
                     self._last_trigger = value
 
                     self._poll_camera_triggers()
@@ -166,6 +194,11 @@ class PlcPollWorker(QThread):
                     machine_number,
                 )
                 self.camera_trigger_detected.emit(camera_index, machine_number)
+                # No acknowledgement here: a camera trigger is released at the
+                # *end* of its cycle, by write_camera_inspection_output on the
+                # inspection thread. Baselining on the 1 we just read is what
+                # makes that work — the release then reads as a falling edge,
+                # and the PLC's next 1 as a fresh rising one.
             self._last_camera_triggers[camera_index] = value
 
     def _rebaseline_camera_triggers(self) -> None:

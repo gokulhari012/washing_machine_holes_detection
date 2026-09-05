@@ -48,7 +48,7 @@ pytest
 
    | Addr | Direction | Purpose |
    |------|-----------|---------|
-   | 100  | PLC → PC  | Trigger (0→1 rising edge starts an inspection) |
+   | 100  | PLC → PC  | Trigger (0→1 rising edge starts an inspection; the PC writes 0 back to acknowledge it) |
    | 101  | PLC → PC  | Machine number |
    | 102  | PC → PLC  | Heartbeat (toggles every 500 ms) |
    | 110–117 | PC → PLC | Camera 1–4 hole X/Y as a servo target (see below); `0` = no hole |
@@ -65,6 +65,14 @@ pytest
 
    The PC toggles the heartbeat so the PLC can watchdog it; on any vision
    fault the PC writes result 3 (ERROR) so the PLC never dead-waits.
+
+   **Triggers are cleared by the PC** — the PLC only needs to raise one, never
+   lower it. The global trigger (100) is cleared within one poll tick of being
+   seen, *before* the inspection runs, so a `0` there means *received*, not
+   *finished*; wait on vision complete (119) before reading results. A
+   per-camera trigger (132–135) is instead released at the **end** of that
+   camera's cycle, just before its own vision complete (136–139) goes high, so
+   a camera trigger still reading `1` means that camera is mid-inspection.
 
 2. **Cameras** — on the Cameras page set each camera's driver:
    `usb` (OpenCV/DirectShow, `connection_id` = device index), `hikrobot`
