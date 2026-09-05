@@ -51,9 +51,16 @@ pytest
    | 100  | PLC → PC  | Trigger (0→1 rising edge starts an inspection) |
    | 101  | PLC → PC  | Machine number |
    | 102  | PC → PLC  | Heartbeat (toggles every 500 ms) |
-   | 110–117 | PC → PLC | Camera 1–4 hole X/Y. `raw = mm × 10 + 10000`; raw `0` = no hole |
+   | 110–117 | PC → PLC | Camera 1–4 hole X/Y magnitude. `raw = abs(mm) × 10`, always positive |
    | 118  | PC → PLC  | Result: 1 = GOOD, 2 = NG, 3 = ERROR |
    | 119  | PC → PLC  | Vision complete (PC sets 1; PLC reads results, resets 119 and the trigger) |
+   | 144–151 | PC → PLC | Sign of camera 1–4's X/Y: `1` = negative, `2` = positive, `0` = no hole |
+
+   Registers are unsigned, so a coordinate is carried as a positive magnitude
+   in 110–117 plus its sign in 144–151 — e.g. −3.2 mm reads as `32` in the
+   magnitude register and `1` in its sign register. Because `0` is a valid
+   magnitude (a hole exactly on centre), "no hole found" is signalled by `0`
+   in the **sign** register, not by the magnitude.
 
    The PC toggles the heartbeat so the PLC can watchdog it; on any vision
    fault the PC writes result 3 (ERROR) so the PLC never dead-waits.

@@ -19,6 +19,20 @@ def stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
 
 
 @pytest.fixture()
+def signs_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
+    config = make_config()
+    config["registers"]["camera_position_signs"] = {
+        "1": {"x": 144, "y": 145},
+        "2": {"x": 146, "y": 147},
+    }
+    rmap = RegisterMap.from_config(config)
+    client = SimulatedPlc(register_map=rmap)
+    manager = PlcManager(client, rmap)
+    manager.connect()
+    return client, manager, rmap
+
+
+@pytest.fixture()
 def results_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
     config = make_config()
     config["registers"]["camera_results"] = {"1": 128, "2": 129}
@@ -66,11 +80,39 @@ def test_write_inspection_output(stack) -> None:
         {1: PlcResultCode.GOOD, 2: PlcResultCode.NG, 3: PlcResultCode.GOOD, 4: PlcResultCode.GOOD},
         PlcResultCode.NG,
     )
-    assert client.get_register(110) == 10125
-    assert client.get_register(111) == 9968
+    assert client.get_register(110) == 125  # 12.5 mm as a positive magnitude
+    assert client.get_register(111) == 32  # 3.2 mm; the minus sign lives elsewhere
     assert client.get_register(112) == 0  # no-hole sentinel
     assert client.get_register(rmap.result) == int(PlcResultCode.NG)
     assert client.get_register(rmap.vision_complete) == 1
+
+
+def test_write_inspection_output_writes_position_signs(signs_stack) -> None:
+    client, manager, _rmap = signs_stack
+    manager.write_inspection_output(
+        {1: (12.5, -3.2), 2: None},
+        {1: PlcResultCode.GOOD, 2: PlcResultCode.NG},
+        PlcResultCode.NG,
+    )
+    assert client.get_register(110) == 125
+    assert client.get_register(144) == RegisterMap.SIGN_POSITIVE
+    assert client.get_register(111) == 32
+    assert client.get_register(145) == RegisterMap.SIGN_NEGATIVE
+    # Camera 2 found nothing: zeroed magnitudes *and* SIGN_NONE, so the PLC
+    # cannot mistake it for a hole sitting exactly on centre.
+    assert client.get_register(112) == 0
+    assert client.get_register(146) == RegisterMap.SIGN_NONE
+    assert client.get_register(147) == RegisterMap.SIGN_NONE
+
+
+def test_write_inspection_output_without_sign_registers_still_writes(stack) -> None:
+    """A plc.json with no sign block is not an error — magnitudes still go out."""
+    client, manager, _rmap = stack
+    manager.write_inspection_output(
+        {1: (12.5, -3.2)}, {1: PlcResultCode.GOOD}, PlcResultCode.GOOD
+    )
+    assert client.get_register(110) == 125
+    assert client.get_register(111) == 32
 
 
 def test_write_inspection_output_writes_per_camera_results(results_stack) -> None:

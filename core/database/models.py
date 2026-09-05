@@ -148,7 +148,6 @@ class PlcConfiguration(Base):
     result_register: Mapped[int] = mapped_column(Integer, default=118)
     vision_complete_register: Mapped[int] = mapped_column(Integer, default=119)
     position_scale: Mapped[int] = mapped_column(Integer, default=10)
-    position_offset: Mapped[int] = mapped_column(Integer, default=10000)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_local, onupdate=now_local)
 
 

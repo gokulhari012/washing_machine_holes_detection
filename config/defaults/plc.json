@@ -39,6 +39,24 @@
         "y": 117
       }
     },
+    "camera_position_signs": {
+      "1": {
+        "x": 144,
+        "y": 145
+      },
+      "2": {
+        "x": 146,
+        "y": 147
+      },
+      "3": {
+        "x": 148,
+        "y": 149
+      },
+      "4": {
+        "x": 150,
+        "y": 151
+      }
+    },
     "camera_results": {
       "1": 128,
       "2": 129,
@@ -67,8 +85,7 @@
     }
   },
   "scaling": {
-    "position_scale": 10,
-    "position_offset": 10000
+    "position_scale": 10
   },
   "camera_jog": {
     "step": 10,

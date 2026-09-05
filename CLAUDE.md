@@ -185,12 +185,22 @@ tolerance check disabled. The system runs out of the box.
 
 ### Position encoding (`core/plc/register_map.py`)
 
+A holding register is unsigned, so each coordinate takes **two** registers — an
+unsigned magnitude and a separate sign register:
+
 ```
-raw = round(mm × position_scale) + position_offset      # default ×10 +10000
+magnitude = round(abs(mm) × position_scale)     # default ×10, clamped to uint16
+sign      = 1 (negative) | 2 (positive)
 ```
-Range with defaults: −1000.0 … +5553.5 mm. **Raw `0` is the no-hole sentinel**
-(it would decode to −1000.0 mm, outside any real field of view). Writes are clamped
-to uint16.
+Range with the default scale: 0.0 … 6553.5 mm either side of zero. There is no
+position offset — it was removed so the PLC reads a plain millimetre value with no
+arithmetic to undo.
+
+**Sign `0` (`SIGN_NONE`) is the no-hole sentinel**, written to both sign registers
+with the magnitudes zeroed. Zero is a legitimate magnitude (a hole exactly on
+centre), so the sign register is the *only* unambiguous place to say "no
+measurement". A station with no sign registers wired up therefore reports no-hole
+as a plain 0/0, indistinguishable from a centred hole — wire the sign registers.
 
 ### Register map — live `config/plc.json`
 
@@ -200,7 +210,7 @@ to uint16.
 | 101 | PLC→PC | Machine number |
 | 102 | PC→PLC | Heartbeat (toggles every 500 ms — PLC watchdogs the PC) |
 | 103 | PLC→PC | **`model_select`** — machine-model code, polled every 1000 ms |
-| 110–117 | PC→PLC | Camera 1–4 hole X/Y (encoded as above) |
+| 110–117 | PC→PLC | Camera 1–4 hole X/Y — unsigned magnitude (encoded as above) |
 | 118 | PC→PLC | Overall result: 1=GOOD, 2=NG, 3=ERROR |
 | 119 | PC→PLC | Vision complete (PC sets 1; PLC reads, resets 119 + trigger) |
 | 120–127 | PC→PLC | **`camera_jog`** — physical camera *mount* X/Y (actuators) |
@@ -208,6 +218,7 @@ to uint16.
 | 132–135 | PLC→PC | **`camera_triggers`** — inspect camera N alone (0→1 edge) |
 | 136–139 | PC→PLC | **`camera_vision_complete`** — camera N's own completion handshake |
 | 140–143 | PC→PLC | **`camera_status`** — 1 = camera N usable, 0 = disconnected/failing |
+| 144–151 | PC→PLC | **`camera_position_signs`** — sign of 110–117: 1=neg, 2=pos, 0=no hole |
 
 Bolded rows are **newer than [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, which documents only 100–119.
 
@@ -225,14 +236,22 @@ those cameras were not inspected and their last values still stand. Per-camera
 triggers are polled on every 50 ms tick with the same baseline-after-reconnect rule as
 the global trigger.
 
+`camera_position_signs` (144–151) pairs one-to-one with `camera_positions`: 144/145
+carry the sign of camera 1's X/Y, 146/147 camera 2's, and so on. It is optional per
+camera — `RegisterMap.camera_position_signs` simply has no entry, and
+`PlcManager._write_position` skips the sign write — so an older `plc.json` keeps
+loading. It is written in the same transaction as the magnitudes when the pair is
+contiguous, immediately after them.
+
 Do not confuse `camera_positions` (110–117, the *detected hole* coordinate, an
 inspection output) with `camera_jog` (120–127, the *camera mount's* physical
 position, driven by PLC actuators). Both are per-camera X/Y pairs; they mean
 completely different things.
 
-Write order in `write_inspection_output` matters: positions → per-camera results →
-overall result → `vision_complete=1` last, because the PLC may read the moment
-`vision_complete` goes high. Contiguous X/Y pairs are written in one transaction.
+Write order in `write_inspection_output` matters: positions (magnitudes then signs)
+→ per-camera results → overall result → `vision_complete=1` last, because the PLC may
+read the moment `vision_complete` goes high. Contiguous X/Y pairs are written in one
+transaction.
 
 ### Fault policy
 Heartbeat loss lets the PLC stop the line. On any vision fault the PC writes

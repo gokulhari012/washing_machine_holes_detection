@@ -129,7 +129,6 @@ class PlcService:
             "result_register": int(registers.get("result", 0)),
             "vision_complete_register": int(registers.get("vision_complete", 0)),
             "position_scale": int(scaling.get("position_scale", 10)),
-            "position_offset": int(scaling.get("position_offset", 10000)),
         }
         for index in (1, 2, 3, 4):
             addresses = camera_positions.get(str(index), {})

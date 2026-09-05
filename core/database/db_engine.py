@@ -22,7 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
-from sqlalchemy import create_engine, event
+from sqlalchemy import create_engine, event, text
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -71,9 +71,34 @@ class DatabaseEngine:
         """Create any missing tables (idempotent, called once at startup)."""
         try:
             Base.metadata.create_all(self._engine)
+            self._drop_legacy_columns()
         except SQLAlchemyError as exc:
             raise DatabaseError(f"Schema creation failed: {exc}") from exc
         logger.info("Database schema verified at %s", self._db_path)
+
+    # Columns removed from the ORM that may still exist in a database created
+    # by an older build. ``create_all`` only ever *adds* tables, and a stale
+    # NOT NULL column with no SQL-level default makes every later insert fail,
+    # so they have to go. Keep entries here forever-ish: the drop is a no-op
+    # once the column is gone.
+    _LEGACY_COLUMNS: tuple[tuple[str, str], ...] = (
+        # Positions used to be biased by a fixed offset; the sign now travels
+        # in its own register instead (see core/plc/register_map.py).
+        ("plc_configurations", "position_offset"),
+    )
+
+    def _drop_legacy_columns(self) -> None:
+        """Drop retired columns left behind by an older schema (idempotent)."""
+        with self._engine.begin() as connection:
+            for table, column in self._LEGACY_COLUMNS:
+                lookup = text(
+                    f"SELECT 1 FROM pragma_table_info('{table}') WHERE name = :column"
+                )
+                present = connection.execute(lookup, {"column": column}).first()
+                if present is None:
+                    continue
+                connection.execute(text(f'ALTER TABLE "{table}" DROP COLUMN "{column}"'))
+                logger.info("Dropped legacy column %s.%s", table, column)
 
     # --------------------------------------------------------------- sessions
     @contextmanager

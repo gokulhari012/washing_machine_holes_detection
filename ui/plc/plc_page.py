@@ -145,17 +145,37 @@ class PlcPage(QWidget):
         model_row = len(reg_labels)
         reg_grid.addWidget(QLabel("Machine Model Select"), model_row, 0)
         reg_grid.addWidget(self._model_select, model_row, 1)
-        # Two rows per camera: the inspection outputs it publishes, then the
-        # handshake that lets the PLC run that camera on its own.
+        # Three rows per camera: the inspection outputs it publishes, the sign
+        # of those coordinates, then the handshake that lets the PLC run that
+        # camera on its own.
         self._cam_regs: dict[int, tuple[QSpinBox, QSpinBox, QSpinBox]] = {}
+        self._cam_signs: dict[int, tuple[QSpinBox, QSpinBox]] = {}
         self._cam_handshake: dict[int, tuple[QSpinBox, QSpinBox, QSpinBox]] = {}
+        rows_per_camera = 3
         first_camera_row = model_row + 1
         for position, camera in enumerate((1, 2, 3, 4)):
-            row = first_camera_row + position * 2
+            row = first_camera_row + position * rows_per_camera
             x_spin, y_spin, result_spin = _reg_spin(), _reg_spin(), _reg_spin()
+            for spin in (x_spin, y_spin):
+                spin.setToolTip(
+                    "PC → PLC: hole offset from the image centre in tenths of "
+                    "a millimetre, always positive — the sign lives in the "
+                    "sign register on the row below"
+                )
             self._cam_regs[camera] = (x_spin, y_spin, result_spin)
             reg_grid.addWidget(QLabel(f"Camera {camera} X / Y / Result"), row, 0)
             reg_grid.addWidget(_row_of(x_spin, y_spin, result_spin), row, 1)
+
+            x_sign_spin, y_sign_spin = _reg_spin(), _reg_spin()
+            for spin in (x_sign_spin, y_sign_spin):
+                spin.setToolTip(
+                    "PC → PLC: sign of the coordinate on the row above — "
+                    "1 = negative, 2 = positive, 0 = no hole found "
+                    "(the magnitude beside it is then meaningless)"
+                )
+            self._cam_signs[camera] = (x_sign_spin, y_sign_spin)
+            reg_grid.addWidget(QLabel(f"Camera {camera} X Sign / Y Sign"), row + 1, 0)
+            reg_grid.addWidget(_row_of(x_sign_spin, y_sign_spin), row + 1, 1)
 
             trigger_spin, complete_spin, status_spin = (
                 _reg_spin(), _reg_spin(), _reg_spin()
@@ -166,18 +186,19 @@ class PlcPage(QWidget):
             )
             self._cam_handshake[camera] = (trigger_spin, complete_spin, status_spin)
             reg_grid.addWidget(
-                QLabel(f"Camera {camera} Trigger / Vision Complete / Status"), row + 1, 0
+                QLabel(f"Camera {camera} Trigger / Vision Complete / Status"), row + 2, 0
             )
             reg_grid.addWidget(
-                _row_of(trigger_spin, complete_spin, status_spin), row + 1, 1
+                _row_of(trigger_spin, complete_spin, status_spin), row + 2, 1
             )
         self._scale = _reg_spin(10)
-        self._offset = _reg_spin(10000)
-        scale_row = first_camera_row + len(self._cam_regs) * 2
+        self._scale.setToolTip(
+            "Millimetres are multiplied by this before being written "
+            "(10 = one decimal place)"
+        )
+        scale_row = first_camera_row + len(self._cam_regs) * rows_per_camera
         reg_grid.addWidget(QLabel("Position Scale"), scale_row, 0)
         reg_grid.addWidget(self._scale, scale_row, 1)
-        reg_grid.addWidget(QLabel("Position Offset"), scale_row + 1, 0)
-        reg_grid.addWidget(self._offset, scale_row + 1, 1)
         left.addWidget(reg_box)
 
         jog_box = QGroupBox("Camera Jog Registers")
@@ -296,6 +317,11 @@ class PlcPage(QWidget):
             x_spin.setValue(int(addresses.get("x", 0)))
             y_spin.setValue(int(addresses.get("y", 0)))
             result_spin.setValue(int(camera_results.get(str(camera), 0)))
+        camera_signs = registers.get("camera_position_signs", {})
+        for camera, (x_sign_spin, y_sign_spin) in self._cam_signs.items():
+            addresses = camera_signs.get(str(camera), {})
+            x_sign_spin.setValue(int(addresses.get("x", 0)))
+            y_sign_spin.setValue(int(addresses.get("y", 0)))
         camera_triggers = registers.get("camera_triggers", {})
         camera_complete = registers.get("camera_vision_complete", {})
         camera_status = registers.get("camera_status", {})
@@ -304,7 +330,6 @@ class PlcPage(QWidget):
             complete_spin.setValue(int(camera_complete.get(str(camera), 0)))
             status_spin.setValue(int(camera_status.get(str(camera), 0)))
         self._scale.setValue(int(scaling.get("position_scale", 10)))
-        self._offset.setValue(int(scaling.get("position_offset", 10000)))
         jog_cfg = cfg.get("camera_jog", {})
         jog_registers = jog_cfg.get("registers", {})
         for camera, fields in self._jog_regs.items():
@@ -345,6 +370,10 @@ class PlcPage(QWidget):
                 str(camera): {"x": x_spin.value(), "y": y_spin.value()}
                 for camera, (x_spin, y_spin, _result_spin) in self._cam_regs.items()
             },
+            "camera_position_signs": {
+                str(camera): {"x": x_sign_spin.value(), "y": y_sign_spin.value()}
+                for camera, (x_sign_spin, y_sign_spin) in self._cam_signs.items()
+            },
             "camera_results": {
                 str(camera): result_spin.value()
                 for camera, (_x_spin, _y_spin, result_spin) in self._cam_regs.items()
@@ -362,10 +391,7 @@ class PlcPage(QWidget):
                 for camera, spins in self._cam_handshake.items()
             },
         }
-        cfg["scaling"] = {
-            "position_scale": self._scale.value(),
-            "position_offset": self._offset.value(),
-        }
+        cfg["scaling"] = {"position_scale": self._scale.value()}
         cfg["camera_jog"] = {
             "step": self._jog_step.value(),
             "registers": {
