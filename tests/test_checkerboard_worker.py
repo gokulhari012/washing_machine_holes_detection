@@ -9,10 +9,11 @@ control.
 
 Two properties keep that from coming back, and both are asserted here:
 
-- the per-tick **screening** pass runs on a copy no larger than
-  :data:`SCREEN_MAX_DIM`, so it stays cheap whatever the sensor size;
-- the expensive full-resolution sub-pixel pass runs only for a frame actually
-  being kept as a view, and its corners are reported in full-resolution pixels.
+- **no** corner search — screening or kept view — runs on a copy larger than
+  :data:`SCREEN_MAX_DIM`, so scanning stays cheap whatever the sensor size;
+- the kept view's corners are nonetheless refined sub-pixel against the
+  full-resolution frame and reported in full-resolution pixels, so the
+  calibration is fitted in the actual image's coordinate basis.
 
 Following ``test_plc_poll_worker``: ``run()`` is driven on a plain Python
 thread and stopped through the same stop event, and signals are connected
@@ -83,34 +84,43 @@ def drive(worker: CheckerboardScanWorker, timeout: float = 60.0) -> threading.Th
     return thread
 
 
-def test_screening_runs_on_a_downscaled_copy(full_frame, monkeypatch):
-    """The per-tick board search must never touch the full-resolution frame.
+def test_no_corner_search_runs_at_full_resolution(full_frame, monkeypatch):
+    """Neither the per-tick screen nor the kept view may search the full frame.
 
     This is the freeze itself: at 4024x3036 that call costs about a second,
-    which a 250 ms cadence cannot absorb.
+    which a 250 ms cadence cannot absorb. Both passes therefore search a copy
+    bounded by ``SCREEN_MAX_DIM``; accuracy is preserved by the sub-pixel
+    refinement, asserted below to still run against the full frame.
     """
-    shapes: list[tuple[tuple[int, int], bool]] = []
-    real = cv2.findChessboardCorners
+    search_shapes: list[tuple[int, int]] = []
+    refine_shapes: list[tuple[int, int]] = []
+    real_find = cv2.findChessboardCorners
+    real_subpix = cv2.cornerSubPix
 
-    def recording(image, pattern_size, flags=0, **kwargs):
-        shapes.append((image.shape[:2], bool(flags & cv2.CALIB_CB_FAST_CHECK)))
-        return real(image, pattern_size, flags=flags, **kwargs)
+    def recording_find(image, pattern_size, flags=0, **kwargs):
+        search_shapes.append(image.shape[:2])
+        return real_find(image, pattern_size, flags=flags, **kwargs)
 
-    monkeypatch.setattr(cv2, "findChessboardCorners", recording)
+    def recording_subpix(image, corners, *args, **kwargs):
+        refine_shapes.append(image.shape[:2])
+        return real_subpix(image, corners, *args, **kwargs)
+
+    monkeypatch.setattr(cv2, "findChessboardCorners", recording_find)
+    monkeypatch.setattr(cv2, "cornerSubPix", recording_subpix)
 
     worker = make_worker(lambda: full_frame, max_views=1)
     drive(worker)
 
-    screening = [shape for shape, fast_check in shapes if fast_check]
-    assert screening, "no screening pass ran"
-    for height, width in screening:
+    assert search_shapes, "no board search ran"
+    for height, width in search_shapes:
         assert max(height, width) <= SCREEN_MAX_DIM, (
-            f"screening ran at {width}x{height} — full-resolution search on the "
-            "GUI cadence is what froze the page"
+            f"a board search ran at {width}x{height} — full-resolution search on "
+            "the GUI cadence is what froze the page"
         )
-
-    refine = [shape for shape, fast_check in shapes if not fast_check]
-    assert (FULL_H, FULL_W) in refine, "the kept view must be refined at full resolution"
+    assert (FULL_H, FULL_W) in refine_shapes, (
+        "the kept view's corners must be refined against the full-resolution "
+        "frame, or the calibration is fitted in the downscaled basis"
+    )
 
 
 def test_kept_view_reports_full_resolution_corners(full_frame):

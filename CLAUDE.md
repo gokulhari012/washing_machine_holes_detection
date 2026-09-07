@@ -339,10 +339,13 @@ rather than importing `CameraService`, so the downward dependency rule holds.
 **Auto Calibrate must never run its scan on the GUI thread:** a grab plus a
 full-resolution `cv2.findChessboardCorners` costs 1-2 s on this station's
 12-20 MP cameras, and driving that from a 250 ms timer on the main thread
-starved the event loop and froze the window outright. The worker also runs the
-per-tick *screening* search on a copy downscaled to `SCREEN_MAX_DIM` (~0.15 s),
-spending the full-resolution sub-pixel pass only on a frame actually being kept
-as a view.
+starved the event loop and froze the window outright. The worker runs **every**
+corner search — per-tick screening and kept views alike — on a copy downscaled
+to `SCREEN_MAX_DIM` (~0.15 s), then scales those corners back up and refines
+them sub-pixel against the *full-resolution* frame, so the correspondences fed
+to `calibrate_lens`/`compute_homography` stay in the real image's pixel basis
+(`CameraCalibration.find_checkerboard(..., detect_max_dim=...)`). Downscaling
+cheapens the coarse search only — never the calibration's resolution.
 
 **All cross-thread traffic goes through `AppState` Qt signals** (queued delivery).
 `AppState` also keeps a lock-protected snapshot so a newly-opened page renders current

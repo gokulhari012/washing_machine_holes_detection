@@ -18,7 +18,9 @@ Workflow (per camera):
    The scan runs on :class:`CheckerboardScanWorker`, never on this thread: a
    grab plus a full-resolution ``findChessboardCorners`` costs 1-2 s on this
    station's 12-20 MP cameras, and driving that from a GUI-thread timer froze
-   the page. This page only consumes the worker's signals, and it never waits
+   the page. The worker searches for the board on a downscaled copy and
+   refines the corners it finds sub-pixel against the full-resolution frame,
+   so what reaches this page is always in the actual image's pixel basis. This page only consumes the worker's signals, and it never waits
    on that thread — stopping is a request, with the button re-enabled when the
    thread's ``finished`` arrives.
 1. **Scale** — three interchangeable ways to fill in pixels-per-mm, in

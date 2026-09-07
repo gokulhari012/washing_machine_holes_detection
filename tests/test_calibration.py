@@ -258,3 +258,34 @@ def test_row_round_trip() -> None:
     restored = CameraCalibration.from_row(original.to_row())
     assert restored.pixel_to_mm(50, 50) == pytest.approx(original.pixel_to_mm(50, 50))
     assert restored.ref_point_mm == original.ref_point_mm
+
+
+def test_find_checkerboard_downscaled_search_matches_full_resolution() -> None:
+    """A downscaled *search* must still yield full-resolution correspondences.
+
+    Auto Calibrate searches a copy shrunk to ``detect_max_dim`` for speed, then
+    refines sub-pixel against the original. The corners it produces therefore
+    have to agree with a full-resolution search to well under a pixel — if they
+    only agreed to the downscale factor, every calibration fitted from them
+    would inherit that error.
+    """
+    square_px = 60
+    image = make_checkerboard(square_px=square_px, squares_x=9, squares_y=6)
+    longest = max(image.shape[:2])
+
+    full = CameraCalibration.find_checkerboard(image, 8, 5, 20.0)
+    small = CameraCalibration.find_checkerboard(image, 8, 5, 20.0, detect_max_dim=longest // 5)
+
+    full_pts = np.asarray(full.pixel_points)
+    small_pts = np.asarray(small.pixel_points)
+    # Corners are in the ACTUAL image's pixel basis, not the search copy's.
+    assert small_pts.max() > longest // 5
+    assert np.abs(full_pts - small_pts).max() < 1.0
+    assert small.pixels_per_mm_x == pytest.approx(full.pixels_per_mm_x, rel=0.01)
+    assert small.pixels_per_mm_y == pytest.approx(full.pixels_per_mm_y, rel=0.01)
+
+
+def test_find_checkerboard_rejects_absurd_detect_max_dim() -> None:
+    image = make_checkerboard()
+    with pytest.raises(CalibrationError):
+        CameraCalibration.find_checkerboard(image, 8, 5, 20.0, detect_max_dim=1)

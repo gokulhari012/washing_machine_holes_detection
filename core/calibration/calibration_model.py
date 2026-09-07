@@ -244,8 +244,41 @@ class CameraCalibration:
         return [(float(x), float(y)) for x, y in undistorted.reshape(-1, 2)]
 
     @staticmethod
+    def _subpix_window(
+        corners_px: np.ndarray, rows: int, columns: int, scale: float
+    ) -> tuple[int, int]:
+        """Half-window for :func:`cv2.cornerSubPix`, sized for a seed found at
+        ``scale``.
+
+        Corners located on a copy downscaled by ``scale`` and multiplied back up
+        land within roughly ``1/scale`` full-resolution pixels of the true
+        corner — at this station's 5496 px sensor screened at 1000 px that is
+        ~5 px, well outside the fixed 11 px window OpenCV is normally given, so
+        the refinement would polish the wrong spot or wander to a neighbour.
+        The window therefore grows with the downscale factor, but is never
+        allowed past a third of the measured corner spacing: past that it can
+        swallow the adjacent corner and the refinement snaps to it.
+
+        ``scale == 1.0`` returns the conventional 11 px window unchanged.
+        """
+        if scale >= 1.0:
+            return (11, 11)
+        grid = corners_px.reshape(rows, columns, 2)
+        spacings = [
+            float(np.linalg.norm(grid[:, 1:, :] - grid[:, :-1, :], axis=2).min()),
+            float(np.linalg.norm(grid[1:, :, :] - grid[:-1, :, :], axis=2).min()),
+        ]
+        ceiling = max(5, int(min(spacings) / 3.0))
+        half = min(int(math.ceil(1.0 / scale)) + 6, ceiling)
+        return (max(half, 5),) * 2
+
+    @staticmethod
     def find_checkerboard(
-        image: np.ndarray, columns: int, rows: int, square_size_mm: float
+        image: np.ndarray,
+        columns: int,
+        rows: int,
+        square_size_mm: float,
+        detect_max_dim: int | None = None,
     ) -> CheckerboardDetection:
         """Locate a checkerboard's inner corners and build the pixel↔mm
         correspondences a board of this size implies — ready to hand straight
@@ -263,6 +296,15 @@ class CameraCalibration:
         against a reference point captured afterwards through this same
         homography — self-consistent regardless of which corner is "first".
 
+        ``detect_max_dim`` bounds the longest edge the *search* runs on: the
+        image is downscaled to it for ``findChessboardCorners`` (which costs
+        1-2 s at 12-20 MP and ~0.15 s at 1000 px, with no loss in the
+        board-is-here decision), the corners are scaled back up, and the
+        sub-pixel refinement then runs against the **full-resolution** pixels.
+        So the correspondences — and therefore every calibration fitted from
+        them — remain in the actual image's coordinate basis; only the coarse
+        search is cheapened. ``None`` (default) searches at full resolution.
+
         Raises:
             CalibrationError: bad arguments, or no board of this size found
                 (check the pattern size, lighting, and that it is fully
@@ -273,9 +315,22 @@ class CameraCalibration:
         if square_size_mm <= 0:
             raise CalibrationError("Checkerboard square size must be positive")
 
+        if detect_max_dim is not None and detect_max_dim < 2:
+            raise CalibrationError("Checkerboard detect_max_dim must be >= 2")
+
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+
+        longest = max(gray.shape[:2])
+        scale = 1.0
+        if detect_max_dim is not None and longest > detect_max_dim:
+            scale = detect_max_dim / longest
+        search = (
+            cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+            if scale < 1.0
+            else gray
+        )
         found, corners = cv2.findChessboardCorners(
-            gray, (columns, rows),
+            search, (columns, rows),
             flags=cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE,
         )
         if not found:
@@ -284,8 +339,11 @@ class CameraCalibration:
                 f"pattern size matches the physical board, and that it is "
                 f"fully visible, flat, and well lit"
             )
+        if scale < 1.0:
+            corners = (corners / scale).astype(np.float32)
         corners = cv2.cornerSubPix(
-            gray, corners, (11, 11), (-1, -1),
+            gray, corners, CameraCalibration._subpix_window(corners, rows, columns, scale),
+            (-1, -1),
             (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 0.01),
         )
 

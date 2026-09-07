@@ -15,12 +15,17 @@ overran its own interval by roughly an order of magnitude, the event loop never
 regained control, and the window froze outright.
 
 This worker moves both halves onto its own thread and adds the one optimisation
-that actually matters: the **screening** pass — the "is a board in view?"
-question asked on every tick — runs on a downscaled copy (~0.15 s regardless of
-sensor size), while the **full-resolution sub-pixel** pass that actually feeds
-the calibration runs only for a frame that is about to be kept as a view, at
-most once per ``min_gap_s``. Screening precision is irrelevant: its only job is
-to decide whether spending the expensive pass is worth it.
+that actually matters: **no corner search ever runs at full resolution.** Both
+the screening pass (the "is a board in view?" question asked every tick) and the
+kept-view pass search a copy downscaled to :data:`SCREEN_MAX_DIM` — ~0.15 s
+regardless of sensor size — because locating a board is a coarse question that
+gains nothing from 20 MP.
+
+Accuracy is not traded away for that: ``find_checkerboard`` scales the corners
+found on the small copy back up and runs the sub-pixel refinement against the
+**full-resolution** frame, so the correspondences fed to ``calibrate_lens`` and
+the homography are in the real image's pixel basis. What the downscale removes
+is the coarse search's cost, not the calibration's resolution.
 
 Results come back as queued signals carrying the **full-resolution** frame, so
 the page's picker keeps its image-pixel coordinate basis and the frame handed to
@@ -50,9 +55,10 @@ from core.utilities.exceptions import VisionSystemError
 
 logger = get_logger(LogSource.VISION)
 
-# Longest edge the screening pass is allowed to work on. 1000 px keeps a
-# findChessboardCorners call at ~0.15 s on every camera in this station while
-# staying far above the resolution needed to notice a board is present.
+# Longest edge any corner *search* is allowed to work on — screening and kept
+# views alike. 1000 px keeps a findChessboardCorners call at ~0.15 s on every
+# camera in this station while staying far above the resolution needed to
+# locate a board; the sub-pixel refinement still runs at full resolution.
 SCREEN_MAX_DIM = 1000
 
 _FIND_FLAGS = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
@@ -143,11 +149,18 @@ class CheckerboardScanWorker(QThread):
 
             self.status.emit(f"{progress} — board visible, refining corners...")
             try:
-                # The screening pass above only decided *whether* to spend this
-                # one; the kept view still needs the full-resolution sub-pixel
-                # search, because the calibration is fitted from these corners.
+                # Searched on the same downscaled basis as the screening pass —
+                # the coarse "where is the board" question does not need the
+                # sensor's full resolution. find_checkerboard scales the corners
+                # back up and refines them sub-pixel against the full-resolution
+                # frame, so the correspondences this view contributes are in the
+                # actual image's coordinate basis, as the calibration requires.
                 detection = CameraCalibration.find_checkerboard(
-                    frame, self._columns, self._rows, self._square_size_mm
+                    frame,
+                    self._columns,
+                    self._rows,
+                    self._square_size_mm,
+                    detect_max_dim=SCREEN_MAX_DIM,
                 )
             except VisionSystemError:
                 # Screening said yes, the precise pass disagreed — a borderline
