@@ -3,8 +3,10 @@
 from core.camera.camera_base import (
     DEFAULT_VIEW_FPS,
     CameraBase,
+    VALID_ROTATIONS,
     CameraSettings,
     frame_interval_ms,
+    rotate_frame,
 )
 from core.camera.camera_manager import CameraHealth, CameraManager
 from core.camera.image_file_camera import ImageFileCamera
@@ -18,7 +20,9 @@ __all__ = [
     "CameraBase",
     "CameraSettings",
     "frame_interval_ms",
+    "rotate_frame",
     "DEFAULT_VIEW_FPS",
+    "VALID_ROTATIONS",
     "CameraHealth",
     "CameraManager",
     "ImageFileCamera",

@@ -486,6 +486,17 @@ correct; don't "correct" either one.
 `"image_source": "D:/washing_machine_holes_detection-main/.../test images"`, which won't
 exist on another machine. Expect camera 1 to fail to connect on a fresh checkout.
 
+**Camera `rotation` is applied before the ROI crop.** `CameraBase.capture()` turns
+the raw frame by that camera's `rotation` (0/90/180/270, degrees **clockwise**, via
+`core.camera.rotate_frame`) and *then* crops the ROI, so `roi`, the ROI drawn on the
+preview, the detection pixel gates and the calibration all live in the rotated frame
+— the sensor's orientation is invisible above the driver. Two consequences: changing
+a camera's rotation **invalidates its ROI and its calibration** (re-draw, re-run), and
+`width`/`height`/"Detect Resolution" stay in *sensor* orientation, because they are
+pushed to the device. Anything but a quarter turn is rejected at load time
+(`ConfigurationError`) rather than resampled. Like `fps`, it is a rig fact rather than
+a per-part one, so it is **not** in `_TUNABLE_CAMERA_FIELDS`.
+
 **Detection size gates are in pixels of the *analysed* frame** — after ROI crop and
 resolution fit. Cameras with different fields of view need different numbers, and
 since detection parameters are per-camera, each camera's Detection-page block can

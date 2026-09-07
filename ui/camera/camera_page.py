@@ -2,7 +2,7 @@
 
 Left: camera list + lifecycle buttons + health + PLC jog D-pad (physical
 camera-mount alignment). Centre: parameter form (exposure/gain/gamma/
-light brightness/frame rate/resolution/trigger/ROI). Right: live preview on a
+light brightness/frame rate/rotation/resolution/trigger/ROI). Right: live preview on a
 :class:`RoiEditor` — "Draw ROI" lets the operator drag the region directly
 on the image and the spin boxes follow.
 
@@ -16,6 +16,12 @@ threads run at all remains a separate station-wide switch
 (``app_config.ui.live_preview_fps``) — this is the rate they use once they
 do. Continuous Capture re-paces the moment the value changes; the preview
 workers are rebuilt on Save, by the composition root's config subscription.
+
+"Rotation" turns every frame from this camera by a quarter turn (clockwise)
+for a camera physically mounted on its side. It is applied *before* the ROI
+crop, so the ROI drawn on the preview means what it looks like — but that
+also makes an existing ROI and calibration meaningless once the rotation
+changes: re-draw the ROI and re-run the calibration for that camera.
 
 "Light Brightness" (0-255) is not an in-camera setting — it is the level
 pushed to that camera's PLC register (CameraService._push_brightness),
@@ -74,7 +80,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.camera import DEFAULT_VIEW_FPS, frame_interval_ms
+from core.camera import (
+    DEFAULT_VIEW_FPS,
+    VALID_ROTATIONS,
+    frame_interval_ms,
+    rotate_frame,
+)
 from core.camera.image_file_camera import IMAGE_NAME_FILTER, IMAGE_PATTERNS, read_image
 from core.utilities.enums import CameraDriver, ConnectionState, TriggerMode
 from core.utilities.exceptions import VisionSystemError
@@ -279,6 +290,13 @@ class CameraPage(QWidget):
             "run at this rate."
         )
         self._fps.valueChanged.connect(self._on_fps_changed)
+        self._rotation = QComboBox()
+        self._rotation.addItems([f"{degrees}°" for degrees in VALID_ROTATIONS])
+        self._rotation.setToolTip(
+            "Turn every frame from this camera clockwise — for a camera mounted "
+            "on its side. Applied before the ROI crop, so changing it invalidates "
+            "this camera's ROI and calibration; re-draw and re-calibrate after."
+        )
         self._width = QSpinBox()
         self._width.setRange(64, 8192)
         self._height = QSpinBox()
@@ -320,6 +338,7 @@ class CameraPage(QWidget):
         form.addRow("Gamma", self._gamma)
         form.addRow("Light Brightness (PLC)", self._brightness)
         form.addRow("Frame Rate", self._fps)
+        form.addRow("Rotation", self._rotation)
         form.addRow("Width", self._width)
         form.addRow("Height", self._height)
         detect_res_btn = QPushButton("Detect Resolution")
@@ -441,6 +460,7 @@ class CameraPage(QWidget):
             self._gamma.setValue(float(cfg.get("gamma", 1.0)))
             self._brightness.setValue(int(cfg.get("brightness", 0)))
             self._fps.setValue(float(cfg.get("fps", DEFAULT_VIEW_FPS)))
+            self._rotation.setCurrentText(f"{int(cfg.get('rotation', 0))}°")
             self._width.setValue(int(cfg.get("width", 1280)))
             self._height.setValue(int(cfg.get("height", 1024)))
             self._trigger.setCurrentText(cfg.get("trigger_mode", "software"))
@@ -471,6 +491,7 @@ class CameraPage(QWidget):
                 "gamma": self._gamma.value(),
                 "brightness": self._brightness.value(),
                 "fps": self._fps.value(),
+                "rotation": self._current_rotation(),
                 "width": self._width.value(),
                 "height": self._height.value(),
                 "trigger_mode": self._trigger.currentText(),
@@ -561,9 +582,12 @@ class CameraPage(QWidget):
             QMessageBox.warning(self, "Choose Image", f"Cannot read an image from:\n{path}")
             return
         height, width = frame.shape[:2]
+        # Width/Height describe the *source* picture, as the driver reads it;
+        # the preview shows it turned the way capture() will, so an ROI drawn
+        # here means the same thing as one drawn on a live frame.
         self._width.setValue(width)
         self._height.setValue(height)
-        self._preview.set_frame(frame)
+        self._preview.set_frame(rotate_frame(frame, self._current_rotation()))
         self._image_hint.setText(
             f"Resolution detected from the image ({width}x{height}). Press "
             f"“Save Configuration” to stream it live into the preview and the "
@@ -616,6 +640,10 @@ class CameraPage(QWidget):
         dial the rate in while watching the stream, before committing it.
         """
         self._continuous_timer.setInterval(frame_interval_ms(self._fps.value()))
+
+    def _current_rotation(self) -> int:
+        """The form's rotation in degrees clockwise (the combo shows e.g. "90°")."""
+        return int(self._rotation.currentText().rstrip("°"))
 
     def _on_fps_changed(self, _value: float) -> None:
         """Re-pace a running Continuous Capture the moment the rate changes."""

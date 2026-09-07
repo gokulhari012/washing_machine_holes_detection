@@ -113,6 +113,9 @@ class DatabaseEngine:
         # Per-camera viewing frame rate, added with the Camera page's FPS
         # setting (paces live preview, Continuous Capture, Auto Calibrate).
         ("camera_configurations", "fps", "REAL"),
+        # Per-camera frame rotation, added with the Camera page's Rotation
+        # setting (a camera mounted on its side).
+        ("camera_configurations", "rotation", "INTEGER"),
     )
 
     def _add_missing_columns(self) -> None:

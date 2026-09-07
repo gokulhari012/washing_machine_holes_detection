@@ -11,6 +11,7 @@
       "gamma": 1.0,
       "brightness": 0,
       "fps": 4,
+      "rotation": 0,
       "width": 4024,
       "height": 3036,
       "roi": {
@@ -43,6 +44,7 @@
       "gamma": 1.0,
       "brightness": 0,
       "fps": 4,
+      "rotation": 0,
       "width": 4024,
       "height": 3036,
       "roi": {
@@ -75,6 +77,7 @@
       "gamma": 1.0,
       "brightness": 0,
       "fps": 3.0,
+      "rotation": 0,
       "width": 5496,
       "height": 3672,
       "roi": {
@@ -107,6 +110,7 @@
       "gamma": 1.0,
       "brightness": 0,
       "fps": 4.0,
+      "rotation": 0,
       "width": 5496,
       "height": 3672,
       "roi": {

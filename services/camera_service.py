@@ -172,6 +172,7 @@ class CameraService:
                 "gamma": settings.gamma,
                 "brightness": settings.brightness,
                 "fps": settings.fps,
+                "rotation": settings.rotation,
                 "width": settings.width,
                 "height": settings.height,
                 "roi_x": settings.roi[0],

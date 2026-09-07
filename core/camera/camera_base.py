@@ -38,6 +38,11 @@ logger = get_logger(LogSource.CAMERA)
 # every continuous view is paced by the camera's own configured rate.
 DEFAULT_VIEW_FPS = 4.0
 
+#: Rotations a frame may be turned by, in degrees **clockwise**. Anything else
+#: would resample the image (and move every pixel off the sensor grid), so the
+#: quarter turns are the only ones offered.
+VALID_ROTATIONS = (0, 90, 180, 270)
+
 
 def frame_interval_ms(fps: float) -> int:
     """Loop/timer interval in ms for a continuous view running at ``fps``.
@@ -51,6 +56,30 @@ def frame_interval_ms(fps: float) -> int:
     if fps <= 0:
         fps = DEFAULT_VIEW_FPS
     return max(1, int(round(1000.0 / fps)))
+
+
+def rotate_frame(frame: np.ndarray, rotation: int) -> np.ndarray:
+    """Turn ``frame`` by ``rotation`` degrees **clockwise** (a quarter turn).
+
+    ``np.rot90`` turns counter-clockwise and returns a *view* with negative
+    strides; the result is made contiguous because these frames go straight to
+    OpenCV, which rejects some non-contiguous inputs. Shared with the UI so a
+    frame previewed outside the capture path is turned exactly like a captured
+    one (see the Camera page's "Choose Image").
+    """
+    if not rotation:
+        return frame
+    return np.ascontiguousarray(np.rot90(frame, k=-(rotation // 90)))
+
+
+def _validated_rotation(value: Any) -> int:
+    """Normalise a configured rotation, rejecting anything but a quarter turn."""
+    rotation = int(value) % 360
+    if rotation not in VALID_ROTATIONS:
+        raise ConfigurationError(
+            f"rotation must be one of {VALID_ROTATIONS}, got {value!r}"
+        )
+    return rotation
 
 
 @dataclass
@@ -80,6 +109,13 @@ class CameraSettings:
     # a separate station-wide switch (``app_config.ui.live_preview_fps``);
     # this is the rate they use once they do.
     fps: float = DEFAULT_VIEW_FPS
+    # Quarter turn applied to every captured frame, in degrees clockwise —
+    # for a camera physically mounted on its side. Applied *before* the ROI
+    # crop (see CameraBase.capture), so roi/width/height, the ROI drawn on
+    # the preview, detection parameters and the calibration all live in the
+    # rotated frame the rest of the app sees. Changing it therefore
+    # invalidates an existing ROI and calibration for that camera.
+    rotation: int = 0
     width: int = 1280
     height: int = 1024
     roi: tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h; w/h 0 = full frame
@@ -106,6 +142,7 @@ class CameraSettings:
                 gamma=float(cfg.get("gamma", 1.0)),
                 brightness=int(cfg.get("brightness", 0)),
                 fps=float(cfg.get("fps", DEFAULT_VIEW_FPS)),
+                rotation=_validated_rotation(cfg.get("rotation", 0)),
                 width=int(cfg.get("width", 1280)),
                 height=int(cfg.get("height", 1024)),
                 roi=(
@@ -175,7 +212,7 @@ class CameraBase(ABC):
             logger.info("%s disconnected", self.name)
 
     def capture(self) -> np.ndarray:
-        """Grab one frame (BGR or mono ndarray), ROI-cropped if configured.
+        """Grab one frame (BGR or mono ndarray), rotated and ROI-cropped.
 
         Raises:
             CameraConnectionError: camera not connected.
@@ -195,7 +232,9 @@ class CameraBase(ABC):
 
         if frame is None or frame.size == 0:
             raise CameraCaptureError(f"{self.name}: empty frame")
-        return self._crop_roi(frame)
+        # Rotation first: the ROI is expressed in the frame the operator sees
+        # and draws on, not in the sensor's own orientation.
+        return self._crop_roi(rotate_frame(frame, self._settings.rotation))
 
     def apply_settings(self, settings: CameraSettings) -> None:
         """Adopt new settings; pushed to the device immediately when connected.
