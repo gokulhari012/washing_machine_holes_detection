@@ -14,6 +14,13 @@ Workflow (per camera):
    scale (Step 1) and homography (Step 3), with pixels undistorted through
    the fitted lens model first. Remove the board and redo Step 2 afterwards —
    the reference point must be captured through the fresh calibration.
+
+   The scan runs on :class:`CheckerboardScanWorker`, never on this thread: a
+   grab plus a full-resolution ``findChessboardCorners`` costs 1-2 s on this
+   station's 12-20 MP cameras, and driving that from a GUI-thread timer froze
+   the page. This page only consumes the worker's signals, and it never waits
+   on that thread — stopping is a request, with the button re-enabled when the
+   thread's ``finished`` arrives.
 1. **Scale** — three interchangeable ways to fill in pixels-per-mm, in
    increasing order of effort/accuracy: type it directly, enter a known
    two-point pixel/mm distance ("Compute"), or place a ruler in frame and
@@ -33,11 +40,8 @@ Workflow (per camera):
 
 from __future__ import annotations
 
-import time
-
 import cv2
 import numpy as np
-from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -58,6 +62,7 @@ from core.utilities.exceptions import VisionSystemError
 from core.vision import VisionEngine, draw_detection_overlay
 from services.camera_service import CameraService
 from ui.widgets import PointPicker
+from workers import CheckerboardScanWorker
 
 # Live-preview auto-calibrate session tuning (see module docstring, step 0).
 AUTO_CALIBRATE_TICK_MS = 250
@@ -100,12 +105,13 @@ class CalibrationPage(QWidget):
         self._frame: np.ndarray | None = None
 
         # Auto Calibrate session state (see module docstring, step 0).
+        # The scan itself runs on CheckerboardScanWorker, never here: a grab plus
+        # a full-resolution findChessboardCorners costs 1-2 s on this station's
+        # 12-20 MP cameras, which froze the event loop when it ran in a timer on
+        # this thread. The page is now a pure consumer of the worker's signals.
         self._auto_session_active = False
         self._auto_views: list[CheckerboardDetection] = []
-        self._auto_last_capture_time = 0.0  # time.monotonic(), 0 = "capture immediately"
-        self._auto_timer = QTimer(self)
-        self._auto_timer.setInterval(AUTO_CALIBRATE_TICK_MS)
-        self._auto_timer.timeout.connect(self._on_auto_tick)
+        self._auto_worker: CheckerboardScanWorker | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
@@ -280,10 +286,19 @@ class CalibrationPage(QWidget):
         body.addLayout(left)
 
         # -------------------------------------------------------- right view
+        # The whole page lives in MainWindow's QScrollArea, so the body row is
+        # as tall as the (very long) left column. Letting the view stretch to
+        # that height parked the fitted image around the column's midpoint —
+        # i.e. off-screen below the fold. Cap the height and top-align it so the
+        # picture sits beside the first controls, where it is actually visible.
         self._view = PointPicker()
         self._view.setMinimumSize(480, 380)
+        self._view.setMaximumHeight(620)
         self._view.points_changed.connect(self._on_ruler_points_changed)
-        body.addWidget(self._view, stretch=1)
+        right = QVBoxLayout()
+        right.addWidget(self._view)
+        right.addStretch()
+        body.addLayout(right, stretch=1)
 
         self._load_existing()
 
@@ -344,90 +359,119 @@ class CalibrationPage(QWidget):
             self._start_auto_calibrate_session()
 
     def _start_auto_calibrate_session(self) -> None:
-        if self._camera_index() is None:
+        index = self._camera_index()
+        if index is None:
             return
+        if self._auto_worker is not None:
+            # The previous session's thread is still winding down — a grab in
+            # flight can hold it for seconds. A second scanner on the same
+            # camera would only fight the first for the capture lock.
+            self._auto_status.setText(
+                "Previous session is still stopping — try again in a moment."
+            )
+            return
+
         self._auto_views = []
-        self._auto_last_capture_time = 0.0
         self._auto_session_active = True
+        self._set_board_inputs_enabled(False)
         self._auto_calibrate_btn.setText(f"Stop && Compute (0/{AUTO_CALIBRATE_MAX_VIEWS})")
         self._auto_status.setText(
             "Live preview running — show the checkerboard; a view is captured "
             f"automatically once it's been visible for {AUTO_CALIBRATE_MIN_GAP_S:.0f}+ s "
             "since the last capture. Move/tilt the board between captures."
         )
-        self._auto_timer.start()
 
-    def _on_auto_tick(self) -> None:
-        index = self._camera_index()
-        if index is None:
-            self._cancel_auto_calibrate_session("no camera selected")
-            return
-        try:
-            frame = self._cameras.test_capture(index)
-        except VisionSystemError as exc:
-            self._cancel_auto_calibrate_session(f"capture failed: {exc}")
-            return
-        self._frame = frame
-
-        columns = self._board_columns.value()
-        rows = self._board_rows.value()
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
-        found, corners = cv2.findChessboardCorners(
-            gray, (columns, rows),
-            flags=(
-                cv2.CALIB_CB_ADAPTIVE_THRESH
-                | cv2.CALIB_CB_NORMALIZE_IMAGE
-                | cv2.CALIB_CB_FAST_CHECK
-            ),
+        # Board geometry is snapshotted for the whole session: calibrate_lens
+        # requires every view to come from the same board, so letting the spin
+        # boxes change mid-session could only build a set it has to reject.
+        worker = CheckerboardScanWorker(
+            capture=lambda: self._cameras.test_capture(index),
+            columns=self._board_columns.value(),
+            rows=self._board_rows.value(),
+            square_size_mm=self._board_square_mm.value(),
+            min_gap_s=AUTO_CALIBRATE_MIN_GAP_S,
+            max_views=AUTO_CALIBRATE_MAX_VIEWS,
+            tick_s=AUTO_CALIBRATE_TICK_MS / 1000.0,
+            parent=self,
         )
+        worker.scanned.connect(self._on_auto_scanned)
+        worker.view_captured.connect(self._on_auto_view_captured)
+        worker.status.connect(self._on_auto_status)
+        worker.failed.connect(self._on_auto_failed)
+        worker.quota_reached.connect(self._finish_auto_calibrate_session)
+        worker.finished.connect(self._on_auto_worker_finished)
+        self._auto_worker = worker
+        worker.start()
+
+    def _set_board_inputs_enabled(self, enabled: bool) -> None:
+        self._board_columns.setEnabled(enabled)
+        self._board_rows.setEnabled(enabled)
+        self._board_square_mm.setEnabled(enabled)
+
+    # ------------------------------------------------ worker signal handlers
+    def _on_auto_scanned(self, frame: np.ndarray, corners: object) -> None:
+        if not self._auto_session_active:
+            return
+        # Keep the full-resolution frame: Step 2's detection, the ruler picker's
+        # image-pixel coordinates and calibrate_lens's image_size all read it.
+        self._frame = frame
         overlay = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) if frame.ndim == 2 else frame.copy()
-        if found:
-            cv2.drawChessboardCorners(overlay, (columns, rows), corners, True)
+        if corners is not None:
+            cv2.drawChessboardCorners(
+                overlay,
+                (self._board_columns.value(), self._board_rows.value()),
+                np.asarray(corners, dtype=np.float32),
+                True,
+            )
         self._view.set_frame(overlay)
 
-        progress = f"{len(self._auto_views)}/{AUTO_CALIBRATE_MAX_VIEWS} views captured"
-        if not found:
-            self._auto_status.setText(f"{progress} — checkerboard not visible")
+    def _on_auto_view_captured(self, detection: object, count: int) -> None:
+        if not self._auto_session_active:
             return
-
-        remaining = AUTO_CALIBRATE_MIN_GAP_S - (time.monotonic() - self._auto_last_capture_time)
-        if remaining > 0:
-            self._auto_status.setText(
-                f"{progress} — board visible, next capture in {remaining:.0f} s"
-            )
-            return
-
-        try:
-            # Fast-check above only screens frames; the accepted view still needs
-            # the full sub-pixel pass find_checkerboard does.
-            detection = CameraCalibration.find_checkerboard(
-                frame, columns, rows, self._board_square_mm.value()
-            )
-        except VisionSystemError:
-            self._auto_status.setText(f"{progress} — board visible, refining corners...")
-            return
-
         self._auto_views.append(detection)
-        self._auto_last_capture_time = time.monotonic()
         self._auto_calibrate_btn.setText(
-            f"Stop && Compute ({len(self._auto_views)}/{AUTO_CALIBRATE_MAX_VIEWS})"
+            f"Stop && Compute ({count}/{AUTO_CALIBRATE_MAX_VIEWS})"
         )
-        self._auto_status.setText(
-            f"{len(self._auto_views)}/{AUTO_CALIBRATE_MAX_VIEWS} views captured — "
-            "move/tilt the board for the next one"
-        )
-        if len(self._auto_views) >= AUTO_CALIBRATE_MAX_VIEWS:
-            self._finish_auto_calibrate_session()
+
+    def _on_auto_status(self, text: str) -> None:
+        if self._auto_session_active:
+            self._auto_status.setText(text)
+
+    def _on_auto_failed(self, reason: str) -> None:
+        self._cancel_auto_calibrate_session(f"capture failed: {reason}")
+
+    def _on_auto_worker_finished(self) -> None:
+        worker = self._auto_worker
+        self._auto_worker = None
+        if worker is not None:
+            worker.deleteLater()
+        self._auto_calibrate_btn.setEnabled(True)
+
+    def _stop_auto_worker(self) -> None:
+        """Ask the scan thread to stop; never wait for it on this thread.
+
+        A grab in flight can hold the worker for seconds (``grab_timeout_ms``),
+        and blocking the GUI thread on that would reintroduce exactly the freeze
+        this worker exists to remove. The button stays disabled until the
+        thread's ``finished`` signal arrives.
+        """
+        self._auto_session_active = False
+        self._set_board_inputs_enabled(True)
+        if self._auto_worker is not None:
+            self._auto_worker.request_stop()
+            if self._auto_worker.isRunning():
+                self._auto_calibrate_btn.setEnabled(False)
 
     def _cancel_auto_calibrate_session(self, reason: str) -> None:
-        self._auto_timer.stop()
-        self._auto_session_active = False
+        self._stop_auto_worker()
         self._auto_calibrate_btn.setText("Start Auto Calibrate")
         self._auto_status.setText(f"Auto Calibrate stopped: {reason}")
 
     def _finish_auto_calibrate_session(self) -> None:
-        self._auto_timer.stop()
-        self._auto_session_active = False
+        # Views have already been accumulated from the worker's signals, so the
+        # fit can run the moment the stop is requested — no waiting on the
+        # scan thread, which may still be finishing a grab.
+        self._stop_auto_worker()
         self._auto_calibrate_btn.setText("Start Auto Calibrate")
         views = self._auto_views
         if len(views) < AUTO_CALIBRATE_MIN_VIEWS:

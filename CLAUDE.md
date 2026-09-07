@@ -329,7 +329,20 @@ SLMP frame variant selected by `connection.slmp_frame`: `iq_r` (default) or `q`.
 | `InspectionWorker` (QObject on QThread) | per trigger | runs the pipeline; re-entrant triggers dropped with a loud warning |
 | `AcquisitionWorker` ×N (QThread) | `ui.live_preview_fps` | live preview grabs; 2 s backoff on fault |
 | `DatabaseWorker` (QThread) | batched | log persistence only |
+| `CheckerboardScanWorker` (QThread) | while Auto Calibrate runs | Calibration page's board scan; page-owned, not in `main.py` |
 | detection pool | per cycle | `ThreadPoolExecutor`, parallel mode only |
+
+`CheckerboardScanWorker` is the one worker the composition root does not build —
+`CalibrationPage` starts and stops it for the length of an Auto Calibrate
+session, the way it used to own a `QTimer`. It takes a plain `capture` callable
+rather than importing `CameraService`, so the downward dependency rule holds.
+**Auto Calibrate must never run its scan on the GUI thread:** a grab plus a
+full-resolution `cv2.findChessboardCorners` costs 1-2 s on this station's
+12-20 MP cameras, and driving that from a 250 ms timer on the main thread
+starved the event loop and froze the window outright. The worker also runs the
+per-tick *screening* search on a copy downscaled to `SCREEN_MAX_DIM` (~0.15 s),
+spending the full-resolution sub-pixel pass only on a frame actually being kept
+as a view.
 
 **All cross-thread traffic goes through `AppState` Qt signals** (queued delivery).
 `AppState` also keeps a lock-protected snapshot so a newly-opened page renders current

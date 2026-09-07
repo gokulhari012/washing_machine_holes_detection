@@ -65,20 +65,20 @@
     {
       "index": 3,
       "name": "Camera 3 - Rear Left",
-      "driver": "image_file",
+      "driver": "basler",
       "connection_id": "3",
       "enabled": true,
-      "exposure_us": 15000,
+      "exposure_us": 10000,
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 0,
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 1792,
-        "y": 1786,
-        "width": 1383,
-        "height": 1564
+        "x": 2115,
+        "y": 1344,
+        "width": 1431,
+        "height": 951
       },
       "trigger_mode": "software",
       "basler": {
@@ -91,7 +91,7 @@
       "simulation": {
         "image_directory": "resources/sample_images/camera_3"
       },
-      "image_source": "D:/washing_machine_holes_detection-main/washing_machine_holes_detection-main/test images"
+      "image_source": "C:/Users/gokul/Downloads/Image__2026-09-07__13-18-43.bmp"
     },
     {
       "index": 4,
