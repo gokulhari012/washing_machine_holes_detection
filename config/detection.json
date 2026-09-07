@@ -1,45 +1,184 @@
 {
-  "active_detector": "opencv",
-  "common": {
-    "confidence_threshold": 0.4,
-    "expected_hole_count": 1,
-    "position_tolerance_mm": 2.5
-  },
-  "opencv": {
-    "detection_threshold": 20,
-    "adaptive_threshold": false,
-    "blur_kernel_size": 7,
-    "edge_threshold_low": 50,
-    "edge_threshold_high": 150,
-    "morphology_operation": "close",
-    "morphology_kernel_size": 5,
-    "morphology_iterations": 4,
-    "min_hole_diameter_px": 20,
-    "max_hole_diameter_px": 200,
-    "min_circularity": 0.65,
-    "min_aspect_ratio": 0.35,
-    "contour_retrieval_mode": "external"
-  },
-  "template_matching": {
-    "template_path": "",
-    "match_threshold": 0.8,
-    "method": "TM_CCOEFF_NORMED"
-  },
-  "dark_hole": {
-    "channel": "auto",
-    "blur_kernel_size": 3,
-    "min_contrast": 5,
-    "use_otsu": true,
-    "morphology_kernel_size": 3,
-    "min_hole_diameter_px": 25,
-    "max_hole_diameter_px": 120,
-    "min_fill_ratio": 0.35,
-    "max_fit_error": 0.25
-  },
-  "yolo": {
-    "model_path": "",
-    "confidence": 0.5,
-    "iou_threshold": 0.45,
-    "class_id": 0
+  "cameras": {
+    "1": {
+      "active_detector": "opencv",
+      "common": {
+        "confidence_threshold": 0.4,
+        "expected_hole_count": 1,
+        "position_tolerance_mm": 2.5
+      },
+      "opencv": {
+        "detection_threshold": 21,
+        "adaptive_threshold": false,
+        "blur_kernel_size": 7,
+        "edge_threshold_low": 50,
+        "edge_threshold_high": 150,
+        "morphology_operation": "close",
+        "morphology_kernel_size": 5,
+        "morphology_iterations": 4,
+        "min_hole_diameter_px": 20,
+        "max_hole_diameter_px": 200,
+        "min_circularity": 0.65,
+        "min_aspect_ratio": 0.35,
+        "contour_retrieval_mode": "external"
+      },
+      "template_matching": {
+        "template_path": "",
+        "match_threshold": 0.8,
+        "method": "TM_CCOEFF_NORMED"
+      },
+      "dark_hole": {
+        "channel": "auto",
+        "blur_kernel_size": 3,
+        "min_contrast": 5,
+        "use_otsu": true,
+        "morphology_kernel_size": 5,
+        "min_hole_diameter_px": 50,
+        "max_hole_diameter_px": 58,
+        "min_fill_ratio": 0.2,
+        "max_fit_error": 0.4
+      },
+      "yolo": {
+        "model_path": "",
+        "confidence": 0.5,
+        "iou_threshold": 0.45,
+        "class_id": 0
+      }
+    },
+    "2": {
+      "active_detector": "dark_hole",
+      "common": {
+        "confidence_threshold": 0.4,
+        "expected_hole_count": 1,
+        "position_tolerance_mm": 2.5
+      },
+      "opencv": {
+        "detection_threshold": 21,
+        "adaptive_threshold": false,
+        "blur_kernel_size": 7,
+        "edge_threshold_low": 50,
+        "edge_threshold_high": 150,
+        "morphology_operation": "close",
+        "morphology_kernel_size": 5,
+        "morphology_iterations": 4,
+        "min_hole_diameter_px": 20,
+        "max_hole_diameter_px": 200,
+        "min_circularity": 0.65,
+        "min_aspect_ratio": 0.35,
+        "contour_retrieval_mode": "external"
+      },
+      "template_matching": {
+        "template_path": "",
+        "match_threshold": 0.8,
+        "method": "TM_CCOEFF_NORMED"
+      },
+      "dark_hole": {
+        "channel": "auto",
+        "blur_kernel_size": 3,
+        "min_contrast": 5,
+        "use_otsu": true,
+        "morphology_kernel_size": 3,
+        "min_hole_diameter_px": 25,
+        "max_hole_diameter_px": 120,
+        "min_fill_ratio": 0.35,
+        "max_fit_error": 0.25
+      },
+      "yolo": {
+        "model_path": "",
+        "confidence": 0.5,
+        "iou_threshold": 0.45,
+        "class_id": 0
+      }
+    },
+    "3": {
+      "active_detector": "dark_hole",
+      "common": {
+        "confidence_threshold": 0.4,
+        "expected_hole_count": 1,
+        "position_tolerance_mm": 2.5
+      },
+      "opencv": {
+        "detection_threshold": 21,
+        "adaptive_threshold": false,
+        "blur_kernel_size": 7,
+        "edge_threshold_low": 50,
+        "edge_threshold_high": 150,
+        "morphology_operation": "close",
+        "morphology_kernel_size": 5,
+        "morphology_iterations": 4,
+        "min_hole_diameter_px": 20,
+        "max_hole_diameter_px": 200,
+        "min_circularity": 0.65,
+        "min_aspect_ratio": 0.35,
+        "contour_retrieval_mode": "external"
+      },
+      "template_matching": {
+        "template_path": "",
+        "match_threshold": 0.8,
+        "method": "TM_CCOEFF_NORMED"
+      },
+      "dark_hole": {
+        "channel": "auto",
+        "blur_kernel_size": 3,
+        "min_contrast": 5,
+        "use_otsu": true,
+        "morphology_kernel_size": 3,
+        "min_hole_diameter_px": 25,
+        "max_hole_diameter_px": 120,
+        "min_fill_ratio": 0.35,
+        "max_fit_error": 0.25
+      },
+      "yolo": {
+        "model_path": "",
+        "confidence": 0.5,
+        "iou_threshold": 0.45,
+        "class_id": 0
+      }
+    },
+    "4": {
+      "active_detector": "dark_hole",
+      "common": {
+        "confidence_threshold": 0.4,
+        "expected_hole_count": 1,
+        "position_tolerance_mm": 2.5
+      },
+      "opencv": {
+        "detection_threshold": 21,
+        "adaptive_threshold": false,
+        "blur_kernel_size": 7,
+        "edge_threshold_low": 50,
+        "edge_threshold_high": 150,
+        "morphology_operation": "close",
+        "morphology_kernel_size": 5,
+        "morphology_iterations": 4,
+        "min_hole_diameter_px": 20,
+        "max_hole_diameter_px": 200,
+        "min_circularity": 0.65,
+        "min_aspect_ratio": 0.35,
+        "contour_retrieval_mode": "external"
+      },
+      "template_matching": {
+        "template_path": "",
+        "match_threshold": 0.8,
+        "method": "TM_CCOEFF_NORMED"
+      },
+      "dark_hole": {
+        "channel": "auto",
+        "blur_kernel_size": 3,
+        "min_contrast": 5,
+        "use_otsu": true,
+        "morphology_kernel_size": 3,
+        "min_hole_diameter_px": 25,
+        "max_hole_diameter_px": 120,
+        "min_fill_ratio": 0.35,
+        "max_fit_error": 0.25
+      },
+      "yolo": {
+        "model_path": "",
+        "confidence": 0.5,
+        "iou_threshold": 0.45,
+        "class_id": 0
+      }
+    }
   }
 }

@@ -65,6 +65,21 @@ class CalibrationManager:
         )
         return row_id
 
+    def apply_live(self, calibration: CameraCalibration) -> None:
+        """Push *calibration* into the live cache without persisting or
+        archiving history — mirrors ``CameraService.apply_live`` /
+        ``VisionEngine.apply_config``'s "preview, don't persist" pattern.
+        Used when a machine-model profile switches (see
+        ``MachineModelService.apply_profile``), so the manually-tuned
+        Calibration-page baseline in the database is never overwritten by an
+        automatic model switch.
+        """
+        with self._lock:
+            self._calibrations[calibration.camera_index] = calibration
+        logger.info(
+            "Calibration applied live for camera %d (not persisted)", calibration.camera_index
+        )
+
     # ------------------------------------------------------------- hot path
     def evaluate(
         self,

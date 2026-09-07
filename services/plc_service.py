@@ -86,28 +86,61 @@ class PlcService:
         """Raises PlcError; caller (UI) must gate this behind admin login."""
         self._manager.write_raw(address, value)
 
+    def read_coil(self, address: int, count: int = 1) -> list[bool]:
+        """Raises PlcError when the link is down or the read is rejected.
+        Coils are a separate address space from holding registers — see
+        core.plc.plc_client_base."""
+        return self._manager.read_raw_coils(address, count)
+
+    def write_coil(self, address: int, value: bool) -> None:
+        """Raises PlcError; caller (UI) must gate this behind admin login."""
+        self._manager.write_raw_coil(address, value)
+
     # ---------------------------------------------------------- camera jog
     def jog_configured(self, camera_index: int) -> bool:
         return self._manager.jog_configured(camera_index)
 
-    def jog_camera(self, camera_index: int, direction: str) -> tuple[int, int]:
-        """Raises ConfigurationError/PlcError; caller (UI) must gate this
-        behind admin login, same as write_register."""
+    def jog_z_configured(self, camera_index: int) -> bool:
+        return self._manager.jog_z_configured(camera_index)
+
+    def jog_busy_configured(self, camera_index: int) -> bool:
+        return self._manager.jog_busy_configured(camera_index)
+
+    def jog_camera(self, camera_index: int, direction: str) -> int:
+        """direction is one of 'x+'/'x-'/'y+'/'y-'/'z+'/'z-'. Raises
+        ConfigurationError/PlcError; caller (UI) must gate this behind admin
+        login, same as write_register."""
         return self._manager.jog_camera(camera_index, direction)
 
-    def home_camera(self, camera_index: int) -> tuple[int, int]:
+    def home_camera(self, camera_index: int) -> tuple[int, int, int]:
         """Raises ConfigurationError/PlcError; caller (UI) must gate this
         behind admin login, same as write_register."""
         return self._manager.home_camera(camera_index)
 
-    def read_camera_position(self, camera_index: int) -> tuple[int, int]:
+    def read_camera_position(self, camera_index: int) -> tuple[int, int, int]:
         """Raises ConfigurationError/PlcError."""
         return self._manager.read_camera_jog_position(camera_index)
 
-    def set_camera_position(self, camera_index: int, x: int, y: int) -> tuple[int, int]:
+    def set_camera_position(
+        self, camera_index: int, x: int, y: int, z: int = 0
+    ) -> tuple[int, int, int]:
         """Raises ConfigurationError/PlcError; caller (UI) must gate this
         behind admin login, same as write_register."""
-        return self._manager.set_camera_jog_position(camera_index, x, y)
+        return self._manager.set_camera_jog_position(camera_index, x, y, z)
+
+    def set_camera_brightness(self, camera_index: int, level: int) -> bool:
+        """Publish camera *camera_index*'s light-brightness level (0-255) so
+        an external PLC-controlled light tracks the camera's configured
+        setting. Returns False (no I/O) when the register isn't configured.
+        Raises PlcError on communication failure."""
+        return self._manager.write_camera_brightness(camera_index, level)
+
+    # ---------------------------------------------------------- machine model
+    def set_model_select(self, code: int) -> bool:
+        """Write the machine-model-select register so a profile applied from
+        the PC is reflected back to the PLC. Returns False (no I/O) when the
+        register isn't configured. Raises PlcError on communication failure."""
+        return self._manager.write_model_select(code)
 
     # -------------------------------------------------------------- internal
     def _mirror_to_database(self, plc_config: dict) -> None:

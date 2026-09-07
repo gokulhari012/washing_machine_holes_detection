@@ -49,6 +49,13 @@ class PlcTimeoutError(PlcError):
     """The PLC did not answer within the configured timeout."""
 
 
+class CameraBusyError(PlcError):
+    """A camera-position command was refused because that camera's busy/
+    moving coil is already set. Raised locally, before any register write —
+    not a communication fault, so it never touches PlcManager's reconnect
+    state machine the way a real comm error does."""
+
+
 # --------------------------------------------------------------------------- #
 # Camera
 # --------------------------------------------------------------------------- #

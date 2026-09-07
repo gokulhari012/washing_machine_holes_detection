@@ -37,6 +37,7 @@ from models.dto import CameraInspectionData, InspectionCycleData
 from services.auth_service import AuthService
 from services.database_service import DatabaseService
 from services.inspection_service import DEFAULT_CAMERA_DELAY_MS, SEQUENTIAL_MODE
+from services.machine_model_service import MachineModelService
 from services.plc_service import PlcService
 from ui.dashboard.camera_panel import CameraPanel
 from ui.theme import COLOR_ACCENT, COLOR_DIM, COLOR_GOOD, COLOR_NG, COLOR_WARN
@@ -64,6 +65,7 @@ class DashboardPage(QWidget):
         camera_configs: list[dict],
         plc_service: PlcService,
         auth_service: AuthService,
+        machine_model_service: MachineModelService,
         config_manager: ConfigManager | None = None,
         on_simulate_trigger=None,
         on_camera_trigger=None,
@@ -74,6 +76,7 @@ class DashboardPage(QWidget):
         self._database = database_service
         self._plc = plc_service
         self._auth = auth_service
+        self._machine_models = machine_model_service
         self._config = config_manager
         self._on_simulate_trigger = on_simulate_trigger
         self._on_camera_trigger = on_camera_trigger
@@ -333,18 +336,33 @@ class DashboardPage(QWidget):
         self._tile_model.set_value(f"{name} ({code})")
 
     def _on_home_requested(self, camera_index: int) -> None:
-        """Home button on a camera panel — admin-gated, like the PLC page's
-        manual register write. No QMessageBox precedent on this page, so
-        both the auth check and any failure surface as an alarm instead."""
+        """Home button on a camera panel — moves the camera to the *active*
+        machine model's saved image capture position (the same target
+        "Go to Default" on the Camera Configuration page writes), not to
+        zero; admin-gated like the PLC page's manual register write. No
+        QMessageBox precedent on this page, so both the auth check and any
+        failure surface as an alarm instead."""
         if not self._auth.is_admin:
             self._app_state.raise_alarm(
                 "warning", "Administrator login required to move a camera (toolbar Login button)."
             )
             return
+        _name, code = self._app_state.active_machine_model
+        profile = self._machine_models.get_by_code(code) if code is not None else None
+        position = (profile or {}).get("jog_positions", {}).get(str(camera_index))
+        if position is None:
+            self._app_state.raise_alarm(
+                "warning",
+                f"Camera {camera_index}: no image capture position saved for the "
+                f"active machine model.",
+            )
+            return
         try:
-            self._plc.home_camera(camera_index)
+            self._plc.set_camera_position(
+                camera_index, int(position["x"]), int(position["y"]), int(position.get("z", 0))
+            )
         except VisionSystemError as exc:
-            self._app_state.raise_alarm("warning", f"Camera {camera_index} home failed: {exc}")
+            self._app_state.raise_alarm("warning", f"Camera {camera_index} move failed: {exc}")
 
     def _on_counters(self, total: int, good: int, ng: int) -> None:
         self._tile_total.set_value(total)

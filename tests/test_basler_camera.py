@@ -135,17 +135,6 @@ def test_enum_entry_the_model_lacks_is_skipped() -> None:
     assert node.value == "Software"
 
 
-def test_brightness_maps_onto_the_node_range() -> None:
-    camera = make_camera()
-    node = FakeNumberNode(low=-1.0, high=1.0)
-    camera._camera = SimpleNamespace(BslBrightness=node)
-
-    camera._write_scaled(0.5, "BslBrightness")
-    assert node.value == pytest.approx(0.5)
-    camera._write_scaled(-2.0, "BslBrightness")  # out of range
-    assert node.value == pytest.approx(-1.0)
-
-
 def test_detect_resolution_reads_sensor_max_dimensions() -> None:
     camera = make_camera()
     camera._camera = SimpleNamespace(

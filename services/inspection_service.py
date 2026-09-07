@@ -338,7 +338,7 @@ class InspectionService:
             )
 
         try:
-            detection = self._vision.detect(frame)
+            detection = self._vision.detect(frame, camera_index)
         except DetectionError as exc:
             logger.error("%s: detection error: %s", camera_name, exc)
             self._app_state.raise_alarm("error", f"{camera_name}: {exc}")
@@ -353,7 +353,7 @@ class InspectionService:
         self._select_hole(camera_index, detection)
         annotated = draw_detection_overlay(frame, detection, label=camera_name)
         best = detection.best
-        if best is None or len(detection.holes) < self._vision.expected_hole_count:
+        if best is None or len(detection.holes) < self._vision.expected_hole_count(camera_index):
             return CameraInspectionData(
                 camera_index=camera_index,
                 camera_name=camera_name,
@@ -367,7 +367,7 @@ class InspectionService:
         x_mm, y_mm, deviation = self._calibration.evaluate(
             camera_index, best.x_px, best.y_px, image_width, image_height
         )
-        tolerance = self._vision.position_tolerance_mm
+        tolerance = self._vision.position_tolerance_mm(camera_index)
         out_of_tolerance = (
             deviation is not None and tolerance > 0 and deviation > tolerance
         )

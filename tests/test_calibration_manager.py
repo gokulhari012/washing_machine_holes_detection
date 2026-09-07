@@ -61,3 +61,23 @@ def test_evaluate_uncalibrated_camera_falls_back_to_identity_rebased_to_center()
     x_mm, y_mm, deviation = manager.evaluate(9, 500.0, 400.0)
     assert (x_mm, y_mm) == (500.0, 400.0)
     assert deviation is None
+
+
+def test_apply_live_updates_cache_without_touching_repository() -> None:
+    """Used when a machine-model profile switches (MachineModelService):
+    the new calibration must be visible immediately, but never written to
+    the database — the repository fake here has no `save`, so any attempt
+    to persist would raise AttributeError."""
+    manager = make_manager(None)
+    calibration = CameraCalibration(camera_index=1, pixels_per_mm_x=12.5, pixels_per_mm_y=12.5)
+    manager.apply_live(calibration)
+    assert manager.get(1) is calibration
+
+
+def test_apply_live_overwrites_only_the_matching_camera() -> None:
+    manager = make_manager(
+        CameraCalibration(camera_index=1, pixels_per_mm_x=10.0, pixels_per_mm_y=10.0)
+    )
+    replacement = CameraCalibration(camera_index=1, pixels_per_mm_x=20.0, pixels_per_mm_y=20.0)
+    manager.apply_live(replacement)
+    assert manager.get(1) is replacement

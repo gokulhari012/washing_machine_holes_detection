@@ -175,6 +175,10 @@ class Calibration(Base):
     pixels_per_mm_x: Mapped[float] = mapped_column(Float, default=1.0)
     pixels_per_mm_y: Mapped[float] = mapped_column(Float, default=1.0)
     homography_json: Mapped[str | None] = mapped_column(Text, default=None)  # 3x3 row-major
+    # Multi-view lens calibration (see CameraCalibration.calibrate_lens): nullable,
+    # only populated when Auto Calibrate ran the checkerboard-distortion workflow.
+    camera_matrix_json: Mapped[str | None] = mapped_column(Text, default=None)  # 3x3 row-major
+    dist_coeffs_json: Mapped[str | None] = mapped_column(Text, default=None)  # 1x5 row-major
     ref_point_x_mm: Mapped[float] = mapped_column(Float, default=0.0)
     ref_point_y_mm: Mapped[float] = mapped_column(Float, default=0.0)
     rms_error: Mapped[float] = mapped_column(Float, default=0.0)

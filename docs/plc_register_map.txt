@@ -1,0 +1,228 @@
+PLC REGISTER MAP — Washing Machine Bottom Hole Detection System
+==================================================================
+Generated from config/plc.json (the live station config) on 2026-09-06.
+For full handshake/protocol/timing details see CLAUDE.md section 6
+("PLC contract"). If plc.json changes, re-generate or hand-edit this file
+to match — it is a snapshot, not read by the application.
+
+Connection (config/plc.json):
+  protocol : simulated
+  ip       : 192.168.3.100
+  port     : 7029
+  unit_id  : 1
+
+Register type: all addresses below are 16-bit unsigned HOLDING REGISTERS
+unless marked "COIL" (a separate address space — see camera_jog_busy).
+
+
+------------------------------------------------------------------
+CORE REGISTERS (single address, not per-camera)
+------------------------------------------------------------------
+
+Addr  Dir      Name             Description
+100   PLC->PC  trigger          Rising edge (0->1) starts a full inspection
+                                 cycle (all enabled cameras). PC writes 0
+                                 back the instant it sees the edge — that
+                                 means "received", NOT "finished"; wait on
+                                 register 119 for completion.
+101   PLC->PC  machine_number   Which physical machine is on the line this
+                                 cycle; stored with the inspection record.
+102   PC->PLC  heartbeat        Toggles 0/1 every heartbeat_interval_ms
+                                 (500 ms) so the PLC can watchdog the PC.
+103   PLC->PC  model_select     Machine-model code, polled every
+                                 model_poll_interval_ms (1000 ms). The
+                                 profile whose PLC Code matches this value
+                                 is applied automatically (see Machine
+                                 Models page / MachineModelService).
+118   PC->PLC  result           Overall cycle result for ALL cameras:
+                                 1 = GOOD, 2 = NG, 3 = ERROR.
+119   PC->PLC  vision_complete  Set to 1 once every register above is
+                                 written and results are ready to read;
+                                 PLC reads it, then resets this AND the
+                                 trigger back to 0. Always written last —
+                                 the PLC may read the instant it goes high.
+
+
+------------------------------------------------------------------
+PER-CAMERA REGISTERS (one set per camera, indices 1-4)
+------------------------------------------------------------------
+NOTE: Camera 3 lives in a different address range (6000s) than cameras
+1/2/4 (100s/150s) across every group below — this is this station's
+actual wiring, not a typo or inconsistency to "fix".
+
+camera_positions — PC->PLC
+  Detected hole X/Y for that camera, encoded as an absolute servo target
+  (see "Position encoding" below) — NOT a plain millimetre value.
+    Camera 1: X=110   Y=111
+    Camera 2: X=112   Y=113
+    Camera 3: X=6050  Y=6052
+    Camera 4: X=116   Y=117
+
+servo_home_positions — PLC->PC
+  The PLC's own live value for that axis's current "home" — the datum
+  camera_positions above are measured relative to. Read fresh immediately
+  before every position write (never cached), because the PLC may move
+  the axis between cycles. A camera absent from this group falls back to
+  home = 0 (plain mm x position_scale, positive side of centre only).
+    Camera 1: X=144   Y=145
+    Camera 2: X=146   Y=147
+    Camera 3: X=6046  Y=6048
+    Camera 4: X=150   Y=151
+
+camera_results — PC->PLC
+  This camera's own verdict: 1 = GOOD, 2 = NG, 3 = ERROR. A camera not
+  inspected this cycle simply keeps whatever value it last held.
+    Camera 1: 128
+    Camera 2: 129
+    Camera 3: 6054
+    Camera 4: 131
+
+camera_triggers — PLC->PC
+  Raise (0->1) to inspect THIS camera alone, without running the other
+  three. PC writes 0 back only at the END of that camera's cycle (unlike
+  the global trigger, which is cleared the moment the edge is seen) — so
+  a 1 here means "this camera is still being inspected".
+    Camera 1: 132
+    Camera 2: 133
+    Camera 3: 6040
+    Camera 4: 135
+
+camera_vision_complete — PC->PLC
+  This camera's own completion handshake for a per-camera trigger cycle:
+  set to 1 once that camera's position/result registers hold the new
+  values (mirrors the global vision_complete, scoped to one camera).
+    Camera 1: 136
+    Camera 2: 137
+    Camera 3: 6042
+    Camera 4: 139
+
+camera_status — PC->PLC
+  1 while this camera is connected AND grabbing frames normally, 0
+  otherwise. A camera that is connected but failing to capture also
+  reports 0 (the safe direction for a PLC deciding whether to run the
+  station). Written only when the value actually changes.
+    Camera 1: 140
+    Camera 2: 141
+    Camera 3: 6044
+    Camera 4: 143
+
+camera_brightness — PC->PLC
+  This camera's configured light-brightness level, 0-255. Drives an
+  EXTERNAL, PLC-controlled light source — it is not an in-camera image
+  setting. Pushed every time that camera's settings are applied or saved
+  on the Camera Configuration page.
+    Camera 1: 156
+    Camera 2: 157
+    Camera 3: 6056
+    Camera 4: 158
+  NOTE: these three addresses (plus 6056) are newly added and follow this
+  file's existing per-camera numbering convention as a placeholder —
+  confirm with whoever maintains the PLC program that they are actually
+  free before relying on them against real hardware.
+
+
+------------------------------------------------------------------
+CAMERA JOG — physical camera-mount position (separate config block)
+------------------------------------------------------------------
+This is the camera's physical MOUNT position (actuators), driven by PLC
+jog commands — NOT the same thing as camera_positions above, which is the
+detected hole coordinate written out as an inspection result. Configured
+under plc.json's own top-level "camera_jog" block, not "registers".
+
+Jog step size: 10 (per +/-/X/Y/Z button press on the Camera page D-pad)
+
+camera_jog (X/Y) — PC<->PLC, read-modify-write
+    Camera 1: X=120   Y=121
+    Camera 2: X=122   Y=123
+    Camera 3: X=124   Y=125
+    Camera 4: X=126   Y=127
+
+camera_jog_z — PC<->PLC, read-modify-write (independent of X/Y, optional)
+    Camera 1: 152
+    Camera 2: 153
+    Camera 3: 154
+    Camera 4: 155
+
+camera_jog_busy — PC->PLC, COIL (separate address space from every
+  register above — this is NOT holding-register 1/2/3/4)
+  PC raises it right after writing a new jog/home/go-to-default position
+  (the "go" signal); PLC clears it back to 0 once the physical move
+  actually finishes. Every jog/home/position command checks this first
+  and refuses (CameraBusyError) if it already reads 1.
+    Camera 1: coil 1
+    Camera 2: coil 2
+    Camera 3: coil 3
+    Camera 4: coil 4
+
+
+------------------------------------------------------------------
+SCALING / POSITION ENCODING
+------------------------------------------------------------------
+position_scale = 100
+
+A holding register is unsigned, so a negative offset can't be written
+directly. Every hole position is instead expressed relative to that
+axis's servo home (see servo_home_positions above):
+
+    raw = servo_home + round(mm x position_scale)      (clamped 0-65535)
+
+Example: home 6000, hole 2.0 mm right of centre, scale 100 -> raw 6200.
+2.0 mm the OTHER way -> raw 5800. No sign handling needed on the PLC side.
+
+Raw value 0 on camera_positions is the "no hole found" sentinel — written
+to both X and Y with no servo-home read at all when a camera finds
+nothing. This stays unambiguous only because every servo home sits far
+from zero.
+
+
+------------------------------------------------------------------
+QUICK ADDRESS INDEX (sorted)
+------------------------------------------------------------------
+100        trigger
+101        machine_number
+102        heartbeat
+103        model_select
+110/111    camera_positions[1]  (X/Y)
+112/113    camera_positions[2]  (X/Y)
+116/117    camera_positions[4]  (X/Y)
+118        result
+119        vision_complete
+120/121    camera_jog[1]        (X/Y)
+122/123    camera_jog[2]        (X/Y)
+124/125    camera_jog[3]        (X/Y)
+126/127    camera_jog[4]        (X/Y)
+128        camera_results[1]
+129        camera_results[2]
+131        camera_results[4]
+132        camera_triggers[1]
+133        camera_triggers[2]
+135        camera_triggers[4]
+136        camera_vision_complete[1]
+137        camera_vision_complete[2]
+139        camera_vision_complete[4]
+140        camera_status[1]
+141        camera_status[2]
+143        camera_status[4]
+144/145    servo_home_positions[1]  (X/Y)
+146/147    servo_home_positions[2]  (X/Y)
+150/151    servo_home_positions[4]  (X/Y)
+152        camera_jog_z[1]
+153        camera_jog_z[2]
+154        camera_jog_z[3]
+155        camera_jog_z[4]
+156        camera_brightness[1]
+157        camera_brightness[2]
+158        camera_brightness[4]
+6040       camera_triggers[3]
+6042       camera_vision_complete[3]
+6044       camera_status[3]
+6046/6048  servo_home_positions[3]  (X/Y)
+6050/6052  camera_positions[3]      (X/Y)
+6054       camera_results[3]
+6056       camera_brightness[3]
+
+Coils (separate address space):
+1          camera_jog_busy[1]
+2          camera_jog_busy[2]
+3          camera_jog_busy[3]
+4          camera_jog_busy[4]

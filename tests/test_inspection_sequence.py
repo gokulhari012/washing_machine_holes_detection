@@ -55,11 +55,16 @@ class FakeCameraManager:
 
 
 class FakeVision:
-    expected_hole_count = 1
-    position_tolerance_mm = 0.0
+    @staticmethod
+    def expected_hole_count(camera_index: int) -> int:
+        return 1
 
     @staticmethod
-    def detect(frame) -> DetectionResult:
+    def position_tolerance_mm(camera_index: int) -> float:
+        return 0.0
+
+    @staticmethod
+    def detect(frame, camera_index: int) -> DetectionResult:
         return DetectionResult(holes=[Hole(10.0, 12.0, 30.0, 0.9, 0.8)])
 
 
@@ -183,7 +188,7 @@ class MultiHoleVision(FakeVision):
     """Reports two real holes per frame, sorted best-confidence-first."""
 
     @staticmethod
-    def detect(frame) -> DetectionResult:
+    def detect(frame, camera_index: int) -> DetectionResult:
         return DetectionResult(holes=[_FAR_FROM_REF_HOLE, _NEAR_REF_HOLE])
 
 

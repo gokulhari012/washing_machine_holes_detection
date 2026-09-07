@@ -40,7 +40,7 @@ from core.plc import PlcManager, RegisterMap, create_plc_client
 from core.utilities import ConfigManager
 from core.utilities.enums import LogSource
 from core.utilities.exceptions import VisionSystemError
-from core.vision import VisionEngine
+from core.vision import VisionEngine, migrate_legacy_detection_config
 from models import AppState
 from services import (
     AuthService,
@@ -107,7 +107,12 @@ class Application:
         self.cameras.subscribe_state(
             lambda index, state: self.app_state.update_camera_state(index, state)
         )
-        self.vision = VisionEngine(self.config.load("detection"))
+        detection_doc = self.config.load("detection")
+        camera_indices = [int(cfg["index"]) for cfg in self.camera_configs]
+        migrated_detection = migrate_legacy_detection_config(detection_doc, camera_indices)
+        if migrated_detection is not detection_doc:
+            self.config.save("detection", migrated_detection)
+        self.vision = VisionEngine(migrated_detection)
         self.calibration = CalibrationManager(self.database.calibrations)
         self.calibration.load_all()
 
@@ -127,10 +132,12 @@ class Application:
             self.cameras, self.vision, self.calibration,
             self.plc, self.database, self.app_state, self.config,
         )
-        self.camera_service = CameraService(self.cameras, self.config, self.database)
         self.plc_service = PlcService(self.plc, self.config, self.database)
+        self.camera_service = CameraService(
+            self.cameras, self.config, self.database, self.plc_service
+        )
         self.machine_models = MachineModelService(
-            self.config, self.camera_service, self.vision, self.plc_service
+            self.config, self.camera_service, self.vision, self.plc_service, self.calibration
         )
         self.export_service = ExportService()
         self.backup_service = BackupService(self.db, self.database, self.config)
@@ -139,18 +146,7 @@ class Application:
 
         # -------------------------------------------------------- workers
         self.inspection_worker = InspectionWorker(self.inspection)
-        self.poll_worker = PlcPollWorker(
-            self.plc,
-            poll_interval_ms=int(connection_cfg.get("poll_interval_ms", 50)),
-            heartbeat_interval_ms=int(connection_cfg.get("heartbeat_interval_ms", 500)),
-            model_poll_interval_ms=int(connection_cfg.get("model_poll_interval_ms", 1000)),
-            camera_status_provider=self._camera_availability,
-        )
-        self.poll_worker.trigger_detected.connect(self.inspection_worker.on_trigger)
-        self.poll_worker.camera_trigger_detected.connect(
-            self.inspection_worker.on_camera_trigger
-        )
-        self.poll_worker.machine_model_changed.connect(self._on_machine_model_changed)
+        self.poll_worker = self._build_poll_worker(connection_cfg)
         preview_fps = float(self.config.get_value("app_config", "ui.live_preview_fps", 15))
         self.acquisition_workers = create_acquisition_workers(
             self.cameras, self.app_state, preview_fps
@@ -180,6 +176,7 @@ class Application:
                 self.camera_configs,
                 self.plc_service,
                 self.auth_service,
+                self.machine_models,
                 config_manager=self.config,
                 on_simulate_trigger=self._simulate_trigger,
                 on_camera_trigger=self._trigger_camera,
@@ -218,6 +215,7 @@ class Application:
 
         # -------------------------------------------------- cross-cutting
         self.config.subscribe("camera", self._on_camera_config_saved)
+        self.config.subscribe("plc", self._on_plc_config_saved)
         self._maintenance_timer = QTimer(self.window)
         self._maintenance_timer.timeout.connect(self._run_maintenance_async)
         self._shutdown_done = False
@@ -298,6 +296,53 @@ class Application:
         )
         for worker in self.acquisition_workers:
             worker.start()
+
+    def _build_poll_worker(self, connection_cfg: dict) -> PlcPollWorker:
+        """Construct + wire a poll worker against ``self.plc``. Shared by
+        startup and :meth:`_on_plc_config_saved` so both build it identically —
+        cadence intervals and per-camera-trigger edge state are baked into
+        the worker at construction, so a config change needs a fresh
+        instance, not just a fresh client on the existing one."""
+        worker = PlcPollWorker(
+            self.plc,
+            poll_interval_ms=int(connection_cfg.get("poll_interval_ms", 50)),
+            heartbeat_interval_ms=int(connection_cfg.get("heartbeat_interval_ms", 500)),
+            model_poll_interval_ms=int(connection_cfg.get("model_poll_interval_ms", 1000)),
+            camera_status_provider=self._camera_availability,
+        )
+        worker.trigger_detected.connect(self.inspection_worker.on_trigger)
+        worker.camera_trigger_detected.connect(self.inspection_worker.on_camera_trigger)
+        worker.machine_model_changed.connect(self._on_machine_model_changed)
+        return worker
+
+    def _on_plc_config_saved(self, plc_cfg: dict) -> None:
+        """Rebuild the PLC client/register map + poll worker after a save
+        (runs on the UI thread — configuration saves originate from pages).
+
+        Stops the current poll worker first (blocking, but bounded to one
+        poll tick) so nothing touches the outgoing client while it's being
+        swapped, rebuilds ``PlcManager`` in place (see ``PlcManager.rebuild``
+        — every other holder of it keeps the same instance), then starts a
+        fresh poll worker sized to the new poll/heartbeat/model intervals.
+        The new worker's own re-baselining logic (see
+        ``workers.plc_poll_worker``) handles a changed register map the same
+        way it already handles a real reconnect.
+        """
+        self.logger.info("PLC configuration changed — rebuilding connection")
+        self.poll_worker.stop()
+        try:
+            register_map = RegisterMap.from_config(plc_cfg)
+            client = create_plc_client(plc_cfg, register_map)
+        except VisionSystemError as exc:
+            message = f"PLC configuration rebuild failed: {exc}"
+            self.logger.error(message)
+            self.app_state.raise_alarm("error", message)
+            return
+        connection_cfg = plc_cfg.get("connection", {})
+        self.plc.rebuild(client, register_map, connection_cfg.get("reconnect_backoff_ms"))
+        self.register_map = register_map
+        self.poll_worker = self._build_poll_worker(connection_cfg)
+        self.poll_worker.start()
 
     def _on_machine_model_changed(self, code: int) -> None:
         """PLC reported a new model_select value (runs on the UI thread via

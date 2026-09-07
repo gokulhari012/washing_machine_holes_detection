@@ -2,7 +2,7 @@
   "connection": {
     "ip": "192.168.3.100",
     "port": 7029,
-    "protocol": "slmp",
+    "protocol": "simulated",
     "auto_cycle_interval_s": 0.0,
     "unit_id": 1,
     "timeout_ms": 1000,
@@ -82,6 +82,12 @@
       "2": 141,
       "3": 6044,
       "4": 143
+    },
+    "camera_brightness": {
+      "1": 156,
+      "2": 157,
+      "3": 6056,
+      "4": 158
     }
   },
   "scaling": {
@@ -93,26 +99,26 @@
       "1": {
         "x": 120,
         "y": 121,
-        "home_x": 0,
-        "home_y": 0
+        "z": 152,
+        "busy": 1
       },
       "2": {
         "x": 122,
         "y": 123,
-        "home_x": 0,
-        "home_y": 0
+        "z": 153,
+        "busy": 2
       },
       "3": {
         "x": 124,
         "y": 125,
-        "home_x": 0,
-        "home_y": 0
+        "z": 154,
+        "busy": 3
       },
       "4": {
         "x": 126,
         "y": 127,
-        "home_x": 0,
-        "home_y": 0
+        "z": 155,
+        "busy": 4
       }
     }
   }

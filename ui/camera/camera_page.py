@@ -2,24 +2,36 @@
 
 Left: camera list + lifecycle buttons + health + PLC jog D-pad (physical
 camera-mount alignment). Centre: parameter form (exposure/gain/gamma/
-brightness/resolution/trigger/ROI). Right: live preview on a
+light brightness/resolution/trigger/ROI). Right: live preview on a
 :class:`RoiEditor` — "Draw ROI" lets the operator drag the region directly
 on the image and the spin boxes follow.
 
-The jog D-pad + Home nudge the camera's physical mounting position through
-PLC registers (a read-modify-write, separate from anything in camera.json)
-— used to centre a hole in frame before capturing it as a machine model's
-reference position. "Continuous Capture" repeatedly re-captures the
-selected camera into the preview so the operator can watch the effect of
-each nudge instead of clicking "Test Camera" after every one.
+"Light Brightness" (0-255) is not an in-camera setting — it is the level
+pushed to that camera's PLC register (CameraService._push_brightness),
+driving an external, PLC-controlled light source, whenever settings are
+applied or saved.
 
-Below the D-pad, a machine-model picker + "Save as Default"/"Go to Default"
-let the operator snapshot the camera's current jog position as that model's
-default (via MachineModelService.save_camera_position) or restore it
-on demand. That saved position is also pushed automatically whenever the
-model is applied — MachineModelService.apply_profile, invoked both by
-"Apply Now" on the Machine Models page and by the PLC's own model_select
-signal (main.py's Application._on_machine_model_changed).
+The jog controls nudge the camera's physical mounting position through PLC
+registers (a read-modify-write, separate from anything in camera.json) one
+axis at a time — X+/X-/Y+/Y-/Z+/Z- — used to centre a hole in frame before
+capturing it as a machine model's image capture position. "Home" moves all
+three axes to zero (the mount's true home, not a stored value) — Z is
+skipped if this camera has no Z jog register configured. "Continuous
+Capture" repeatedly re-captures the selected camera into the preview so the
+operator can watch the effect of each nudge instead of clicking "Test
+Camera" after every one.
+
+Below the jog controls, a machine-model picker + "Save as Default"/"Go to
+Default" let the operator snapshot the camera's current X/Y/Z position as
+that model's image capture position (via
+MachineModelService.save_camera_position) or restore it on demand. That
+saved position is also pushed automatically whenever the model is applied —
+MachineModelService.apply_profile, invoked both by "Apply Now" on the
+Machine Models page and by the PLC's own model_select signal (main.py's
+Application._on_machine_model_changed) — and by the Home button on each
+dashboard camera panel, which moves that camera to the *active* model's
+saved capture position rather than to zero (see
+DashboardPage._on_home_requested).
 
 "Apply Live" pushes settings to the connected device without persisting;
 "Save" writes camera.json (+ DB mirror). Worker/manager rebuilds after a
@@ -30,8 +42,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QSize, QTimer
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QTimer
+from PySide6.QtCore import QSize
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -47,7 +59,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
-    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -60,19 +71,20 @@ from services.auth_service import AuthService
 from services.camera_service import CameraService
 from services.machine_model_service import MachineModelService
 from services.plc_service import PlcService
-from ui.widgets import LabeledLed, RoiEditor
+from ui.widgets import LabeledLed, RoiEditor, minus_icon, plus_icon
 
 # Adapters actually wired up in core.camera.create_camera(); USB/HikRobot/Daheng/IDS
 # stay in CameraDriver for config-file compatibility but are hidden from this dropdown.
 _SUPPORTED_DRIVERS = (CameraDriver.SIMULATED, CameraDriver.IMAGE_FILE, CameraDriver.BASLER)
 
 CONTINUOUS_CAPTURE_INTERVAL_MS = 250
+_JOG_ICON_PX = 15
 
 
-def _jog_button(icon: QIcon, tooltip: str) -> QPushButton:
+def _jog_button(icon, tooltip: str) -> QPushButton:
     button = QPushButton()
     button.setIcon(icon)
-    button.setIconSize(QSize(18, 18))
+    button.setIconSize(QSize(_JOG_ICON_PX, _JOG_ICON_PX))
     button.setFixedSize(32, 32)
     button.setToolTip(tooltip)
     return button
@@ -166,54 +178,44 @@ class CameraPage(QWidget):
         jog_layout = QVBoxLayout(self._jog_box)
         pad = QGridLayout()
         pad.setSpacing(4)
-        style = self.style()
-        self._jog_up = _jog_button(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowUp), "Jog camera up"
-        )
-        self._jog_down = _jog_button(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowDown), "Jog camera down"
-        )
-        self._jog_left = _jog_button(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowLeft), "Jog camera left"
-        )
-        self._jog_right = _jog_button(
-            style.standardIcon(QStyle.StandardPixmap.SP_ArrowRight), "Jog camera right"
-        )
-        self._jog_home = _jog_button(
-            style.standardIcon(QStyle.StandardPixmap.SP_DirHomeIcon),
-            "Move camera to its configured home position",
-        )
-        self._jog_up.clicked.connect(lambda: self._on_jog("up"))
-        self._jog_down.clicked.connect(lambda: self._on_jog("down"))
-        self._jog_left.clicked.connect(lambda: self._on_jog("left"))
-        self._jog_right.clicked.connect(lambda: self._on_jog("right"))
-        self._jog_home.clicked.connect(self._on_home)
-        pad.addWidget(self._jog_up, 0, 1)
-        pad.addWidget(self._jog_left, 1, 0)
-        pad.addWidget(self._jog_home, 1, 1)
-        pad.addWidget(self._jog_right, 1, 2)
-        pad.addWidget(self._jog_down, 2, 1)
+        self._jog_plus: dict[str, QPushButton] = {}
+        self._jog_minus: dict[str, QPushButton] = {}
+        for col, axis in enumerate(("X", "Y", "Z")):
+            pad.addWidget(QLabel(axis), 0, col)
+            plus = _jog_button(plus_icon(), f"Jog camera {axis}+")
+            minus = _jog_button(minus_icon(), f"Jog camera {axis}-")
+            plus.clicked.connect(lambda _checked, a=axis: self._on_jog(f"{a.lower()}+"))
+            minus.clicked.connect(lambda _checked, a=axis: self._on_jog(f"{a.lower()}-"))
+            pad.addWidget(plus, 1, col)
+            pad.addWidget(minus, 2, col)
+            self._jog_plus[axis] = plus
+            self._jog_minus[axis] = minus
         pad_row = QHBoxLayout()
         pad_row.addStretch()
         pad_row.addLayout(pad)
         pad_row.addStretch()
         jog_layout.addLayout(pad_row)
 
+        self._jog_home = QPushButton("Home")
+        self._jog_home.setToolTip("Move all axes (X/Y/Z) to zero")
+        self._jog_home.clicked.connect(self._on_home)
+        jog_layout.addWidget(self._jog_home)
+
         self._model_combo = QComboBox()
         self._model_combo.setToolTip(
-            "Machine model to save/restore this camera's default position for"
+            "Machine model to save/restore this camera's image capture position for"
         )
         jog_layout.addWidget(self._model_combo)
         self._save_default_btn = QPushButton("Save as Default")
         self._save_default_btn.setToolTip(
-            "Store the camera's current physical position as this machine "
-            "model's default"
+            "Store the camera's current X/Y/Z position as this machine "
+            "model's image capture position"
         )
         self._save_default_btn.clicked.connect(self._on_save_default)
         jog_layout.addWidget(self._save_default_btn)
         self._goto_default_btn = QPushButton("Go to Default")
         self._goto_default_btn.setToolTip(
-            "Jog the camera to this machine model's saved default position"
+            "Jog the camera to this machine model's saved image capture position"
         )
         self._goto_default_btn.clicked.connect(self._on_go_to_default)
         jog_layout.addWidget(self._goto_default_btn)
@@ -250,7 +252,11 @@ class CameraPage(QWidget):
         self._gamma.setRange(0.1, 4.0)
         self._gamma.setSingleStep(0.05)
         self._brightness = QSpinBox()
-        self._brightness.setRange(-100, 100)
+        self._brightness.setRange(0, 255)
+        self._brightness.setToolTip(
+            "Light-brightness level pushed to this camera's PLC register "
+            "(not an in-camera setting) — takes effect on Apply/Save"
+        )
         self._width = QSpinBox()
         self._width.setRange(64, 8192)
         self._height = QSpinBox()
@@ -290,7 +296,7 @@ class CameraPage(QWidget):
         form.addRow("Exposure", self._exposure)
         form.addRow("Gain", self._gain)
         form.addRow("Gamma", self._gamma)
-        form.addRow("Brightness", self._brightness)
+        form.addRow("Light Brightness (PLC)", self._brightness)
         form.addRow("Width", self._width)
         form.addRow("Height", self._height)
         detect_res_btn = QPushButton("Detect Resolution")
@@ -676,6 +682,12 @@ class CameraPage(QWidget):
         index = self._current_index()
         configured = index is not None and self._plc.jog_configured(index)
         self._jog_box.setEnabled(configured)
+        z_configured = index is not None and self._plc.jog_z_configured(index)
+        z_tooltip = "Jog camera Z{}" if z_configured else "No Z jog register configured for this camera"
+        self._jog_plus["Z"].setEnabled(z_configured)
+        self._jog_plus["Z"].setToolTip(z_tooltip.format("+"))
+        self._jog_minus["Z"].setEnabled(z_configured)
+        self._jog_minus["Z"].setToolTip(z_tooltip.format("-"))
         self._jog_hint.setText(
             "" if configured else "No PLC jog registers configured for this camera"
         )
@@ -724,14 +736,16 @@ class CameraPage(QWidget):
             )
             return
         try:
-            x, y = self._plc.read_camera_position(index)
+            x, y, z = self._plc.read_camera_position(index)
             profile = self._machine_models.save_camera_position(
-                profile_id, index, x, y, updated_by=self._username()
+                profile_id, index, x, y, z, updated_by=self._username()
             )
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Save Default Position", str(exc))
             return
-        self._jog_hint.setText(f"Saved ({x}, {y}) as default for {profile['name']!r}.")
+        self._jog_hint.setText(
+            f"Saved ({x}, {y}, {z}) as image capture position for {profile['name']!r}."
+        )
 
     def _on_go_to_default(self) -> None:
         index = self._current_index()
@@ -746,7 +760,7 @@ class CameraPage(QWidget):
         if position is None:
             QMessageBox.warning(
                 self, "Go to Default Position",
-                "No default position saved for this camera on the selected machine model.",
+                "No image capture position saved for this camera on the selected machine model.",
             )
             return
         if not self._auth.is_admin:
@@ -756,7 +770,9 @@ class CameraPage(QWidget):
             )
             return
         try:
-            self._plc.set_camera_position(index, int(position["x"]), int(position["y"]))
+            self._plc.set_camera_position(
+                index, int(position["x"]), int(position["y"]), int(position.get("z", 0))
+            )
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Go to Default Position", str(exc))
 

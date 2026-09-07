@@ -44,6 +44,11 @@ class CameraSettings:
     exposure_us: int = 10000
     gain_db: float = 0.0
     gamma: float = 1.0
+    # 0-255 light-brightness level for an external, PLC-controlled light
+    # source — not an in-camera image adjustment. No driver applies this to
+    # the device or the captured image; CameraService pushes it to that
+    # camera's PLC brightness register on every apply/save instead (see
+    # core.plc.register_map.RegisterMap.camera_brightness).
     brightness: int = 0
     width: int = 1280
     height: int = 1024

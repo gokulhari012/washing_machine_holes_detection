@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from core.utilities.exceptions import DetectionError
+from core.utilities.exceptions import ConfigurationError, DetectionError
 from core.vision import OpenCVHoleDetector, TemplateMatchingDetector, VisionEngine
 
 PARAMS = {
@@ -84,18 +84,63 @@ def test_template_detector_requires_template() -> None:
 def test_engine_filters_by_confidence() -> None:
     engine = VisionEngine(
         {
-            "active_detector": "opencv",
-            "common": {"confidence_threshold": 0.99},
-            "opencv": PARAMS,
+            "cameras": {
+                "1": {
+                    "active_detector": "opencv",
+                    "common": {"confidence_threshold": 0.99},
+                    "opencv": PARAMS,
+                }
+            }
         }
     )
-    assert not engine.detect(make_frame()).found  # nothing scores 0.99
+    assert not engine.detect(make_frame(), 1).found  # nothing scores 0.99
 
     engine.apply_config(
         {
-            "active_detector": "opencv",
-            "common": {"confidence_threshold": 0.5},
-            "opencv": PARAMS,
+            "cameras": {
+                "1": {
+                    "active_detector": "opencv",
+                    "common": {"confidence_threshold": 0.5},
+                    "opencv": PARAMS,
+                }
+            }
         }
     )
-    assert engine.detect(make_frame()).found
+    assert engine.detect(make_frame(), 1).found
+
+
+def test_engine_cameras_are_independent() -> None:
+    """Camera 1 and camera 2 can run different strategies/thresholds at once,
+    and swapping one leaves the other untouched."""
+    engine = VisionEngine(
+        {
+            "cameras": {
+                "1": {
+                    "active_detector": "opencv",
+                    "common": {"confidence_threshold": 0.99},
+                    "opencv": PARAMS,
+                },
+                "2": {
+                    "active_detector": "opencv",
+                    "common": {"confidence_threshold": 0.5},
+                    "opencv": PARAMS,
+                },
+            }
+        }
+    )
+    assert not engine.detect(make_frame(), 1).found  # camera 1's strict threshold
+    assert engine.detect(make_frame(), 2).found  # camera 2's lenient threshold
+
+    engine.apply_camera_config(
+        1, {"active_detector": "opencv", "common": {"confidence_threshold": 0.5}, "opencv": PARAMS}
+    )
+    assert engine.detect(make_frame(), 1).found  # camera 1 updated
+    assert engine.detect(make_frame(), 2).found  # camera 2 unaffected
+
+
+def test_engine_detect_unknown_camera_raises() -> None:
+    engine = VisionEngine(
+        {"cameras": {"1": {"active_detector": "opencv", "common": {}, "opencv": PARAMS}}}
+    )
+    with pytest.raises(ConfigurationError):
+        engine.detect(make_frame(), 9)

@@ -1,18 +1,26 @@
 """Camera calibration model: pixel→mm conversion and perspective correction.
 
-Two accuracy levels, chosen automatically by what has been calibrated:
+Three accuracy levels, chosen automatically by what has been calibrated:
 
 - **Scale only** — ``pixels_per_mm_x/y`` from a two-point distance
-  measurement; adequate when the camera is square to the surface.
+  measurement, or from :meth:`CameraCalibration.scale_from_points` (a
+  hand-clicked ruler); adequate when the camera is square to the surface.
 - **Homography** — a 3×3 projective mapping from ≥4 pixel↔mm point pairs
   (``cv2.findHomography``); corrects perspective when the camera views the
   surface at an angle.
+- **Lens distortion + homography** — :meth:`CameraCalibration.calibrate_lens`
+  fits a camera matrix + distortion coefficients from several checkerboard
+  photos of the *same* board at different poses (``cv2.calibrateCamera``);
+  every pixel is undistorted through that model *before* the homography/scale
+  step, in :meth:`pixel_to_mm`. A single photo cannot separate true lens
+  distortion from perspective, which is why this needs multiple, differently
+  posed views — see the Calibration page's "Auto Calibrate" section.
 
-Both can be filled in by hand (typed distances / typed point pairs) or by
-:meth:`CameraCalibration.find_checkerboard`, which turns one photo of a
+Scale and homography can be filled in by hand (typed distances / typed point
+pairs) or automatically from one or more checkerboard photos via
+:meth:`CameraCalibration.find_checkerboard`, which turns a photo of a
 checkerboard placed on/near the inspection plane into dozens of pixel↔mm
-correspondences automatically — see the Calibration page's "Auto Calibrate"
-section.
+correspondences.
 
 The *reference point* is the nominal hole position in mm; ``deviation_mm``
 against it drives the position-tolerance judgement.
@@ -23,6 +31,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass, field
+from typing import Any
 
 import cv2
 import numpy as np
@@ -43,6 +52,16 @@ class CheckerboardDetection:
 
 
 @dataclass
+class LensCalibrationResult:
+    """Multi-view lens calibration output — see :meth:`CameraCalibration.calibrate_lens`."""
+
+    camera_matrix: np.ndarray  # 3x3 intrinsics
+    dist_coeffs: np.ndarray  # (1, 5): k1, k2, p1, p2, k3
+    overall_rms_px: float
+    per_view_rms_px: list[float]
+
+
+@dataclass
 class CameraCalibration:
     """In-memory calibration for one camera."""
 
@@ -50,13 +69,25 @@ class CameraCalibration:
     pixels_per_mm_x: float = 1.0
     pixels_per_mm_y: float = 1.0
     homography: np.ndarray | None = None  # 3x3, maps pixel -> mm plane
+    camera_matrix: np.ndarray | None = None  # 3x3 intrinsics, from calibrate_lens
+    dist_coeffs: np.ndarray | None = None  # paired with camera_matrix
     ref_point_mm: tuple[float, float] = (0.0, 0.0)
     rms_error: float = 0.0
     calibrated_by: str = field(default="", compare=False)
 
     # ------------------------------------------------------------ conversion
     def pixel_to_mm(self, x_px: float, y_px: float) -> tuple[float, float]:
-        """Convert one pixel coordinate to millimetres."""
+        """Convert one pixel coordinate to millimetres.
+
+        When lens calibration is present, the pixel is undistorted first —
+        homography/scale below then act on that corrected coordinate, exactly
+        as they did when computed (see :meth:`calibrate_lens`'s caller in the
+        Calibration page, which undistorts before fitting the homography).
+        """
+        if self.camera_matrix is not None and self.dist_coeffs is not None:
+            x_px, y_px = self.undistort_points(
+                [(x_px, y_px)], self.camera_matrix, self.dist_coeffs
+            )[0]
         if self.homography is not None:
             point = np.array([[[float(x_px), float(y_px)]]], dtype=np.float64)
             mapped = cv2.perspectiveTransform(point, self.homography)
@@ -107,6 +138,110 @@ class CameraCalibration:
         if pixel_distance <= 0 or mm_distance <= 0:
             raise CalibrationError("Calibration distances must be positive")
         return pixel_distance / mm_distance
+
+    @staticmethod
+    def scale_from_points(
+        points_px: list[tuple[float, float]], spacing_mm: float = 1.0
+    ) -> float:
+        """Ruler calibration: pixels per millimetre from several clicked points.
+
+        Consecutive points are assumed to be exactly ``spacing_mm`` apart (e.g.
+        successive 1 mm ticks on a ruler placed in frame), so each gap's pixel
+        length directly is that segment's px/mm; the result is the mean over
+        all gaps, which averages out clicking jitter better than a single
+        two-point measurement. Points need not be axis-aligned — only
+        consecutive-gap spacing matters, not direction.
+
+        Raises:
+            CalibrationError: fewer than 2 points, or non-positive spacing.
+        """
+        if len(points_px) < 2:
+            raise CalibrationError("Need at least 2 ruler points to compute a scale")
+        if spacing_mm <= 0:
+            raise CalibrationError("Ruler point spacing must be positive")
+        segments = [
+            math.hypot(x2 - x1, y2 - y1)
+            for (x1, y1), (x2, y2) in zip(points_px, points_px[1:])
+        ]
+        return float(np.mean(segments)) / spacing_mm
+
+    @staticmethod
+    def calibrate_lens(
+        views: list["CheckerboardDetection"], image_size: tuple[int, int]
+    ) -> LensCalibrationResult:
+        """Fit a camera matrix + distortion coefficients from several
+        checkerboard photos of the *same* board at different poses/tilts.
+
+        Moving the board between shots is what makes this different from
+        (and more accurate than) a single-photo homography: a lone view can't
+        distinguish true lens distortion from perspective, but several views
+        of the same rigid board, seen from different angles, let
+        ``cv2.calibrateCamera`` solve for both independently.
+
+        Args:
+            views: checkerboard detections from :meth:`find_checkerboard`, all
+                using the same board (same corner count and square size).
+            image_size: ``(width, height)`` of the frames the views came from.
+
+        Raises:
+            CalibrationError: fewer than 3 views, mismatched board sizes
+                across views, or OpenCV's solver fails (degenerate/too-similar
+                poses).
+        """
+        if len(views) < 3:
+            raise CalibrationError(
+                "Lens calibration needs >= 3 checkerboard views at different "
+                f"poses (got {len(views)})"
+            )
+        point_count = len(views[0].mm_points)
+        if any(len(view.mm_points) != point_count for view in views):
+            raise CalibrationError("All views must use the same checkerboard size")
+
+        object_points = [
+            np.array([(x, y, 0.0) for x, y in view.mm_points], dtype=np.float32)
+            for view in views
+        ]
+        image_points = [
+            view.corners_px.astype(np.float32).reshape(-1, 1, 2) for view in views
+        ]
+
+        try:
+            overall_rms, camera_matrix, dist_coeffs, rvecs, tvecs = cv2.calibrateCamera(
+                object_points, image_points, image_size, None, None
+            )
+        except cv2.error as exc:
+            raise CalibrationError(f"Lens calibration failed: {exc}") from exc
+        if camera_matrix is None:
+            raise CalibrationError("Lens calibration failed (degenerate views?)")
+
+        per_view_rms: list[float] = []
+        for objp, imgp, rvec, tvec in zip(object_points, image_points, rvecs, tvecs):
+            projected, _ = cv2.projectPoints(objp, rvec, tvec, camera_matrix, dist_coeffs)
+            residuals = np.linalg.norm(
+                projected.reshape(-1, 2) - imgp.reshape(-1, 2), axis=1
+            )
+            per_view_rms.append(float(np.sqrt(np.mean(residuals**2))))
+
+        return LensCalibrationResult(
+            camera_matrix=camera_matrix,
+            dist_coeffs=dist_coeffs,
+            overall_rms_px=float(overall_rms),
+            per_view_rms_px=per_view_rms,
+        )
+
+    @staticmethod
+    def undistort_points(
+        points_px: list[tuple[float, float]],
+        camera_matrix: np.ndarray,
+        dist_coeffs: np.ndarray,
+    ) -> list[tuple[float, float]]:
+        """Map raw (lens-distorted) pixel coordinates to the equivalent ideal
+        pinhole coordinates, in the same pixel units — ``P=camera_matrix``
+        keeps the output on the original pixel scale rather than normalized
+        camera coordinates, so callers can keep treating it as a pixel."""
+        points = np.asarray(points_px, dtype=np.float64).reshape(-1, 1, 2)
+        undistorted = cv2.undistortPoints(points, camera_matrix, dist_coeffs, P=camera_matrix)
+        return [(float(x), float(y)) for x, y in undistorted.reshape(-1, 2)]
 
     @staticmethod
     def find_checkerboard(
@@ -171,23 +306,40 @@ class CameraCalibration:
         )
 
     # ---------------------------------------------------------- persistence
+    @staticmethod
+    def _matrix_from_json(
+        raw: str | None, camera_index: int, label: str, expected_shape: tuple[int, int] | None
+    ) -> np.ndarray | None:
+        if not raw:
+            return None
+        try:
+            matrix = np.asarray(json.loads(raw), dtype=np.float64)
+            if expected_shape is not None and matrix.shape != expected_shape:
+                raise ValueError(f"expected {expected_shape}, got {matrix.shape}")
+        except (ValueError, TypeError) as exc:
+            raise CalibrationError(
+                f"Corrupt {label} for camera {camera_index}: {exc}"
+            ) from exc
+        return matrix
+
     @classmethod
     def from_row(cls, row: CalibrationRow) -> "CameraCalibration":
-        homography = None
-        if row.homography_json:
-            try:
-                homography = np.asarray(json.loads(row.homography_json), dtype=np.float64)
-                if homography.shape != (3, 3):
-                    raise ValueError(f"expected 3x3, got {homography.shape}")
-            except (ValueError, TypeError) as exc:
-                raise CalibrationError(
-                    f"Corrupt homography for camera {row.camera_index}: {exc}"
-                ) from exc
+        homography = cls._matrix_from_json(
+            row.homography_json, row.camera_index, "homography", (3, 3)
+        )
+        camera_matrix = cls._matrix_from_json(
+            row.camera_matrix_json, row.camera_index, "camera matrix", (3, 3)
+        )
+        dist_coeffs = cls._matrix_from_json(
+            row.dist_coeffs_json, row.camera_index, "distortion coefficients", None
+        )
         return cls(
             camera_index=row.camera_index,
             pixels_per_mm_x=row.pixels_per_mm_x,
             pixels_per_mm_y=row.pixels_per_mm_y,
             homography=homography,
+            camera_matrix=camera_matrix,
+            dist_coeffs=dist_coeffs,
             ref_point_mm=(row.ref_point_x_mm, row.ref_point_y_mm),
             rms_error=row.rms_error,
             calibrated_by=row.calibrated_by,
@@ -201,8 +353,66 @@ class CameraCalibration:
             homography_json=(
                 json.dumps(self.homography.tolist()) if self.homography is not None else None
             ),
+            camera_matrix_json=(
+                json.dumps(self.camera_matrix.tolist())
+                if self.camera_matrix is not None
+                else None
+            ),
+            dist_coeffs_json=(
+                json.dumps(self.dist_coeffs.tolist()) if self.dist_coeffs is not None else None
+            ),
             ref_point_x_mm=self.ref_point_mm[0],
             ref_point_y_mm=self.ref_point_mm[1],
             rms_error=self.rms_error,
             calibrated_by=self.calibrated_by,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Plain-JSON-safe representation (nested lists, not the DB row's
+        JSON-*strings*) — for embedding into a non-DB document, e.g. a
+        machine-model profile snapshot (see ``MachineModelService``)."""
+        return {
+            "pixels_per_mm_x": self.pixels_per_mm_x,
+            "pixels_per_mm_y": self.pixels_per_mm_y,
+            "homography": self.homography.tolist() if self.homography is not None else None,
+            "camera_matrix": (
+                self.camera_matrix.tolist() if self.camera_matrix is not None else None
+            ),
+            "dist_coeffs": self.dist_coeffs.tolist() if self.dist_coeffs is not None else None,
+            "ref_point_mm": list(self.ref_point_mm),
+            "rms_error": self.rms_error,
+            "calibrated_by": self.calibrated_by,
+        }
+
+    @classmethod
+    def from_dict(cls, camera_index: int, data: dict[str, Any]) -> "CameraCalibration":
+        """Inverse of :meth:`to_dict`.
+
+        Raises:
+            CalibrationError: a matrix field has the wrong shape.
+        """
+
+        def _matrix(key: str, expected_shape: tuple[int, int] | None) -> np.ndarray | None:
+            value = data.get(key)
+            if value is None:
+                return None
+            matrix = np.asarray(value, dtype=np.float64)
+            if expected_shape is not None and matrix.shape != expected_shape:
+                raise CalibrationError(
+                    f"Camera {camera_index}: {key} expected shape {expected_shape}, "
+                    f"got {matrix.shape}"
+                )
+            return matrix
+
+        ref_point = data.get("ref_point_mm", (0.0, 0.0))
+        return cls(
+            camera_index=camera_index,
+            pixels_per_mm_x=float(data.get("pixels_per_mm_x", 1.0)),
+            pixels_per_mm_y=float(data.get("pixels_per_mm_y", 1.0)),
+            homography=_matrix("homography", (3, 3)),
+            camera_matrix=_matrix("camera_matrix", (3, 3)),
+            dist_coeffs=_matrix("dist_coeffs", None),
+            ref_point_mm=(float(ref_point[0]), float(ref_point[1])),
+            rms_error=float(data.get("rms_error", 0.0)),
+            calibrated_by=str(data.get("calibrated_by", "")),
         )

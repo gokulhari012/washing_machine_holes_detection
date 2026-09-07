@@ -6,6 +6,13 @@ services, UI — depends only on this contract.
 
 Register model: 16-bit unsigned holding registers addressed by integer.
 
+Coil model: single-bit registers (Modbus coils / SLMP "M" internal relays)
+addressed by their own, separate integer space — coil address 5 and holding
+register address 5 are different physical memory on the PLC, not the same
+address read two ways. Used today for the per-camera jog "busy/moving"
+handshake (see ``PlcManager``): the PC raises it before commanding a
+position and the PLC clears it once the physical move is complete.
+
 Error contract (all from ``core.utilities.exceptions``):
 - ``PlcConnectionError`` — connect failed / connection lost
 - ``PlcTimeoutError``    — device did not answer in time
@@ -59,6 +66,22 @@ class PlcClientBase(ABC):
     @abstractmethod
     def write_registers(self, address: int, values: list[int]) -> None:
         """Write consecutive unsigned 16-bit values starting at *address*.
+
+        Raises:
+            PlcConnectionError | PlcTimeoutError | PlcWriteError
+        """
+
+    @abstractmethod
+    def read_coils(self, address: int, count: int = 1) -> list[bool]:
+        """Read *count* consecutive coils starting at *address*.
+
+        Raises:
+            PlcConnectionError | PlcTimeoutError | PlcReadError
+        """
+
+    @abstractmethod
+    def write_coil(self, address: int, value: bool) -> None:
+        """Write one coil.
 
         Raises:
             PlcConnectionError | PlcTimeoutError | PlcWriteError

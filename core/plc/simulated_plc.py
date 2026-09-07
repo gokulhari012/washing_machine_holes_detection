@@ -32,7 +32,12 @@ UINT16_MAX = 65535
 
 
 class SimulatedPlc(PlcClientBase):
-    """Thread-safe fake PLC with an optional automatic trigger cycle."""
+    """Thread-safe fake PLC with an optional automatic trigger cycle.
+
+    Holding registers and coils are kept in separate dicts (``_registers`` /
+    ``_coils``), matching the real protocols where they are distinct address
+    spaces — coil 5 and register 5 are unrelated memory here too.
+    """
 
     RESPONSE_TIMEOUT_S = 10.0  # how long the fake PLC waits for vision_complete
     RESULT_HOLD_S = 0.2        # how long results stay latched before reset
@@ -47,6 +52,7 @@ class SimulatedPlc(PlcClientBase):
         self._interval_s = auto_cycle_interval_s
         self._machine_number = initial_machine_number
         self._registers: dict[int, int] = defaultdict(int)
+        self._coils: dict[int, bool] = defaultdict(bool)
         self._lock = threading.Lock()
         self._connected = False
         self._stop = threading.Event()
@@ -94,6 +100,16 @@ class SimulatedPlc(PlcClientBase):
         for offset, value in enumerate(values):
             self.write_register(address + offset, value)
 
+    def read_coils(self, address: int, count: int = 1) -> list[bool]:
+        self._require_connected()
+        with self._lock:
+            return [self._coils[address + offset] for offset in range(count)]
+
+    def write_coil(self, address: int, value: bool) -> None:
+        self._require_connected()
+        with self._lock:
+            self._coils[address] = bool(value)
+
     # -------------------------------------------------- test/demo assistance
     def set_register(self, address: int, value: int) -> None:
         """Backdoor for tests/demo: set a register regardless of connection."""
@@ -103,6 +119,15 @@ class SimulatedPlc(PlcClientBase):
     def get_register(self, address: int) -> int:
         with self._lock:
             return self._registers[address]
+
+    def set_coil(self, address: int, value: bool) -> None:
+        """Backdoor for tests/demo: set a coil regardless of connection."""
+        with self._lock:
+            self._coils[address] = bool(value)
+
+    def get_coil(self, address: int) -> bool:
+        with self._lock:
+            return self._coils[address]
 
     def fire_trigger(self, machine_number: int | None = None) -> None:
         """Manually raise one trigger (used by a 'Simulate Trigger' UI button)."""

@@ -39,6 +39,25 @@ def _paint_play(painter: QPainter, size: float, color: QColor) -> None:
     painter.fillPath(path, color)
 
 
+def _paint_plus(painter: QPainter, size: float, color: QColor) -> None:
+    """Plus sign — 'nudge this axis in the positive direction'."""
+    pen = QPen(
+        color, max(1.5, size * 0.11), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap
+    )
+    painter.setPen(pen)
+    painter.drawLine(QPointF(size * 0.5, size * 0.22), QPointF(size * 0.5, size * 0.78))
+    painter.drawLine(QPointF(size * 0.22, size * 0.5), QPointF(size * 0.78, size * 0.5))
+
+
+def _paint_minus(painter: QPainter, size: float, color: QColor) -> None:
+    """Minus sign — 'nudge this axis in the negative direction'."""
+    pen = QPen(
+        color, max(1.5, size * 0.11), Qt.PenStyle.SolidLine, Qt.PenCapStyle.RoundCap
+    )
+    painter.setPen(pen)
+    painter.drawLine(QPointF(size * 0.22, size * 0.5), QPointF(size * 0.78, size * 0.5))
+
+
 def _paint_home(painter: QPainter, size: float, color: QColor) -> None:
     """Outlined house — 'send this camera back to its home position'."""
     painter.setPen(
@@ -101,3 +120,21 @@ def home_icon(
 ) -> QIcon:
     """House 'go home' icon for the per-camera home button."""
     return _icon(_paint_home, color, disabled_color, size)
+
+
+def plus_icon(
+    color: str = _DEFAULT_COLOR,
+    disabled_color: str = _DEFAULT_DISABLED,
+    size: int = ICON_SIZE,
+) -> QIcon:
+    """Plus icon for a jog axis's positive-direction button."""
+    return _icon(_paint_plus, color, disabled_color, size)
+
+
+def minus_icon(
+    color: str = _DEFAULT_COLOR,
+    disabled_color: str = _DEFAULT_DISABLED,
+    size: int = ICON_SIZE,
+) -> QIcon:
+    """Minus icon for a jog axis's negative-direction button."""
+    return _icon(_paint_minus, color, disabled_color, size)

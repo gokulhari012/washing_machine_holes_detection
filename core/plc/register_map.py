@@ -79,6 +79,12 @@ class RegisterMap:
     # changes, so the PLC can refuse to run the station with a dead camera.
     # Optional per camera, like every other block here.
     camera_status: dict[int, int] = field(default_factory=dict)
+    # Per-camera light-brightness register — camera index -> address. The PC
+    # writes the 0-255 brightness level configured for that camera (see
+    # CameraSettings.brightness) whenever its settings are applied or saved,
+    # so a PLC-driven light source (not the camera's own ISP) tracks it.
+    # Optional per camera, like every other block here.
+    camera_brightness: dict[int, int] = field(default_factory=dict)
     position_scale: int = 10
     # Machine-model select register: which part/model is mounted, written by
     # the PLC. Optional — None means the feature is inert (no address wired
@@ -88,11 +94,24 @@ class RegisterMap:
     # above (that's the *detected hole* coordinate the app writes out as an
     # inspection result; this is the camera *mount's* position, driven by
     # PLC-controlled actuators). camera_jog: camera index -> (x_addr, y_addr)
-    # register addresses; camera_jog_home: camera index -> (home_x, home_y)
-    # *values* written by the Home action. Both optional/per-camera — a
-    # camera absent from either dict simply has no jog control available.
+    # register addresses, required as a pair. camera_jog_z: camera index ->
+    # z_addr, independent and optional — a mount without a wired Z axis
+    # simply has no Z jog register, while X/Y keep working. "Home" is not a
+    # configured value: it means writing 0 to every axis this camera has, so
+    # there is no camera_jog_home — a mount's true home is by definition
+    # electrical/mechanical zero, not an arbitrary stored offset.
     camera_jog: dict[int, tuple[int, int]] = field(default_factory=dict)
-    camera_jog_home: dict[int, tuple[int, int]] = field(default_factory=dict)
+    camera_jog_z: dict[int, int] = field(default_factory=dict)
+    # Busy/moving handshake coil — camera index -> coil address, a
+    # completely separate address space from every register above (see
+    # PlcClientBase). The PC raises it right after writing a new jog/home/
+    # go-to-default position (the "go" signal, since a data-register write
+    # alone doesn't make a real servo move); the PLC clears it back to 0
+    # once the physical move finishes. Optional per camera, like
+    # camera_jog_z — a camera without one simply has no interlock, and every
+    # position command for it is sent unconditionally, same as before this
+    # feature existed.
+    camera_jog_busy: dict[int, int] = field(default_factory=dict)
     jog_step: int = 10
 
     @classmethod
@@ -129,6 +148,10 @@ class RegisterMap:
                 int(index): int(address)
                 for index, address in registers.get("camera_status", {}).items()
             }
+            camera_brightness = {
+                int(index): int(address)
+                for index, address in registers.get("camera_brightness", {}).items()
+            }
             model_select = registers.get("model_select")
 
             jog_cfg = plc_config.get("camera_jog", {})
@@ -137,9 +160,15 @@ class RegisterMap:
                 int(index): (int(entry["x"]), int(entry["y"]))
                 for index, entry in jog_registers.items()
             }
-            camera_jog_home = {
-                int(index): (int(entry.get("home_x", 0)), int(entry.get("home_y", 0)))
+            camera_jog_z = {
+                int(index): int(entry["z"])
                 for index, entry in jog_registers.items()
+                if "z" in entry
+            }
+            camera_jog_busy = {
+                int(index): int(entry["busy"])
+                for index, entry in jog_registers.items()
+                if "busy" in entry
             }
 
             return cls(
@@ -154,10 +183,12 @@ class RegisterMap:
                 camera_triggers=camera_triggers,
                 camera_vision_complete=camera_vision_complete,
                 camera_status=camera_status,
+                camera_brightness=camera_brightness,
                 position_scale=int(scaling.get("position_scale", 10)),
                 model_select=int(model_select) if model_select is not None else None,
                 camera_jog=camera_jog,
-                camera_jog_home=camera_jog_home,
+                camera_jog_z=camera_jog_z,
+                camera_jog_busy=camera_jog_busy,
                 jog_step=int(jog_cfg.get("step", 10)),
             )
         except (KeyError, TypeError, ValueError) as exc:

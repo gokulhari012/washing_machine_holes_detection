@@ -53,7 +53,8 @@ class UsbCamera(CameraBase):
         assert self._capture is not None
         self._capture.set(cv2.CAP_PROP_FRAME_WIDTH, settings.width)
         self._capture.set(cv2.CAP_PROP_FRAME_HEIGHT, settings.height)
-        self._capture.set(cv2.CAP_PROP_BRIGHTNESS, settings.brightness)
+        # settings.brightness is a PLC-driven external light level, not an
+        # in-camera setting — see CameraSettings.brightness and CameraService.
         self._capture.set(cv2.CAP_PROP_GAIN, settings.gain_db)
         self._capture.set(cv2.CAP_PROP_GAMMA, settings.gamma * 100.0)  # UVC gamma is x100
         if settings.exposure_us > 0:

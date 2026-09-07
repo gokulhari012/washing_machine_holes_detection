@@ -69,7 +69,7 @@ class CameraPanel(QFrame):
         self._home_btn.setIconSize(QSize(ICON_PX, ICON_PX))
         self._home_btn.setProperty("class", "panelIcon")
         self._home_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._home_btn.setToolTip("Return this camera to its home position")
+        self._home_btn.setToolTip("Move this camera to its image capture position (active machine model)")
         self._home_btn.clicked.connect(lambda: self.home_requested.emit(self.camera_index))
         self._result = QLabel("—")
         self._result.setProperty("result", "")
@@ -106,7 +106,7 @@ class CameraPanel(QFrame):
         """Grey out Home when this camera has no jog registers configured."""
         self._home_btn.setEnabled(enabled)
         self._home_btn.setToolTip(
-            "Return this camera to its home position"
+            "Move this camera to its image capture position (active machine model)"
             if enabled
             else "No PLC jog registers configured for this camera"
         )

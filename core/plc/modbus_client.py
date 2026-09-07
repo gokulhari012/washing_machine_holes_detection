@@ -119,6 +119,35 @@ class ModbusTcpPlcClient(PlcClientBase):
     def write_registers(self, address: int, values: list[int]) -> None:
         self._write(address, values, single=False)
 
+    def read_coils(self, address: int, count: int = 1) -> list[bool]:
+        with self._lock:
+            client = self._require_client()
+            try:
+                response = client.read_coils(address, count=count, **self._unit_kwargs)
+            except ModbusIOException as exc:
+                raise PlcTimeoutError(f"Timeout reading coil {address}: {exc}") from exc
+            except ConnectionException as exc:
+                raise PlcConnectionError(f"Connection lost reading coil {address}: {exc}") from exc
+            except ModbusException as exc:
+                raise PlcReadError(f"Read failed at coil {address}: {exc}") from exc
+            if response.isError():
+                raise PlcReadError(f"PLC rejected read at coil {address}: {response}")
+            return list(response.bits[:count])
+
+    def write_coil(self, address: int, value: bool) -> None:
+        with self._lock:
+            client = self._require_client()
+            try:
+                response = client.write_coil(address, bool(value), **self._unit_kwargs)
+            except ModbusIOException as exc:
+                raise PlcTimeoutError(f"Timeout writing coil {address}: {exc}") from exc
+            except ConnectionException as exc:
+                raise PlcConnectionError(f"Connection lost writing coil {address}: {exc}") from exc
+            except ModbusException as exc:
+                raise PlcWriteError(f"Write failed at coil {address}: {exc}") from exc
+            if response.isError():
+                raise PlcWriteError(f"PLC rejected write at coil {address}: {response}")
+
     # -------------------------------------------------------------- internal
     def _require_client(self) -> ModbusTcpClient:
         if self._client is None:

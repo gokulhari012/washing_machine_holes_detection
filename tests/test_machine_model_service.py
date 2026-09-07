@@ -2,14 +2,18 @@
 
 Camera application is exercised against a lightweight fake that mimics only
 the two CameraService methods the service actually calls (get_configs,
-apply_live) — validated the same way the real one is, via
+apply_live), validated the same way the real one is, via
 CameraSettings.from_config, so a malformed merge would still be caught.
+Calibration application is exercised against a fake CalibrationManager that
+mimics only get/apply_live, so an "applied live, not persisted" assertion can
+check the fake's own state instead of a real database.
 """
 
 import json
 
 import pytest
 
+from core.calibration import CameraCalibration
 from core.camera.camera_base import CameraSettings
 from core.utilities.config_manager import ConfigManager
 from core.utilities.exceptions import ConfigurationError, VisionSystemError
@@ -27,20 +31,26 @@ CAMERA_DOC = {
     ]
 }
 DETECTION_DOC = {
-    "active_detector": "opencv",
-    "common": {
-        "confidence_threshold": 0.6, "expected_hole_count": 1, "position_tolerance_mm": 0.0,
-    },
-    "opencv": {
-        "detection_threshold": 60, "blur_kernel_size": 5, "morphology_operation": "close",
-        "morphology_kernel_size": 5, "morphology_iterations": 1, "min_hole_diameter_px": 20,
-        "max_hole_diameter_px": 200, "min_circularity": 0.7,
-        "edge_threshold_low": 50, "edge_threshold_high": 150,
-    },
-    "dark_hole": {
-        "channel": "auto", "blur_kernel_size": 3, "min_contrast": 18, "use_otsu": True,
-        "morphology_kernel_size": 3, "min_hole_diameter_px": 15, "max_hole_diameter_px": 120,
-        "min_fill_ratio": 0.35, "max_fit_error": 0.25,
+    "cameras": {
+        "1": {
+            "active_detector": "opencv",
+            "common": {
+                "confidence_threshold": 0.6, "expected_hole_count": 1,
+                "position_tolerance_mm": 0.0,
+            },
+            "opencv": {
+                "detection_threshold": 60, "blur_kernel_size": 5,
+                "morphology_operation": "close", "morphology_kernel_size": 5,
+                "morphology_iterations": 1, "min_hole_diameter_px": 20,
+                "max_hole_diameter_px": 200, "min_circularity": 0.7,
+                "edge_threshold_low": 50, "edge_threshold_high": 150,
+            },
+            "dark_hole": {
+                "channel": "auto", "blur_kernel_size": 3, "min_contrast": 18,
+                "use_otsu": True, "morphology_kernel_size": 3, "min_hole_diameter_px": 15,
+                "max_hole_diameter_px": 120, "min_fill_ratio": 0.35, "max_fit_error": 0.25,
+            },
+        },
     },
 }
 
@@ -61,20 +71,50 @@ class FakeCameraService:
 
 
 class FakePlcService:
-    """Mimics the two PlcService camera-position methods MachineModelService calls."""
+    """Mimics the PlcService methods MachineModelService calls."""
 
     def __init__(self) -> None:
-        self.positions: dict[int, tuple[int, int]] = {}
+        self.positions: dict[int, tuple[int, int, int]] = {}
         self.rejects: set[int] = set()
+        self.model_select: int | None = None
+        self.model_select_rejected = False
 
-    def read_camera_position(self, camera_index: int) -> tuple[int, int]:
-        return self.positions.get(camera_index, (0, 0))
+    def read_camera_position(self, camera_index: int) -> tuple[int, int, int]:
+        return self.positions.get(camera_index, (0, 0, 0))
 
-    def set_camera_position(self, camera_index: int, x: int, y: int) -> tuple[int, int]:
+    def set_camera_position(
+        self, camera_index: int, x: int, y: int, z: int = 0
+    ) -> tuple[int, int, int]:
         if camera_index in self.rejects:
             raise VisionSystemError(f"no jog registers configured for camera {camera_index}")
-        self.positions[camera_index] = (x, y)
-        return x, y
+        self.positions[camera_index] = (x, y, z)
+        return x, y, z
+
+    def set_model_select(self, code: int) -> bool:
+        if self.model_select_rejected:
+            raise VisionSystemError("model_select register write rejected")
+        self.model_select = code
+        return True
+
+
+class FakeCalibrationManager:
+    """Mimics the two CalibrationManager methods MachineModelService calls."""
+
+    def __init__(self) -> None:
+        self._calibrations: dict[int, CameraCalibration] = {}
+        self.applied: list[CameraCalibration] = []
+        self.reject_camera: int | None = None
+
+    def seed(self, calibration: CameraCalibration) -> None:
+        self._calibrations[calibration.camera_index] = calibration
+
+    def get(self, camera_index: int) -> CameraCalibration | None:
+        return self._calibrations.get(camera_index)
+
+    def apply_live(self, calibration: CameraCalibration) -> None:
+        if calibration.camera_index == self.reject_camera:
+            raise VisionSystemError(f"camera {calibration.camera_index}: rejected")
+        self.applied.append(calibration)
 
 
 def make_service(tmp_path):
@@ -88,11 +128,15 @@ def make_service(tmp_path):
     cameras = FakeCameraService(CAMERA_DOC["cameras"])
     engine = VisionEngine(DETECTION_DOC)
     plc = FakePlcService()
-    return MachineModelService(config, cameras, engine, plc), cameras, engine, plc
+    calibration = FakeCalibrationManager()
+    return (
+        MachineModelService(config, cameras, engine, plc, calibration),
+        cameras, engine, plc, calibration,
+    )
 
 
 def test_capture_then_get_by_code_round_trip(tmp_path) -> None:
-    service, _cameras, _engine, _plc = make_service(tmp_path)
+    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
     profile = service.capture_current("Model A", 3, created_by="admin")
     assert profile["plc_code"] == 3
     assert service.get_by_code(3)["name"] == "Model A"
@@ -101,20 +145,20 @@ def test_capture_then_get_by_code_round_trip(tmp_path) -> None:
 
 
 def test_duplicate_plc_code_rejected(tmp_path) -> None:
-    service, _cameras, _engine, _plc = make_service(tmp_path)
+    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
     service.capture_current("Model A", 3, created_by="admin")
     with pytest.raises(ConfigurationError):
         service.capture_current("Model B", 3, created_by="admin")
 
 
 def test_blank_name_rejected(tmp_path) -> None:
-    service, _cameras, _engine, _plc = make_service(tmp_path)
+    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
     with pytest.raises(ConfigurationError):
         service.capture_current("   ", 1, created_by="admin")
 
 
 def test_apply_profile_merges_tunable_fields_only(tmp_path) -> None:
-    service, cameras, _engine, _plc = make_service(tmp_path)
+    service, cameras, _engine, _plc, _calibration = make_service(tmp_path)
     profile = service.capture_current("Model A", 3, created_by="admin")
     profile["cameras"]["1"]["roi"] = {"x": 10, "y": 20, "width": 300, "height": 200}
     profile["cameras"]["1"]["exposure_us"] = 25000
@@ -130,7 +174,7 @@ def test_apply_profile_merges_tunable_fields_only(tmp_path) -> None:
 
 
 def test_apply_profile_skips_missing_camera_with_warning(tmp_path) -> None:
-    service, cameras, _engine, _plc = make_service(tmp_path)
+    service, cameras, _engine, _plc, _calibration = make_service(tmp_path)
     profile = service.capture_current("Model A", 3, created_by="admin")
     profile["cameras"]["9"] = profile["cameras"].pop("1")
 
@@ -141,24 +185,35 @@ def test_apply_profile_skips_missing_camera_with_warning(tmp_path) -> None:
 
 
 def test_apply_profile_hot_swaps_detection(tmp_path) -> None:
-    service, _cameras, engine, _plc = make_service(tmp_path)
+    service, _cameras, engine, _plc, _calibration = make_service(tmp_path)
     profile = service.capture_current("Model A", 3, created_by="admin")
-    profile["detection"] = dict(DETECTION_DOC, active_detector="dark_hole")
+    profile["detection"]["cameras"]["1"]["active_detector"] = "dark_hole"
 
     service.apply_profile(profile)
-    assert engine.active_detector_name == "dark_hole"
+    assert engine.active_detector_name(1) == "dark_hole"
 
 
 def test_apply_profile_raises_on_bad_detection_block(tmp_path) -> None:
-    service, _cameras, _engine, _plc = make_service(tmp_path)
+    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
     profile = service.capture_current("Model A", 3, created_by="admin")
-    profile["detection"] = dict(DETECTION_DOC, active_detector="not_a_real_detector")
+    profile["detection"]["cameras"]["1"]["active_detector"] = "not_a_real_detector"
     with pytest.raises(VisionSystemError):
         service.apply_profile(profile)
 
 
+def test_apply_profile_upgrades_legacy_flat_detection_block(tmp_path) -> None:
+    """A profile captured before per-camera detection existed still applies,
+    its one shared block cloned onto every camera currently configured."""
+    service, _cameras, engine, _plc, _calibration = make_service(tmp_path)
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    profile["detection"] = dict(DETECTION_DOC["cameras"]["1"], active_detector="dark_hole")
+
+    service.apply_profile(profile)
+    assert engine.active_detector_name(1) == "dark_hole"
+
+
 def test_update_from_current_keeps_name_and_code(tmp_path) -> None:
-    service, cameras, _engine, _plc = make_service(tmp_path)
+    service, cameras, _engine, _plc, _calibration = make_service(tmp_path)
     profile = service.capture_current("Model A", 3, created_by="admin")
     cameras._configs[0]["exposure_us"] = 99999
 
@@ -169,7 +224,7 @@ def test_update_from_current_keeps_name_and_code(tmp_path) -> None:
 
 
 def test_rename_validates_and_persists(tmp_path) -> None:
-    service, _cameras, _engine, _plc = make_service(tmp_path)
+    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
     profile = service.capture_current("Model A", 3, created_by="admin")
     service.rename(profile["id"], "Model A2", 4)
     assert service.get_by_code(4)["name"] == "Model A2"
@@ -177,7 +232,7 @@ def test_rename_validates_and_persists(tmp_path) -> None:
 
 
 def test_rename_rejects_code_already_used_by_another_profile(tmp_path) -> None:
-    service, _cameras, _engine, _plc = make_service(tmp_path)
+    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
     profile_a = service.capture_current("Model A", 3, created_by="admin")
     service.capture_current("Model B", 4, created_by="admin")
     with pytest.raises(ConfigurationError):
@@ -185,7 +240,7 @@ def test_rename_rejects_code_already_used_by_another_profile(tmp_path) -> None:
 
 
 def test_delete_removes_profile(tmp_path) -> None:
-    service, _cameras, _engine, _plc = make_service(tmp_path)
+    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
     profile = service.capture_current("Model A", 3, created_by="admin")
     service.delete(profile["id"])
     assert service.list_profiles() == []
@@ -194,37 +249,106 @@ def test_delete_removes_profile(tmp_path) -> None:
 
 
 def test_save_camera_position_persists_on_profile(tmp_path) -> None:
-    service, _cameras, _engine, _plc = make_service(tmp_path)
+    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
     profile = service.capture_current("Model A", 3, created_by="admin")
 
-    updated = service.save_camera_position(profile["id"], 1, 250, 340, updated_by="admin")
-    assert updated["jog_positions"]["1"] == {"x": 250, "y": 340}
-    assert service.get_by_id(profile["id"])["jog_positions"]["1"] == {"x": 250, "y": 340}
+    updated = service.save_camera_position(profile["id"], 1, 250, 340, 430, updated_by="admin")
+    assert updated["jog_positions"]["1"] == {"x": 250, "y": 340, "z": 430}
+    assert service.get_by_id(profile["id"])["jog_positions"]["1"] == {
+        "x": 250, "y": 340, "z": 430,
+    }
 
 
 def test_save_camera_position_rejects_unknown_profile(tmp_path) -> None:
-    service, _cameras, _engine, _plc = make_service(tmp_path)
+    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
     with pytest.raises(ConfigurationError):
-        service.save_camera_position(999, 1, 0, 0, updated_by="admin")
+        service.save_camera_position(999, 1, 0, 0, 0, updated_by="admin")
 
 
 def test_apply_profile_pushes_saved_jog_positions(tmp_path) -> None:
-    service, _cameras, _engine, plc = make_service(tmp_path)
+    service, _cameras, _engine, plc, _calibration = make_service(tmp_path)
     profile = service.capture_current("Model A", 3, created_by="admin")
-    profile = service.save_camera_position(profile["id"], 1, 250, 340, updated_by="admin")
+    profile = service.save_camera_position(profile["id"], 1, 250, 340, 430, updated_by="admin")
 
     warnings = service.apply_profile(profile)
     assert warnings == []
-    assert plc.positions[1] == (250, 340)
+    assert plc.positions[1] == (250, 340, 430)
 
 
 def test_apply_profile_warns_when_position_rejected(tmp_path) -> None:
-    service, _cameras, _engine, plc = make_service(tmp_path)
+    service, _cameras, _engine, plc, _calibration = make_service(tmp_path)
     profile = service.capture_current("Model A", 3, created_by="admin")
-    profile = service.save_camera_position(profile["id"], 1, 250, 340, updated_by="admin")
+    profile = service.save_camera_position(profile["id"], 1, 250, 340, 430, updated_by="admin")
     plc.rejects.add(1)
 
     warnings = service.apply_profile(profile)
     assert len(warnings) == 1
     assert "camera 1" in warnings[0]
     assert 1 not in plc.positions
+
+
+def test_apply_profile_writes_model_select_register(tmp_path) -> None:
+    service, _cameras, _engine, plc, _calibration = make_service(tmp_path)
+    profile = service.capture_current("Model A", 3, created_by="admin")
+
+    warnings = service.apply_profile(profile)
+    assert warnings == []
+    assert plc.model_select == 3
+
+
+def test_apply_profile_warns_when_model_select_rejected(tmp_path) -> None:
+    service, _cameras, _engine, plc, _calibration = make_service(tmp_path)
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    plc.model_select_rejected = True
+
+    warnings = service.apply_profile(profile)
+    assert len(warnings) == 1
+    assert "model_select" in warnings[0]
+
+
+def test_capture_snapshots_active_calibration(tmp_path) -> None:
+    service, _cameras, _engine, _plc, calibration = make_service(tmp_path)
+    calibration.seed(
+        CameraCalibration(camera_index=1, pixels_per_mm_x=12.5, pixels_per_mm_y=12.5)
+    )
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    assert profile["calibration"]["1"]["pixels_per_mm_x"] == 12.5
+
+
+def test_capture_omits_calibration_for_uncalibrated_camera(tmp_path) -> None:
+    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    assert profile["calibration"] == {}
+
+
+def test_apply_profile_applies_calibration_live_without_persisting(tmp_path) -> None:
+    service, _cameras, _engine, _plc, calibration = make_service(tmp_path)
+    calibration.seed(
+        CameraCalibration(camera_index=1, pixels_per_mm_x=12.5, pixels_per_mm_y=12.5)
+    )
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    # Simulate the DB's baseline having moved on since capture — apply_profile
+    # must push the profile's snapshot live, not whatever seed() left behind.
+    calibration.seed(
+        CameraCalibration(camera_index=1, pixels_per_mm_x=99.0, pixels_per_mm_y=99.0)
+    )
+
+    warnings = service.apply_profile(profile)
+    assert warnings == []
+    assert len(calibration.applied) == 1
+    assert calibration.applied[0].pixels_per_mm_x == 12.5
+    # apply_live (fake) never touches the "database" (here, the seed dict) —
+    # only the real CalibrationManager.apply_live's non-persisting contract
+    # is asserted directly in test_calibration_manager.py.
+
+
+def test_apply_profile_warns_when_calibration_rejected(tmp_path) -> None:
+    service, _cameras, _engine, _plc, calibration = make_service(tmp_path)
+    calibration.seed(CameraCalibration(camera_index=1, pixels_per_mm_x=12.5))
+    calibration.reject_camera = 1
+    profile = service.capture_current("Model A", 3, created_by="admin")
+
+    warnings = service.apply_profile(profile)
+    assert len(warnings) == 1
+    assert "camera 1" in warnings[0]
+    assert calibration.applied == []

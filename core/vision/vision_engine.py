@@ -1,16 +1,26 @@
-"""Strategy context for hole detection + shared overlay rendering.
+"""Per-camera strategy context for hole detection + shared overlay rendering.
 
-``VisionEngine`` owns the active :class:`HoleDetector`, applies the
-``detection.json`` configuration (hot-swappable at runtime via
-``apply_config``), filters candidates by the common confidence threshold, and
-serialises ``detect()`` for strategies that declare themselves not
-thread-safe (the classical detectors run 4 images in parallel).
+``VisionEngine`` owns one independent :class:`HoleDetector` instance **per
+camera** — each camera may run a different algorithm with its own
+parameters and its own common judgement thresholds (confidence, expected
+hole count, position tolerance). ``apply_config`` hot-swaps every camera's
+strategy at once from a full ``detection.json`` dict (atomic: a malformed
+block for one camera leaves every camera's previous, working strategy in
+place); ``apply_camera_config`` hot-swaps a single camera, for the Detection
+page's per-camera "Save & Apply". ``detect()``/``debug_stages()`` take a
+``camera_index`` and run that camera's strategy, serialised on a per-camera
+lock only when that strategy declares itself not thread-safe (e.g. a GPU
+model whose inference is not re-entrant) — classical CV strategies are
+stateless per call and safely run 4 cameras' images in parallel with no
+locking at all.
 """
 
 from __future__ import annotations
 
+import copy
 import threading
-from typing import Any
+from dataclasses import dataclass
+from typing import Any, Iterable
 
 import cv2
 import numpy as np
@@ -35,91 +45,142 @@ _REGISTRY: dict[DetectorType, type[HoleDetector]] = {
 }
 
 
+def migrate_legacy_detection_config(
+    detection_config: dict[str, Any], camera_indices: Iterable[int]
+) -> dict[str, Any]:
+    """Upgrade a pre-per-camera ``detection.json`` (one flat block shared by
+    every camera) into the current ``{"cameras": {"<index>": {...}}}`` shape
+    by cloning that one block onto every camera index — preserves the old
+    all-cameras-share-one-config behaviour exactly, so nothing changes for a
+    station that has not yet re-tuned any camera individually.
+
+    A no-op (returns *detection_config* unchanged) if it is already in the
+    per-camera shape.
+    """
+    if "cameras" in detection_config:
+        return detection_config
+    return {"cameras": {str(index): copy.deepcopy(detection_config) for index in camera_indices}}
+
+
+@dataclass
+class _CameraDetector:
+    detector: HoleDetector
+    common: dict[str, Any]
+    detect_lock: threading.Lock | None  # only set when the strategy is not thread-safe
+
+
 class VisionEngine:
     """Facade the rest of the application talks to for detection."""
 
     def __init__(self, detection_config: dict[str, Any]) -> None:
-        self._swap_lock = threading.Lock()      # protects strategy replacement
-        self._detect_lock = threading.Lock()    # used only for non-thread-safe strategies
-        self._detector: HoleDetector | None = None
-        self._common: dict[str, Any] = {}
+        self._swap_lock = threading.Lock()  # protects the per-camera dict itself
+        self._cameras: dict[int, _CameraDetector] = {}
         self.apply_config(detection_config)
 
     # ------------------------------------------------------------- configure
     def apply_config(self, detection_config: dict[str, Any]) -> None:
-        """(Re)build the active strategy from a full detection.json dict.
+        """(Re)build every camera's strategy from a full detection.json dict.
+
+        All-or-nothing: every camera's block is validated and built *before*
+        any of them replace the live state, so a malformed block for one
+        camera never leaves the others half-updated.
+
+        Raises:
+            ConfigurationError: no "cameras" block, or a camera's block names
+                an unknown detector.
+            DetectionError: a strategy rejected its parameters (bad template...).
+        """
+        cameras_config = detection_config.get("cameras")
+        if not cameras_config:
+            raise ConfigurationError("detection config has no 'cameras' block")
+
+        built = {
+            int(index): self._build_camera(camera_config)
+            for index, camera_config in cameras_config.items()
+        }
+        with self._swap_lock:
+            self._cameras = built
+        logger.info(
+            "Vision engine strategies -> %s",
+            {index: camera.detector.name for index, camera in built.items()},
+        )
+
+    def apply_camera_config(self, camera_index: int, camera_config: dict[str, Any]) -> None:
+        """Hot-swap a single camera's strategy (Detection page per-camera save).
 
         Raises:
             ConfigurationError: unknown detector name.
-            DetectionError: strategy rejected its parameters (bad template...).
+            DetectionError: strategy rejected its parameters.
         """
-        active_name = str(detection_config.get("active_detector", "opencv")).lower()
+        camera = self._build_camera(camera_config)
+        with self._swap_lock:
+            self._cameras[camera_index] = camera
+        logger.info("Vision engine strategy for camera %d -> %s", camera_index, camera.detector.name)
+
+    @staticmethod
+    def _build_camera(camera_config: dict[str, Any]) -> _CameraDetector:
+        active_name = str(camera_config.get("active_detector", "opencv")).lower()
         try:
             detector_type = DetectorType(active_name)
         except ValueError as exc:
             raise ConfigurationError(f"Unknown active_detector: {active_name!r}") from exc
 
-        params = dict(detection_config.get(detector_type.value, {}))
+        params = dict(camera_config.get(detector_type.value, {}))
         detector = _REGISTRY[detector_type](params)
+        common = dict(camera_config.get("common", {}))
+        detect_lock = None if detector.thread_safe else threading.Lock()
+        return _CameraDetector(detector=detector, common=common, detect_lock=detect_lock)
 
+    def _camera(self, camera_index: int) -> _CameraDetector:
         with self._swap_lock:
-            self._detector = detector
-            self._common = dict(detection_config.get("common", {}))
-        logger.info("Vision engine strategy -> %s", detector_type.value)
+            camera = self._cameras.get(camera_index)
+        if camera is None:
+            raise ConfigurationError(f"No detection configuration for camera {camera_index}")
+        return camera
 
     # ------------------------------------------------------------ properties
-    @property
-    def active_detector_name(self) -> str:
-        with self._swap_lock:
-            assert self._detector is not None
-            return self._detector.name
+    def active_detector_name(self, camera_index: int) -> str:
+        return self._camera(camera_index).detector.name
 
-    @property
-    def confidence_threshold(self) -> float:
-        return float(self._common.get("confidence_threshold", 0.6))
+    def confidence_threshold(self, camera_index: int) -> float:
+        return float(self._camera(camera_index).common.get("confidence_threshold", 0.6))
 
-    @property
-    def expected_hole_count(self) -> int:
-        return int(self._common.get("expected_hole_count", 1))
+    def expected_hole_count(self, camera_index: int) -> int:
+        return int(self._camera(camera_index).common.get("expected_hole_count", 1))
 
-    @property
-    def position_tolerance_mm(self) -> float:
+    def position_tolerance_mm(self, camera_index: int) -> float:
         """<= 0 disables the position tolerance check."""
-        return float(self._common.get("position_tolerance_mm", 0.0))
+        return float(self._camera(camera_index).common.get("position_tolerance_mm", 0.0))
 
     # ---------------------------------------------------------------- detect
-    def detect(self, image: np.ndarray) -> DetectionResult:
-        """Run the active strategy; candidates below the common confidence
+    def detect(self, image: np.ndarray, camera_index: int) -> DetectionResult:
+        """Run *camera_index*'s strategy; candidates below its own confidence
         threshold are dropped so callers only ever see viable holes.
 
         Raises:
+            ConfigurationError: no detector configured for this camera.
             DetectionError
         """
-        with self._swap_lock:
-            assert self._detector is not None
-            detector = self._detector
-
-        if detector.thread_safe:
-            result = detector.detect(image)
+        camera = self._camera(camera_index)
+        if camera.detect_lock is None:
+            result = camera.detector.detect(image)
         else:
-            with self._detect_lock:
-                result = detector.detect(image)
+            with camera.detect_lock:
+                result = camera.detector.detect(image)
 
-        threshold = self.confidence_threshold
+        threshold = float(camera.common.get("confidence_threshold", 0.6))
         result.holes = [hole for hole in result.holes if hole.confidence >= threshold]
         return result
 
-    def debug_stages(self, image: np.ndarray) -> dict[str, np.ndarray]:
-        """Intermediate mask/edges from the active strategy; ``{}`` when it has
-        none to show (see :meth:`HoleDetector.debug_stages`).
+    def debug_stages(self, image: np.ndarray, camera_index: int) -> dict[str, np.ndarray]:
+        """Intermediate mask/edges from *camera_index*'s strategy; ``{}`` when
+        it has none to show (see :meth:`HoleDetector.debug_stages`).
 
         Raises:
+            ConfigurationError: no detector configured for this camera.
             DetectionError
         """
-        with self._swap_lock:
-            assert self._detector is not None
-            detector = self._detector
-        return detector.debug_stages(image)
+        return self._camera(camera_index).detector.debug_stages(image)
 
 
 # --------------------------------------------------------------------------- #

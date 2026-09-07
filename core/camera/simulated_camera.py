@@ -11,8 +11,10 @@ Two modes:
    bolt-head distractors below the minimum hole diameter so the detector's
    size filtering is exercised.
 
-Exposure, gain, brightness and gamma all affect the rendered image so the
-Camera Configuration page sliders give visible feedback.
+Exposure, gain and gamma all affect the rendered image so the Camera
+Configuration page sliders give visible feedback. ``brightness`` does not —
+it is a 0-255 light-brightness level for an external, PLC-controlled light
+source, not an image adjustment (see ``CameraSettings.brightness``).
 """
 
 from __future__ import annotations
@@ -131,9 +133,11 @@ class SimulatedCamera(CameraBase):
             cv2.circle(img, (cx, cy), self.HOLE_RADIUS_PX, 22, -1)     # dark interior
             cv2.circle(img, (cx, cy), self.HOLE_RADIUS_PX + 2, 165, 2)  # chamfer ring
 
-        # exposure / gain / brightness / gamma response for UI feedback
+        # exposure / gain / gamma response for UI feedback (brightness is a
+        # PLC-driven external light level, not something a captured/rendered
+        # image is adjusted by — see CameraSettings.brightness)
         factor = (s.exposure_us / 10000.0) * (2.0 ** (s.gain_db / 6.0))
-        img = np.clip(img.astype(np.float32) * factor + s.brightness, 0, 255).astype(np.uint8)
+        img = np.clip(img.astype(np.float32) * factor, 0, 255).astype(np.uint8)
         if abs(s.gamma - 1.0) > 1e-3:
             lut = np.clip(
                 ((np.arange(256, dtype=np.float32) / 255.0) ** (1.0 / s.gamma)) * 255.0, 0, 255

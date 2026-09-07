@@ -1,22 +1,33 @@
 """PLC Configuration page.
 
-Left: connection settings + full register map + scaling, with Test/Save/
-Reconnect. Right: live register viewer (auto-refresh while the page is
-visible) and manual read/write — writes require an admin login (toolbar
-Login button). Saving writes plc.json (and the audit mirror); the running
-client, register map and poll worker are built once at startup, so every
-change on this page — connection *and* register addresses — needs an
-application restart to take effect.
+Left: connection settings + scaling/jog-step scalars (not registers — they
+have no PLC address of their own), with Test/Save/Reconnect. Right: one
+table listing every named PLC register this application knows about — its
+configured address (an embedded, editable spin box) and its current live
+value (auto-refreshed while the page is visible). Saving connection or
+register-address changes takes effect immediately, without an application
+restart: ``Application._on_plc_config_saved`` (main.py) stops the poll
+worker, rebuilds ``PlcManager`` in place via ``PlcManager.rebuild`` — every
+other holder of that instance (PlcService, InspectionService) keeps working
+unchanged — and starts a fresh poll worker sized to the new intervals. The
+table itself just replaces what used to be two separate register grids plus
+a second, differently-addressed live viewer table. Manual write of an
+arbitrary register/value stays a separate, explicitly admin-gated control
+below the table — pushing a value to a *live* register right now is a
+different, more dangerous action than editing which address a name refers
+to, so it keeps its own confirmation path.
 """
 
 from __future__ import annotations
 
-from PySide6.QtCore import QTimer
+from dataclasses import dataclass
+from typing import Callable
+
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
     QFormLayout,
-    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -38,6 +49,11 @@ from services.plc_service import PlcService
 from ui.widgets import LabeledLed
 
 REFRESH_MS = 500
+CAMERAS = (1, 2, 3, 4)
+# Two register addresses are read in the same bulk transaction when they are
+# at most this far apart — cheaper than a second PLC round trip for the
+# handful of addresses in between that no named register actually uses.
+MAX_READ_GAP = 4
 
 
 def _reg_spin(value: int = 0) -> QSpinBox:
@@ -47,19 +63,225 @@ def _reg_spin(value: int = 0) -> QSpinBox:
     return spin
 
 
-def _row_of(*widgets: QWidget) -> QWidget:
-    """Pack several address spin boxes into one grid cell, side by side."""
-    box = QHBoxLayout()
-    box.setContentsMargins(0, 0, 0, 0)
-    for widget in widgets:
-        box.addWidget(widget)
-    holder = QWidget()
-    holder.setLayout(box)
-    return holder
+@dataclass
+class _RegisterField:
+    """One row of the register table: display metadata plus how its
+    configured address is read from and written into the plc.json document."""
+
+    name: str
+    tooltip: str
+    optional: bool  # True: 0 displays as "Not used" and is saved as absent
+    get: Callable[[dict], int]
+    set: Callable[[dict, int], None]
+    clear: Callable[[dict], None] | None = None  # only ever called when optional
+    kind: str = "holding"  # "holding" or "coil" — a completely separate address space
+
+
+def _core_field(key: str, name: str, tooltip: str) -> _RegisterField:
+    return _RegisterField(
+        name, tooltip, False,
+        get=lambda cfg, key=key: int(cfg["registers"].get(key, 0)),
+        set=lambda cfg, v, key=key: cfg["registers"].__setitem__(key, v),
+    )
+
+
+def _camera_pair_field(block: str, camera: int, axis: str, name: str, tooltip: str) -> _RegisterField:
+    idx = str(camera)
+    return _RegisterField(
+        name, tooltip, False,
+        get=lambda cfg, block=block, idx=idx, axis=axis: int(
+            cfg["registers"].get(block, {}).get(idx, {}).get(axis, 0)
+        ),
+        set=lambda cfg, v, block=block, idx=idx, axis=axis: (
+            cfg["registers"].setdefault(block, {}).setdefault(idx, {}).__setitem__(axis, v)
+        ),
+    )
+
+
+def _camera_scalar_field(block: str, camera: int, name: str, tooltip: str) -> _RegisterField:
+    idx = str(camera)
+    return _RegisterField(
+        name, tooltip, False,
+        get=lambda cfg, block=block, idx=idx: int(cfg["registers"].get(block, {}).get(idx, 0)),
+        set=lambda cfg, v, block=block, idx=idx: (
+            cfg["registers"].setdefault(block, {}).__setitem__(idx, v)
+        ),
+    )
+
+
+def _jog_axis_field(camera: int, axis: str, name: str, tooltip: str) -> _RegisterField:
+    idx = str(camera)
+    return _RegisterField(
+        name, tooltip, False,
+        get=lambda cfg, idx=idx, axis=axis: int(
+            cfg.get("camera_jog", {}).get("registers", {}).get(idx, {}).get(axis, 0)
+        ),
+        set=lambda cfg, v, idx=idx, axis=axis: (
+            cfg.setdefault("camera_jog", {}).setdefault("registers", {})
+            .setdefault(idx, {}).__setitem__(axis, v)
+        ),
+    )
+
+
+def _jog_z_field(camera: int) -> _RegisterField:
+    idx = str(camera)
+    return _RegisterField(
+        f"Camera {camera} Jog Z",
+        "Independent of Jog X/Y. \"Not used\" means this camera has no Z axis "
+        "wired up — the Z jog buttons and Home's Z component are then simply "
+        "inert for it.",
+        True,
+        get=lambda cfg, idx=idx: int(
+            cfg.get("camera_jog", {}).get("registers", {}).get(idx, {}).get("z", 0)
+        ),
+        set=lambda cfg, v, idx=idx: (
+            cfg.setdefault("camera_jog", {}).setdefault("registers", {})
+            .setdefault(idx, {}).__setitem__("z", v)
+        ),
+        clear=lambda cfg, idx=idx: (
+            cfg.get("camera_jog", {}).get("registers", {}).get(idx, {}).pop("z", None)
+        ),
+    )
+
+
+def _jog_busy_field(camera: int) -> _RegisterField:
+    idx = str(camera)
+    return _RegisterField(
+        f"Camera {camera} Jog Busy",
+        "Coil, not a data register. The PC raises this right after writing a "
+        "new jog/home/go-to-default position (a data-register write alone "
+        "doesn't make a real servo move); the PLC clears it back to 0 once "
+        "the physical move finishes. A new position command for this camera "
+        "is refused while it reads 1. \"Not used\" means no interlock — every "
+        "position command is sent unconditionally, as before this existed.",
+        True,
+        get=lambda cfg, idx=idx: int(
+            cfg.get("camera_jog", {}).get("registers", {}).get(idx, {}).get("busy", 0)
+        ),
+        set=lambda cfg, v, idx=idx: (
+            cfg.setdefault("camera_jog", {}).setdefault("registers", {})
+            .setdefault(idx, {}).__setitem__("busy", v)
+        ),
+        clear=lambda cfg, idx=idx: (
+            cfg.get("camera_jog", {}).get("registers", {}).get(idx, {}).pop("busy", None)
+        ),
+        kind="coil",
+    )
+
+
+def _model_select_field() -> _RegisterField:
+    return _RegisterField(
+        "Machine Model Select",
+        "PLC → PC: machine-model code, polled every model_poll_interval_ms. "
+        "The profile whose PLC Code matches the value read here is applied "
+        "(Machine Models page). \"Not used\" disables model switching — the "
+        "register is then never read.",
+        True,
+        get=lambda cfg: int(cfg["registers"].get("model_select") or 0),
+        set=lambda cfg, v: cfg["registers"].__setitem__("model_select", v),
+        clear=lambda cfg: cfg["registers"].__setitem__("model_select", None),
+    )
+
+
+def _build_fields() -> list[_RegisterField]:
+    fields = [
+        _core_field(
+            "trigger", "Trigger",
+            "PLC → PC: rising edge starts an inspection cycle; PC writes 0 back on detection",
+        ),
+        _core_field(
+            "machine_number", "Machine Number",
+            "PLC → PC: identifies the machine being inspected this cycle",
+        ),
+        _core_field(
+            "heartbeat", "Heartbeat",
+            "PC → PLC: toggles every heartbeat_interval_ms so the PLC can watchdog the PC",
+        ),
+        _model_select_field(),
+        _core_field(
+            "result", "Result",
+            "PC → PLC: overall cycle result — 1=GOOD, 2=NG, 3=ERROR",
+        ),
+        _core_field(
+            "vision_complete", "Vision Complete",
+            "PC → PLC: set to 1 once results are ready; PLC reads it then resets it and the trigger",
+        ),
+    ]
+    for camera in CAMERAS:
+        fields += [
+            _camera_pair_field(
+                "camera_positions", camera, "x", f"Camera {camera} X",
+                "PC → PLC: detected hole X, encoded as an absolute servo target",
+            ),
+            _camera_pair_field(
+                "camera_positions", camera, "y", f"Camera {camera} Y",
+                "PC → PLC: detected hole Y, encoded as an absolute servo target",
+            ),
+            _camera_scalar_field(
+                "camera_results", camera, f"Camera {camera} Result",
+                "PC → PLC: this camera's own GOOD/NG/ERROR verdict",
+            ),
+            _camera_pair_field(
+                "servo_home_positions", camera, "x", f"Camera {camera} Servo Home X",
+                "PLC → PC: this axis's servo home — the datum camera positions are measured from",
+            ),
+            _camera_pair_field(
+                "servo_home_positions", camera, "y", f"Camera {camera} Servo Home Y",
+                "PLC → PC: this axis's servo home — the datum camera positions are measured from",
+            ),
+            _camera_scalar_field(
+                "camera_triggers", camera, f"Camera {camera} Trigger",
+                "PLC → PC: inspect this camera alone on a 0→1 edge",
+            ),
+            _camera_scalar_field(
+                "camera_vision_complete", camera, f"Camera {camera} Vision Complete",
+                "PC → PLC: this camera's own completion handshake",
+            ),
+            _camera_scalar_field(
+                "camera_status", camera, f"Camera {camera} Status",
+                "PC → PLC: 1 while this camera is connected and grabbing normally, 0 otherwise",
+            ),
+            _camera_scalar_field(
+                "camera_brightness", camera, f"Camera {camera} Brightness",
+                "PC → PLC: this camera's light-brightness level (0-255), pushed on every "
+                "Camera page Apply/Save — drives an external light, not the camera itself",
+            ),
+            _jog_axis_field(
+                camera, "x", f"Camera {camera} Jog X",
+                "PC ↔ PLC: this camera mount's physical X position (read-modify-write)",
+            ),
+            _jog_axis_field(
+                camera, "y", f"Camera {camera} Jog Y",
+                "PC ↔ PLC: this camera mount's physical Y position (read-modify-write)",
+            ),
+            _jog_z_field(camera),
+            _jog_busy_field(camera),
+        ]
+    return fields
+
+
+def _read_clusters(addresses: list[int]) -> list[tuple[int, int]]:
+    """Group sorted, de-duplicated addresses into (start, count) spans,
+    merging two addresses into one bulk read whenever the gap between them
+    is small — cheaper than a second PLC round trip for the handful of
+    in-between addresses no named register uses."""
+    if not addresses:
+        return []
+    ordered = sorted(set(addresses))
+    clusters: list[tuple[int, int]] = []
+    start = prev = ordered[0]
+    for address in ordered[1:]:
+        if address - prev <= MAX_READ_GAP:
+            prev = address
+            continue
+        clusters.append((start, prev - start + 1))
+        start = prev = address
+    clusters.append((start, prev - start + 1))
+    return clusters
 
 
 class PlcPage(QWidget):
-    """Connection + register map + live viewer + manual access."""
+    """Connection + unified register table (config + live monitor) + manual access."""
 
     def __init__(
         self,
@@ -71,6 +293,7 @@ class PlcPage(QWidget):
         super().__init__(parent)
         self._svc = plc_service
         self._auth = auth_service
+        self._fields = _build_fields()
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
@@ -88,7 +311,11 @@ class PlcPage(QWidget):
         root.addLayout(body, stretch=1)
 
         # --------------------------------------------------- left: settings
-        left = QVBoxLayout()
+        left_container = QWidget()
+        left_container.setMaximumWidth(420)
+        left = QVBoxLayout(left_container)
+        left.setContentsMargins(0, 0, 0, 0)
+        left.setSpacing(12)
 
         conn_box = QGroupBox("Connection")
         conn_form = QFormLayout(conn_box)
@@ -114,112 +341,49 @@ class PlcPage(QWidget):
         conn_form.addRow("Poll Interval", self._poll)
         left.addWidget(conn_box)
 
-        reg_box = QGroupBox("Registers")
-        reg_grid = QGridLayout(reg_box)
-        # Editable register addresses, keyed by their plc.json name.
-        # machine_number is deliberately absent — it is fixed by the PLC
-        # program and RegisterMap requires it, so _collect() carries it
-        # through untouched.
-        reg_labels = {
-            "trigger": "Trigger",
-            "heartbeat": "Heartbeat",
-            "result": "Result",
-            "vision_complete": "Vision Complete",
-        }
-        self._reg = {key: _reg_spin() for key in reg_labels}
-        for row, (key, label) in enumerate(reg_labels.items()):
-            reg_grid.addWidget(QLabel(label), row, 0)
-            reg_grid.addWidget(self._reg[key], row, 1)
-        # Machine-model select gets its own widget rather than a reg_labels
-        # entry because it is the one *optional* address: RegisterMap stores
-        # None for "feature not wired up", and 0 here means exactly that.
-        self._model_select = _reg_spin()
-        self._model_select.setSpecialValueText("Not used")
-        self._model_select.setToolTip(
-            "PLC → PC: machine-model code, polled every "
-            "model_poll_interval_ms. The profile whose PLC Code matches the "
-            "value read here is applied (Machine Models page). Set to 0 "
-            "(\"Not used\") to disable model switching — the register is "
-            "then never read."
-        )
-        model_row = len(reg_labels)
-        reg_grid.addWidget(QLabel("Machine Model Select"), model_row, 0)
-        reg_grid.addWidget(self._model_select, model_row, 1)
-        # Three rows per camera: the inspection outputs it publishes, the servo
-        # home position those outputs are measured from, then the handshake
-        # that lets the PLC run that camera on its own.
-        self._cam_regs: dict[int, tuple[QSpinBox, QSpinBox, QSpinBox]] = {}
-        self._cam_servo_home: dict[int, tuple[QSpinBox, QSpinBox]] = {}
-        self._cam_handshake: dict[int, tuple[QSpinBox, QSpinBox, QSpinBox]] = {}
-        rows_per_camera = 3
-        first_camera_row = model_row + 1
-        for position, camera in enumerate((1, 2, 3, 4)):
-            row = first_camera_row + position * rows_per_camera
-            x_spin, y_spin, result_spin = _reg_spin(), _reg_spin(), _reg_spin()
-            for spin in (x_spin, y_spin):
-                spin.setToolTip(
-                    "PC → PLC: absolute servo target — the home position from "
-                    "the row below, plus the hole's offset from the image "
-                    "centre × the position scale"
-                )
-            self._cam_regs[camera] = (x_spin, y_spin, result_spin)
-            reg_grid.addWidget(QLabel(f"Camera {camera} X / Y / Result"), row, 0)
-            reg_grid.addWidget(_row_of(x_spin, y_spin, result_spin), row, 1)
+        manual_box = QGroupBox("Manual Write (admin)")
+        manual = QHBoxLayout(manual_box)
+        self._write_addr = _reg_spin(119)
+        self._write_value = _reg_spin(0)
+        write_btn = QPushButton("Write")
+        write_btn.setProperty("class", "danger")
+        write_btn.clicked.connect(self._on_manual_write)
+        manual.addWidget(QLabel("Register"))
+        manual.addWidget(self._write_addr)
+        manual.addWidget(QLabel("Value"))
+        manual.addWidget(self._write_value)
+        manual.addWidget(write_btn)
+        manual.addStretch()
+        left.addWidget(manual_box)
 
-            home_x_spin, home_y_spin = _reg_spin(), _reg_spin()
-            for spin in (home_x_spin, home_y_spin):
-                spin.setToolTip(
-                    "PLC → PC: where this axis's servo home sits. Read before "
-                    "every position write and used as the datum — a hole 2 mm "
-                    "off centre with home 6000 and scale 100 writes 6200"
-                )
-            self._cam_servo_home[camera] = (home_x_spin, home_y_spin)
-            reg_grid.addWidget(
-                QLabel(f"Servo {camera} Home Position X / Y"), row + 1, 0
-            )
-            reg_grid.addWidget(_row_of(home_x_spin, home_y_spin), row + 1, 1)
+        coil_box = QGroupBox("Manual Coil Write (admin)")
+        coil = QHBoxLayout(coil_box)
+        self._write_coil_addr = _reg_spin(1)
+        coil_zero_btn = QPushButton("0")
+        coil_zero_btn.setProperty("class", "danger")
+        coil_zero_btn.clicked.connect(lambda: self._on_manual_coil_write(False))
+        coil_one_btn = QPushButton("1")
+        coil_one_btn.setProperty("class", "danger")
+        coil_one_btn.clicked.connect(lambda: self._on_manual_coil_write(True))
+        coil.addWidget(QLabel("Coil"))
+        coil.addWidget(self._write_coil_addr)
+        coil.addWidget(coil_zero_btn)
+        coil.addWidget(coil_one_btn)
+        coil.addStretch()
+        left.addWidget(coil_box)
 
-            trigger_spin, complete_spin, status_spin = (
-                _reg_spin(), _reg_spin(), _reg_spin()
-            )
-            status_spin.setToolTip(
-                "PC → PLC: 1 while this camera is connected and grabbing "
-                "normally, 0 when it is disconnected or failing"
-            )
-            self._cam_handshake[camera] = (trigger_spin, complete_spin, status_spin)
-            reg_grid.addWidget(
-                QLabel(f"Camera {camera} Trigger / Vision Complete / Status"), row + 2, 0
-            )
-            reg_grid.addWidget(
-                _row_of(trigger_spin, complete_spin, status_spin), row + 2, 1
-            )
+        scale_box = QGroupBox("Scaling")
+        scale_form = QFormLayout(scale_box)
         self._scale = _reg_spin(10)
         self._scale.setToolTip(
             "Millimetres are multiplied by this before being added to the "
             "servo home position (10 = one decimal place)"
         )
-        scale_row = first_camera_row + len(self._cam_regs) * rows_per_camera
-        reg_grid.addWidget(QLabel("Position Scale"), scale_row, 0)
-        reg_grid.addWidget(self._scale, scale_row, 1)
-        left.addWidget(reg_box)
-
-        jog_box = QGroupBox("Camera Jog Registers")
-        jog_grid = QGridLayout(jog_box)
-        for col, label in enumerate(("Camera", "Jog X", "Jog Y", "Home X", "Home Y")):
-            jog_grid.addWidget(QLabel(label), 0, col)
-        self._jog_regs: dict[int, dict[str, QSpinBox]] = {}
-        for row, camera in enumerate((1, 2, 3, 4), start=1):
-            fields = {"x": _reg_spin(), "y": _reg_spin(), "home_x": _reg_spin(), "home_y": _reg_spin()}
-            self._jog_regs[camera] = fields
-            jog_grid.addWidget(QLabel(str(camera)), row, 0)
-            jog_grid.addWidget(fields["x"], row, 1)
-            jog_grid.addWidget(fields["y"], row, 2)
-            jog_grid.addWidget(fields["home_x"], row, 3)
-            jog_grid.addWidget(fields["home_y"], row, 4)
         self._jog_step = _reg_spin(10)
-        jog_grid.addWidget(QLabel("Jog Step"), 5, 0)
-        jog_grid.addWidget(self._jog_step, 5, 1)
-        left.addWidget(jog_box)
+        self._jog_step.setToolTip("Register units moved per jog button press, on whichever axis was pressed")
+        scale_form.addRow("Position Scale", self._scale)
+        scale_form.addRow("Jog Step", self._jog_step)
+        left.addWidget(scale_box)
 
         buttons = QHBoxLayout()
         test_btn = QPushButton("Test Connection")
@@ -234,59 +398,66 @@ class PlcPage(QWidget):
         buttons.addWidget(save_btn)
         left.addLayout(buttons)
         note = QLabel(
-            "Connection and register-map changes apply after an "
-            "application restart."
+            "Saving reconnects the PLC with the new connection and register "
+            "addresses immediately — no application restart needed. Any "
+            "cycle mid-flight at that instant may report ERROR once."
         )
+        note.setWordWrap(True)
         note.setProperty("class", "dim")
         left.addWidget(note)
         left.addStretch()
-        body.addLayout(left)
+        body.addWidget(left_container)
 
-        # ------------------------------------------------ right: live viewer
+        # ------------------------------------------------- right: registers
         right = QVBoxLayout()
 
-        viewer_box = QGroupBox("Live Register Viewer")
-        viewer_layout = QVBoxLayout(viewer_box)
+        table_box = QGroupBox("Registers")
+        table_layout = QVBoxLayout(table_box)
         controls = QHBoxLayout()
-        self._view_start = _reg_spin(100)
-        self._view_count = QSpinBox()
-        self._view_count.setRange(1, 60)
-        self._view_count.setValue(20)
         self._auto = QCheckBox("Auto refresh")
         self._auto.setChecked(True)
-        read_btn = QPushButton("Read")
+        read_btn = QPushButton("Read Now")
         read_btn.clicked.connect(self._refresh_viewer)
-        controls.addWidget(QLabel("Start"))
-        controls.addWidget(self._view_start)
-        controls.addWidget(QLabel("Count"))
-        controls.addWidget(self._view_count)
         controls.addWidget(self._auto)
         controls.addWidget(read_btn)
         controls.addStretch()
-        viewer_layout.addLayout(controls)
+        table_layout.addLayout(controls)
 
-        self._table = QTableWidget(0, 2)
-        self._table.setHorizontalHeaderLabels(["Register", "Value"])
-        self._table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self._table = QTableWidget(len(self._fields), 4)
+        self._table.setHorizontalHeaderLabels(
+            ["Register Name", "Type", "Register Number", "Live Value"]
+        )
         self._table.verticalHeader().setVisible(False)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        viewer_layout.addWidget(self._table, stretch=1)
-        right.addWidget(viewer_box, stretch=1)
+        header = self._table.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(1, 80)
+        header.resizeSection(2, 130)
+        header.resizeSection(3, 100)
 
-        manual_box = QGroupBox("Manual Write (admin)")
-        manual = QHBoxLayout(manual_box)
-        self._write_addr = _reg_spin(119)
-        self._write_value = _reg_spin(0)
-        write_btn = QPushButton("Write")
-        write_btn.setProperty("class", "danger")
-        write_btn.clicked.connect(self._on_manual_write)
-        manual.addWidget(QLabel("Register"))
-        manual.addWidget(self._write_addr)
-        manual.addWidget(QLabel("Value"))
-        manual.addWidget(self._write_value)
-        manual.addWidget(write_btn)
-        manual.addStretch()
-        right.addWidget(manual_box)
+        self._row_spins: list[QSpinBox] = []
+        for row, field in enumerate(self._fields):
+            name_item = QTableWidgetItem(field.name)
+            name_item.setToolTip(field.tooltip)
+            self._table.setItem(row, 0, name_item)
+            type_item = QTableWidgetItem("Coil" if field.kind == "coil" else "Holding")
+            type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 1, type_item)
+            spin = _reg_spin()
+            spin.setMinimumWidth(110)
+            if field.optional:
+                spin.setSpecialValueText("Not used")
+            spin.setToolTip(field.tooltip)
+            self._table.setCellWidget(row, 2, spin)
+            self._row_spins.append(spin)
+            value_item = QTableWidgetItem("—")
+            value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
+            self._table.setItem(row, 3, value_item)
+        table_layout.addWidget(self._table, stretch=1)
+        right.addWidget(table_box, stretch=1)
         body.addLayout(right, stretch=1)
 
         # ---------------------------------------------------------- wiring
@@ -301,7 +472,6 @@ class PlcPage(QWidget):
     def _load(self) -> None:
         cfg = self._svc.get_config()
         connection = cfg.get("connection", {})
-        registers = cfg.get("registers", {})
         scaling = cfg.get("scaling", {})
         self._ip.setText(connection.get("ip", ""))
         self._port.setValue(int(connection.get("port", 502)))
@@ -309,38 +479,10 @@ class PlcPage(QWidget):
         self._unit.setValue(int(connection.get("unit_id", 1)))
         self._timeout.setValue(int(connection.get("timeout_ms", 1000)))
         self._poll.setValue(int(connection.get("poll_interval_ms", 50)))
-        for key, spin in self._reg.items():
-            spin.setValue(int(registers.get(key, 0)))
-        # Absent/null in plc.json (feature off) shows as the 0 special value.
-        self._model_select.setValue(int(registers.get("model_select") or 0))
-        camera_results = registers.get("camera_results", {})
-        for camera, (x_spin, y_spin, result_spin) in self._cam_regs.items():
-            addresses = registers.get("camera_positions", {}).get(str(camera), {})
-            x_spin.setValue(int(addresses.get("x", 0)))
-            y_spin.setValue(int(addresses.get("y", 0)))
-            result_spin.setValue(int(camera_results.get(str(camera), 0)))
-        servo_home = registers.get("servo_home_positions", {})
-        for camera, (home_x_spin, home_y_spin) in self._cam_servo_home.items():
-            addresses = servo_home.get(str(camera), {})
-            home_x_spin.setValue(int(addresses.get("x", 0)))
-            home_y_spin.setValue(int(addresses.get("y", 0)))
-        camera_triggers = registers.get("camera_triggers", {})
-        camera_complete = registers.get("camera_vision_complete", {})
-        camera_status = registers.get("camera_status", {})
-        for camera, (trigger_spin, complete_spin, status_spin) in self._cam_handshake.items():
-            trigger_spin.setValue(int(camera_triggers.get(str(camera), 0)))
-            complete_spin.setValue(int(camera_complete.get(str(camera), 0)))
-            status_spin.setValue(int(camera_status.get(str(camera), 0)))
         self._scale.setValue(int(scaling.get("position_scale", 10)))
-        jog_cfg = cfg.get("camera_jog", {})
-        jog_registers = jog_cfg.get("registers", {})
-        for camera, fields in self._jog_regs.items():
-            entry = jog_registers.get(str(camera), {})
-            fields["x"].setValue(int(entry.get("x", 0)))
-            fields["y"].setValue(int(entry.get("y", 0)))
-            fields["home_x"].setValue(int(entry.get("home_x", 0)))
-            fields["home_y"].setValue(int(entry.get("home_y", 0)))
-        self._jog_step.setValue(int(jog_cfg.get("step", 10)))
+        self._jog_step.setValue(int(cfg.get("camera_jog", {}).get("step", 10)))
+        for field, spin in zip(self._fields, self._row_spins):
+            spin.setValue(int(field.get(cfg) or 0))
         self._on_protocol_changed(self._protocol.currentText())
         self._state_led.set_state(self._svc.state, f"PLC {self._svc.state.value}")
 
@@ -359,53 +501,15 @@ class PlcPage(QWidget):
             "timeout_ms": self._timeout.value(),
             "poll_interval_ms": self._poll.value(),
         }
-        cfg["registers"] = {
-            # Keep addresses this page does not expose (machine_number) —
-            # rebuilding the block from the widgets alone would drop them,
-            # and machine_number is required by RegisterMap.
-            **cfg.get("registers", {}),
-            **{key: spin.value() for key, spin in self._reg.items()},
-            # 0 in the spin box means "not wired up"; RegisterMap spells that
-            # None, and PlcManager.read_model_select then does no I/O at all.
-            "model_select": self._model_select.value() or None,
-            "camera_positions": {
-                str(camera): {"x": x_spin.value(), "y": y_spin.value()}
-                for camera, (x_spin, y_spin, _result_spin) in self._cam_regs.items()
-            },
-            "servo_home_positions": {
-                str(camera): {"x": home_x_spin.value(), "y": home_y_spin.value()}
-                for camera, (home_x_spin, home_y_spin) in self._cam_servo_home.items()
-            },
-            "camera_results": {
-                str(camera): result_spin.value()
-                for camera, (_x_spin, _y_spin, result_spin) in self._cam_regs.items()
-            },
-            "camera_triggers": {
-                str(camera): spins[0].value()
-                for camera, spins in self._cam_handshake.items()
-            },
-            "camera_vision_complete": {
-                str(camera): spins[1].value()
-                for camera, spins in self._cam_handshake.items()
-            },
-            "camera_status": {
-                str(camera): spins[2].value()
-                for camera, spins in self._cam_handshake.items()
-            },
-        }
+        for field, spin in zip(self._fields, self._row_spins):
+            value = spin.value()
+            if field.optional and value == 0:
+                if field.clear is not None:
+                    field.clear(cfg)
+                continue
+            field.set(cfg, value)
         cfg["scaling"] = {"position_scale": self._scale.value()}
-        cfg["camera_jog"] = {
-            "step": self._jog_step.value(),
-            "registers": {
-                str(camera): {
-                    "x": fields["x"].value(),
-                    "y": fields["y"].value(),
-                    "home_x": fields["home_x"].value(),
-                    "home_y": fields["home_y"].value(),
-                }
-                for camera, fields in self._jog_regs.items()
-            },
-        }
+        cfg.setdefault("camera_jog", {})["step"] = self._jog_step.value()
         return cfg
 
     # -------------------------------------------------------------- actions
@@ -428,8 +532,7 @@ class PlcPage(QWidget):
         QMessageBox.information(
             self,
             "Save",
-            "PLC configuration saved.\n"
-            "Connection and register-map changes apply after restart.",
+            "PLC configuration saved. Reconnecting with the new settings now.",
         )
 
     def _on_manual_write(self) -> None:
@@ -442,6 +545,17 @@ class PlcPage(QWidget):
             self._svc.write_register(self._write_addr.value(), self._write_value.value())
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Manual Write", str(exc))
+
+    def _on_manual_coil_write(self, value: bool) -> None:
+        if not self._auth.is_admin:
+            QMessageBox.warning(
+                self, "Manual Coil Write", "Administrator login required (toolbar Login button)."
+            )
+            return
+        try:
+            self._svc.write_coil(self._write_coil_addr.value(), value)
+        except VisionSystemError as exc:
+            QMessageBox.warning(self, "Manual Coil Write", str(exc))
 
     # ------------------------------------------------------------- viewer
     def showEvent(self, event) -> None:  # noqa: N802
@@ -457,15 +571,42 @@ class PlcPage(QWidget):
             self._refresh_viewer()
 
     def _refresh_viewer(self) -> None:
-        start = self._view_start.value()
-        count = self._view_count.value()
+        # Holding registers and coils are separate address spaces (see
+        # core.plc.plc_client_base) — address 5 means different physical
+        # memory in each, so they must never be clustered/read together.
+        holding_rows: dict[int, list[int]] = {}
+        coil_rows: dict[int, list[int]] = {}
+        for row, (field, spin) in enumerate(zip(self._fields, self._row_spins)):
+            address = spin.value()
+            if field.optional and address == 0:
+                self._table.item(row, 3).setText("—")
+                continue
+            group = coil_rows if field.kind == "coil" else holding_rows
+            group.setdefault(address, []).append(row)
+
+        self._refresh_group(holding_rows, self._svc.read_register)
+        self._refresh_group(coil_rows, self._svc.read_coil)
+
+    def _refresh_group(
+        self, address_rows: dict[int, list[int]], reader: Callable[[int, int], list]
+    ) -> None:
+        """Bulk-read one address space's rows (clustered to cut round trips)
+        and write the results into the Live Value column. Silently keeps the
+        last displayed values on a comm failure — the LED already shows link
+        state, and one address space being briefly down shouldn't blank out
+        the other's rows too."""
+        values: dict[int, object] = {}
         try:
-            values = self._svc.read_register(start, count)
+            for start, count in _read_clusters(list(address_rows)):
+                block = reader(start, count)
+                for offset, value in enumerate(block):
+                    values[start + offset] = value
         except VisionSystemError:
-            values = None  # link down — keep last values, LED shows the state
-        if values is None:
             return
-        self._table.setRowCount(len(values))
-        for row, value in enumerate(values):
-            self._table.setItem(row, 0, QTableWidgetItem(str(start + row)))
-            self._table.setItem(row, 1, QTableWidgetItem(str(value)))
+
+        for address, rows in address_rows.items():
+            value = values.get(address)
+            if value is None:
+                continue
+            for row in rows:
+                self._table.item(row, 3).setText(str(int(value)))

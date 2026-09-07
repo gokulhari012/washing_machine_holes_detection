@@ -72,6 +72,7 @@ class DatabaseEngine:
         try:
             Base.metadata.create_all(self._engine)
             self._drop_legacy_columns()
+            self._add_missing_columns()
         except SQLAlchemyError as exc:
             raise DatabaseError(f"Schema creation failed: {exc}") from exc
         logger.info("Database schema verified at %s", self._db_path)
@@ -99,6 +100,32 @@ class DatabaseEngine:
                     continue
                 connection.execute(text(f'ALTER TABLE "{table}" DROP COLUMN "{column}"'))
                 logger.info("Dropped legacy column %s.%s", table, column)
+
+    # Columns added to the ORM after a table already shipped. ``create_all()``
+    # only creates missing *tables*, so a database from an older build needs
+    # these added in place; NULL is always a valid value for them (the
+    # features that populate them are opt-in), so a plain ADD COLUMN is safe.
+    _ADDED_COLUMNS: tuple[tuple[str, str, str], ...] = (
+        # Multi-view lens (camera matrix + distortion) calibration, added
+        # alongside the Calibration page's checkerboard Auto Calibrate flow.
+        ("calibrations", "camera_matrix_json", "TEXT"),
+        ("calibrations", "dist_coeffs_json", "TEXT"),
+    )
+
+    def _add_missing_columns(self) -> None:
+        """Add retro-fitted columns left missing by an older schema (idempotent)."""
+        with self._engine.begin() as connection:
+            for table, column, sql_type in self._ADDED_COLUMNS:
+                lookup = text(
+                    f"SELECT 1 FROM pragma_table_info('{table}') WHERE name = :column"
+                )
+                present = connection.execute(lookup, {"column": column}).first()
+                if present is not None:
+                    continue
+                connection.execute(
+                    text(f'ALTER TABLE "{table}" ADD COLUMN "{column}" {sql_type}')
+                )
+                logger.info("Added column %s.%s", table, column)
 
     # --------------------------------------------------------------- sessions
     @contextmanager

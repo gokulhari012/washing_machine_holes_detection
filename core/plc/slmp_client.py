@@ -20,6 +20,17 @@ Frame variant: iQ-R encodes a 4-byte device number + 2-byte device code
 (subcommand 0x0002); Q/L uses 3-byte + 1-byte (subcommand 0x0000). Chosen by
 ``connection.slmp_frame`` -- ``"iq_r"`` (default) or ``"q"``.
 
+Coils: bit devices (``M`` internal relays) use the same batch read/write
+commands as word devices, with two differences -- the device code is 0x90
+instead of D's 0xA8, and the subcommand has its bit-0 set to select "bit
+units" instead of "word units" (0x0001/0x0003 here vs 0x0000/0x0002 for
+words), per the MELSEC Communication Protocol Reference Manual (SH-080008).
+Bit-unit data is packed one point per nibble (0x1 = ON, 0x0 = OFF), two
+points per byte, high nibble first, zero-padded if the count is odd. This
+half of the client has no hardware to verify against yet -- confirm the
+subcommand values and nibble order against a real CPU (or the manual) before
+relying on it for anything safety-relevant.
+
 Thread ownership: as with the Modbus adapter all traffic normally flows
 through the single PLC worker thread; the internal lock keeps a stray call
 from another thread from interleaving two frames on one socket.
@@ -55,9 +66,12 @@ PC_NO = 0xFF  # own station
 IO_NUMBER = 0x03FF  # own CPU
 MULTIDROP_NO = 0x00
 
-CMD_BATCH_READ_WORDS = 0x0401
-CMD_BATCH_WRITE_WORDS = 0x1401
+CMD_BATCH_READ = 0x0401
+CMD_BATCH_WRITE = 0x1401
 DEVICE_CODE_D = 0xA8  # data register: 0xA8 as one byte, 0x00A8 as two
+DEVICE_CODE_M = 0x90  # internal relay (coil): bit device, see module docstring
+SUBCOMMAND_BIT_FLAG = 0x0001  # OR'd into the word-unit subcommand for bit units
+MAX_BIT_POINTS = 7168  # 3E batch bit-access limit
 
 # Only the end codes worth acting on; anything else is reported as raw hex and
 # has to be looked up in the MC protocol manual.
@@ -72,6 +86,25 @@ END_CODE_HINTS = {
         "(try the other connection.slmp_frame variant)"
     ),
 }
+
+
+def _pack_bits(values: list[bool]) -> bytes:
+    """Bit-unit wire packing: one point per nibble (0x1/0x0), two points per
+    byte, high nibble first, zero-padded when *values* has an odd length."""
+    padded = list(values) + ([False] * (len(values) % 2))
+    return bytes(
+        (0x10 if padded[i] else 0x00) | (0x01 if padded[i + 1] else 0x00)
+        for i in range(0, len(padded), 2)
+    )
+
+
+def _unpack_bits(data: bytes, count: int) -> list[bool]:
+    """Inverse of :func:`_pack_bits`, truncated to the requested *count*."""
+    bits: list[bool] = []
+    for byte in data:
+        bits.append(bool(byte & 0x10))
+        bits.append(bool(byte & 0x01))
+    return bits[:count]
 
 
 class SlmpPlcClient(PlcClientBase):
@@ -132,9 +165,9 @@ class SlmpPlcClient(PlcClientBase):
         if not 1 <= count <= MAX_POINTS:
             raise PlcReadError(f"Point count {count} outside 1..{MAX_POINTS} for D{address}")
 
-        payload = self._device_spec(address) + count.to_bytes(2, "little")
+        payload = self._device_spec(address, self._device_code) + count.to_bytes(2, "little")
         with self._lock:
-            data = self._transact(CMD_BATCH_READ_WORDS, payload, address, PlcReadError)
+            data = self._transact(CMD_BATCH_READ, payload, address, PlcReadError)
         if len(data) < count * 2:
             raise PlcReadError(
                 f"Short reply for D{address}: wanted {count * 2} data bytes, got {len(data)}"
@@ -155,29 +188,57 @@ class SlmpPlcClient(PlcClientBase):
                 raise PlcWriteError(f"Value {value} out of uint16 range for D{address}")
 
         payload = (
-            self._device_spec(address)
+            self._device_spec(address, self._device_code)
             + len(points).to_bytes(2, "little")
             + b"".join(v.to_bytes(2, "little") for v in points)
         )
         with self._lock:
-            self._transact(CMD_BATCH_WRITE_WORDS, payload, address, PlcWriteError)
+            self._transact(CMD_BATCH_WRITE, payload, address, PlcWriteError)
+
+    def read_coils(self, address: int, count: int = 1) -> list[bool]:
+        if not 1 <= count <= MAX_BIT_POINTS:
+            raise PlcReadError(f"Point count {count} outside 1..{MAX_BIT_POINTS} for M{address}")
+
+        payload = self._device_spec(address, DEVICE_CODE_M) + count.to_bytes(2, "little")
+        with self._lock:
+            data = self._transact(
+                CMD_BATCH_READ, payload, address, PlcReadError, bit_units=True
+            )
+        expected_bytes = (count + 1) // 2
+        if len(data) < expected_bytes:
+            raise PlcReadError(
+                f"Short reply for M{address}: wanted {expected_bytes} data bytes, got {len(data)}"
+            )
+        return _unpack_bits(data, count)
+
+    def write_coil(self, address: int, value: bool) -> None:
+        payload = (
+            self._device_spec(address, DEVICE_CODE_M)
+            + (1).to_bytes(2, "little")
+            + _pack_bits([bool(value)])
+        )
+        with self._lock:
+            self._transact(CMD_BATCH_WRITE, payload, address, PlcWriteError, bit_units=True)
 
     # ----------------------------------------------------------- frame codec
-    def _device_spec(self, address: int) -> bytes:
+    def _device_spec(self, address: int, device_code: int) -> bytes:
         """Encode the head device as the frame's device-number + device-code pair."""
         if self._iq_r:
-            return address.to_bytes(4, "little") + self._device_code.to_bytes(2, "little")
-        return address.to_bytes(3, "little") + self._device_code.to_bytes(1, "little")
+            return address.to_bytes(4, "little") + device_code.to_bytes(2, "little")
+        return address.to_bytes(3, "little") + device_code.to_bytes(1, "little")
 
     def _monitoring_timer(self) -> int:
         """CPU-side wait, in 250 ms units, clamped to the 16-bit field."""
         return max(1, min(0xFFFF, round(self._timeout_s / 0.25)))
 
-    def _build_frame(self, command: int, payload: bytes) -> bytes:
+    def _build_frame(self, command: int, payload: bytes, *, bit_units: bool) -> bytes:
+        subcommand = (0x0002 if self._iq_r else 0x0000) | (
+            SUBCOMMAND_BIT_FLAG if bit_units else 0x0000
+        )
         body = (
             self._monitoring_timer().to_bytes(2, "little")
             + command.to_bytes(2, "little")
-            + (0x0002 if self._iq_r else 0x0000).to_bytes(2, "little")
+            + subcommand.to_bytes(2, "little")
             + payload
         )
         header = (
@@ -201,6 +262,8 @@ class SlmpPlcClient(PlcClientBase):
         payload: bytes,
         address: int,
         error_cls: type[PlcError],
+        *,
+        bit_units: bool = False,
     ) -> bytes:
         """Send one request; return the response data that follows the end code.
 
@@ -208,30 +271,31 @@ class SlmpPlcClient(PlcClientBase):
         desynchronise every frame after it, so the link is rebuilt rather than
         reused. A clean end-code rejection leaves the link up.
         """
+        label = f"M{address}" if bit_units else f"D{address}"
         sock = self._require_socket()
         try:
-            sock.sendall(self._build_frame(command, payload))
+            sock.sendall(self._build_frame(command, payload, bit_units=bit_units))
             header = self._recv_exact(sock, RESPONSE_HEADER_LEN)
             if header[:2] != RESPONSE_SUBHEADER:
                 raise PlcConnectionError(
-                    f"Unexpected SLMP response subheader {header[:2].hex()} for D{address}"
+                    f"Unexpected SLMP response subheader {header[:2].hex()} for {label}"
                 )
             body = self._recv_exact(sock, int.from_bytes(header[7:9], "little"))
         except socket.timeout as exc:
             self.disconnect()
-            raise PlcTimeoutError(f"Timeout on D{address}: {exc}") from exc
+            raise PlcTimeoutError(f"Timeout on {label}: {exc}") from exc
         except PlcError:
             self.disconnect()
             raise
         except OSError as exc:
             self.disconnect()
-            raise PlcConnectionError(f"Connection lost on D{address}: {exc}") from exc
+            raise PlcConnectionError(f"Connection lost on {label}: {exc}") from exc
 
         end_code = int.from_bytes(body[:2], "little")
         if end_code != 0x0000:
             hint = END_CODE_HINTS.get(end_code)
             detail = f" -- {hint}" if hint else ""
-            raise error_cls(f"PLC returned end code 0x{end_code:04X} for D{address}{detail}")
+            raise error_cls(f"PLC returned end code 0x{end_code:04X} for {label}{detail}")
         return body[2:]
 
     @staticmethod

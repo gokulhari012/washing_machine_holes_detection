@@ -103,9 +103,22 @@ pytest
    hole position. The position tolerance judgement activates only for
    calibrated cameras.
 
+   **Auto Calibrate** opens a live preview and captures a checkerboard view
+   automatically (at least 10 s apart — move/tilt the board between shots) for
+   up to 10 views, then fits lens distortion + perspective from all of them
+   together; "Stop & Compute" ends the session early once at least 3 views are
+   in. For pixel→mm scale alone, an alternative to typing a known distance is
+   "Pick Ruler Points": place a ruler in frame and click 5-10 points a fixed
+   distance apart (1 mm by default) — the average spacing becomes
+   pixels-per-mm.
+
 4. **Detection** — tune thresholds on the Detection page with the live
-   test view. Strategies (`dark_hole`, `opencv`, `template_matching`, `yolo`)
-   are hot-swappable; adding one means implementing `HoleDetector` and
+   test view. Every camera has its own independent configuration — its own
+   active strategy, that strategy's parameters, and its own judgement
+   thresholds — selected with the "Camera" picker at the top of the page;
+   "Save & Apply" and "Restore Defaults" only ever touch the selected camera.
+   Strategies (`dark_hole`, `opencv`, `template_matching`, `yolo`) are
+   hot-swappable per camera; adding one means implementing `HoleDetector` and
    registering it in `core/vision/vision_engine.py` — no UI/PLC changes.
 
    `dark_hole` is the default and the one to use on real parts. It scores each
@@ -132,9 +145,9 @@ pytest
 
    The size gates are in pixels **of the analysed frame** — after the ROI crop
    and any resolution fit. Cameras with different fields of view therefore need
-   different numbers, and the detection parameters are global: tune them for
-   the optics you actually inspect with, and keep the four stations
-   comparable.
+   different numbers, and since detection is configured per camera each one can
+   (and generally should) carry its own gates for the optics it actually looks
+   through.
 
 ## Architecture
 

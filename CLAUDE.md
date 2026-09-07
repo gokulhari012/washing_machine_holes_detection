@@ -21,7 +21,7 @@ over Ethernet; every cycle is stored in SQLite with an annotated PNG.
 ```bash
 python main.py                # normal start
 python main.py --selftest 8   # start hidden, run 8 s, save logs/selftest.png, exit 0
-pytest                        # 109 tests, ~8 s, all passing as of 2026-09-02
+pytest                        # 199 tests, ~2 s, all passing as of 2026-09-06
 python tools/hole_debug.py path/to/images/   # detector tuner; --camera N applies that camera's ROI
 python scripts/build_exe.py   # PyInstaller onedir -> dist/WMHoleDetection/
 ```
@@ -101,11 +101,14 @@ inspection pipeline both grab the same device.
 1. Subclass `HoleDetector` in `core/vision/<name>_detector.py`; implement `detect()`,
    optionally `debug_stages()` (returns `{"mask": ..., "edges": ...}` for the debug overlay).
    Set `thread_safe = False` if inference is not re-entrant — `VisionEngine` then
-   serialises it for you.
+   serialises *that camera's* calls to it for you (each camera gets its own lock;
+   see [§8](#8-config-system)).
 2. Add the value to `DetectorType` in [core/utilities/enums.py](core/utilities/enums.py).
 3. Register in `_REGISTRY` at [core/vision/vision_engine.py](core/vision/vision_engine.py).
-4. Add a parameter block named exactly like the enum value to **both**
-   `config/detection.json` and `config/defaults/detection.json`.
+4. Add a parameter block named exactly like the enum value **under every camera**
+   in both `config/detection.json` and `config/defaults/detection.json` (each
+   camera keeps a full set of blocks for every strategy, not just its active one —
+   see the per-camera shape in [§8](#8-config-system)).
 
 No UI or PLC changes needed. `detect()` raising `DetectionError` means *algorithm
 failure*; returning an empty `holes` list means *no hole present* (a legitimate NG).
@@ -150,7 +153,9 @@ PlcPollWorker sees trigger 0→1  (≤50 ms)
   four high-res GigE cameras sharing one NIC.
 - `parallel` — all four grab and detect at once via `ThreadPoolExecutor`. Shortest cycle.
 
-**Judgement per camera** (`_inspect_one`):
+**Judgement per camera** (`_inspect_one`) — `expected_hole_count`/`position_tolerance_mm`
+are themselves per-camera (`VisionEngine.expected_hole_count(camera_index)` etc., see
+[§8](#8-config-system)), since each camera can run a different strategy/threshold set:
 - no frame → `ERROR`
 - `DetectionError` → `ERROR`
 - `best is None` **or** `len(holes) < expected_hole_count` → `NG`, `hole_found=False`
@@ -223,6 +228,8 @@ centre — `PlcManager.read_servo_home` returns `(0, 0)` rather than failing.
 | 136–139 | PC→PLC | **`camera_vision_complete`** — camera N's own completion handshake |
 | 140–143 | PC→PLC | **`camera_status`** — 1 = camera N usable, 0 = disconnected/failing |
 | 144–151 | PLC→PC | **`servo_home_positions`** — servo 1–4 home X/Y, the datum for 110–117 |
+| 152–155 | PC→PLC | **`camera_jog`**'s Z axis — one register per camera, in the separate top-level `camera_jog` block, not `registers` |
+| 156–158, 6056 | PC→PLC | **`camera_brightness`** — camera 1–4 light-brightness level (0-255), pushed whenever that camera's settings are applied/saved (see [§8](#8-config-system)) |
 
 Bolded rows are **newer than [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, which documents only 100–119.
 
@@ -349,8 +356,10 @@ PLC disconnect → db worker (final flush) → engine dispose → log manager.
 
 `ConfigManager` ([core/utilities/config_manager.py](core/utilities/config_manager.py)) — thread-safe, caching,
 deep-copy isolation, **atomic saves** (temp file + `os.replace`), dot-path access
-(`get_value("plc", "connection.ip")`), restore-from-`defaults/`, and change
-notification via plain callables (Qt-free).
+(`get_value("plc", "connection.ip")`), restore-from-`defaults/` (whole document via
+`restore_defaults`, or a read-only peek at the pristine copy via `load_defaults` for
+resetting just one sub-section — see the Detection page's per-camera "Restore
+Defaults"), and change notification via plain callables (Qt-free).
 
 Five domains in `KNOWN_CONFIGS`: `app_config`, `plc`, `camera`, `detection`,
 `machine_models`.
@@ -363,43 +372,57 @@ Five domains in `KNOWN_CONFIGS`: `app_config`, `plc`, `camera`, `detection`,
 | Domain | Runtime effect of a save |
 |---|---|
 | `camera` | **Subscribed** ([main.py:215](main.py#L215)) → rebuilds `CameraManager` + acquisition workers |
-| `detection` | Hot-swapped **manually** by the page, which calls `VisionEngine.apply_config(cfg)` *before* `save()` so validation happens first ([ui/detection/detection_page.py:461](ui/detection/detection_page.py#L461)) |
-| `plc` | **No subscriber — requires an app restart** (see [gotchas](#9-gotchas--traps)) |
+| `detection` | Hot-swapped **manually** by the page, which calls `VisionEngine.apply_camera_config(index, cfg)` *before* `save()` so validation happens first ([ui/detection/detection_page.py](ui/detection/detection_page.py)) — only the edited camera's block is swapped/persisted, the other three are untouched |
+| `plc` | **Subscribed** (`main.py`'s `_on_plc_config_saved`) → stops the poll worker, rebuilds `PlcManager` in place via `PlcManager.rebuild`, starts a fresh poll worker |
 | `machine_models` | Applied live via `MachineModelService.apply_profile` |
 | `app_config` | Read per-cycle in the pipeline; other keys read at startup |
 
-### Machine-model profiles
-[services/machine_model_service.py](services/machine_model_service.py) snapshots per-camera ROI/exposure +
-the whole detection block into a named, `plc_code`-tagged profile. When the PLC
-changes register 103, `Application._on_machine_model_changed` looks up the profile and
-applies it.
+`detection.json`'s shape is per-camera: `{"cameras": {"1": {"active_detector": ...,
+"common": {...}, "opencv": {...}, "dark_hole": {...}, ...}, "2": {...}, ...}}` — each
+camera carries its own active-strategy choice, its own common judgement thresholds,
+and a full set of every strategy's parameter block (not just its active one).
+`VisionEngine` holds one independent `HoleDetector` instance per camera index;
+`apply_config(doc)` atomically rebuilds every camera's strategy at once (all-or-nothing:
+one malformed camera block leaves every camera's previous strategy running),
+`apply_camera_config(index, cfg)` rebuilds just one. `migrate_legacy_detection_config`
+(`core/vision/vision_engine.py`) upgrades an old flat (pre-per-camera) document by
+cloning its one block onto every camera index — `main.py` runs this once at startup
+against `detection.json`, and `MachineModelService.apply_profile` runs it inline against
+a profile's `detection` block, so an old `machine_models.json` profile captured before
+this change still applies correctly without needing to be re-saved.
 
-Applying **never persists** `camera.json`/`detection.json` — it goes through the same
-"preview, don't persist" entry points the Camera/Detection pages use
-(`CameraService.apply_live`, `VisionEngine.apply_config`), so the manually maintained
-baseline survives an automatic switch.
+### Machine-model profiles
+[services/machine_model_service.py](services/machine_model_service.py) snapshots, per camera: ROI/exposure
+(`_TUNABLE_CAMERA_FIELDS`), the camera's own detection block, and its active pixel-to-mm
+calibration (`CalibrationManager.get`/`.to_dict()`) — into a named, `plc_code`-tagged
+profile. When the PLC changes register 103, `Application._on_machine_model_changed`
+looks up the profile and applies it.
+
+Applying **never persists** `camera.json`/`detection.json`, and never writes a new row
+to the calibration database — it goes through the same "preview, don't persist" entry
+points the Camera/Detection/Calibration pages use (`CameraService.apply_live`,
+`VisionEngine.apply_config`, `CalibrationManager.apply_live`), so the manually
+maintained baseline — and the calibration history — survive an automatic switch.
 
 Only `_TUNABLE_CAMERA_FIELDS` are overridable (`roi`, `exposure_us`, `gain_db`,
 `gamma`, `brightness`, `width`, `height`, `trigger_mode`). Identity/wiring fields
 (`driver`, `connection_id`, `name`, `enabled`) describe the physical rig, not the part
 — `CameraManager.apply_settings()` doesn't re-instantiate the driver anyway, so
-overriding them would silently do nothing.
+overriding them would silently do nothing. `brightness` (0-255) is a light-brightness
+level for an external, PLC-controlled light source — `CameraService.apply_live()`
+pushes it to that camera's `camera_brightness` PLC register on every call, so applying
+a machine model also re-lights each camera for free, with no code here even aware of
+it (see [§9](#9-gotchas--traps)).
 
-Camera application is **best-effort** (missing camera → warning, skipped); detection is
-**all-or-nothing** (malformed block raises — it's one atomic hot-swap for the station).
+Camera and calibration application are both **best-effort** (missing camera, or a
+calibration a camera rejects → warning, skipped); detection is **all-or-nothing**
+(malformed block raises — it's one atomic hot-swap of every camera's strategy at once).
+A camera with no calibration entry in the profile is simply left alone (sparse, like
+`jog_positions`).
 
 ---
 
 ## 9. Gotchas & traps
-
-**PLC config saves need a restart.** `plc_service.save_config` claims the rebuild is
-"wired in the composition root via `ConfigManager.subscribe("plc", ...)`"
-([services/plc_service.py:56](services/plc_service.py#L56)) — **that subscription does not
-exist.** [main.py:215](main.py#L215) subscribes `camera` only. The `RegisterMap`,
-client and `PlcManager` are all built once at startup from the boot-time dict. Editing
-the PLC page writes JSON + DB but does not change the running client. Either add the
-subscriber (and handle rebuilding the client under the running poll worker) or leave
-it and fix the docstring — don't assume it works.
 
 **`ui.live_preview_fps` is `0` — live preview is deliberately off.** `fps <= 0` makes
 `create_acquisition_workers` return an **empty list**: no preview threads exist at all,
@@ -412,9 +435,12 @@ zero-check in the factory is the only thing that disables preview.)
 
 | Key | `config/` (live) | `config/defaults/` |
 |---|---|---|
-| `detection.active_detector` | `opencv` | `dark_hole` |
 | camera `driver` (all 4) | `image_file` | `simulated` |
 | `plc.connection.port` / `ip` | 5007 / 192.168.3.20 | 502 / 192.168.0.10 |
+
+(All 4 cameras' `detection.cameras.<n>.active_detector` currently read `dark_hole` in
+both live and defaults — no divergence there yet, but nothing stops one camera being
+tuned to a different strategy than the other three, or than the shipped default.)
 
 README describes `dark_hole` as "the default and the one to use on real parts" — that
 describes the *defaults file*, not the current live setting. Both statements are
@@ -425,13 +451,27 @@ correct; don't "correct" either one.
 exist on another machine. Expect camera 1 to fail to connect on a fresh checkout.
 
 **Detection size gates are in pixels of the *analysed* frame** — after ROI crop and
-resolution fit. Cameras with different fields of view need different numbers, but the
-detection parameters are **global** (one block for all four cameras). Tune for the
-optics actually inspected with and keep the four stations comparable.
+resolution fit. Cameras with different fields of view need different numbers, and
+since detection parameters are per-camera, each camera's Detection-page block can
+(and generally should) carry its own gates for the optics it actually looks through —
+there is no "keep all four consistent" constraint anymore.
 
 **`config/defaults/` must be updated in lockstep.** Adding a config key without adding
 it to `defaults/` means "Restore Defaults" silently drops the feature. (Defaults are
 currently in sync, including `model_select`, `camera_results` and `camera_jog`.)
+
+**Camera `brightness` is not an in-camera setting.** It used to be (a -100..+100 ISP
+offset, real only on some Basler models via `BslBrightness`, or a pure pixel-offset
+visual approximation on the simulated/image_file drivers). It has been rewired: the
+field now holds 0-255 and represents an external, PLC-controlled light source's
+brightness — no driver applies it to the device or the image anymore, and
+`CameraService` pushes it to that camera's `camera_brightness` PLC register instead
+(§6, §8). The `camera_brightness` register addresses in `config/plc.json`
+(156-158, 6056) and `config/defaults/plc.json` (156-159) are placeholders following
+this station's own numbering convention (camera 3 lives in the 6000s on the live
+file, same as every other per-camera group) — **confirm the real PLC's memory map
+actually has these free before relying on them**, the same coordination any new
+register addition needs with whoever maintains the PLC program.
 
 **The PLC DB audit mirror is incomplete.** `PlcService._mirror_to_database` and the
 `plc_configurations` table cover only the original 100–119 registers — `model_select`,

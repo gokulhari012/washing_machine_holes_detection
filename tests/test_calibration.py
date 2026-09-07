@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import pytest
 
-from core.calibration import CameraCalibration
+from core.calibration import CameraCalibration, CheckerboardDetection
 from core.utilities.exceptions import CalibrationError
 
 
@@ -93,6 +93,153 @@ def test_find_checkerboard_rejects_bad_arguments() -> None:
         CameraCalibration.find_checkerboard(image, columns=1, rows=5, square_size_mm=20.0)
     with pytest.raises(CalibrationError):
         CameraCalibration.find_checkerboard(image, columns=8, rows=5, square_size_mm=0.0)
+
+
+def test_scale_from_points_averages_segments() -> None:
+    # Slight jitter around an exact 10 px/mm spacing — the mean should still
+    # land very close to 10.0, which a single two-point read couldn't average out.
+    points = [(0.0, 0.0), (10.2, 0.0), (19.8, 0.0), (30.1, 0.0)]
+    assert CameraCalibration.scale_from_points(points, spacing_mm=1.0) == pytest.approx(
+        10.0, abs=0.2
+    )
+
+
+def test_scale_from_points_ignores_direction() -> None:
+    # A diagonal ruler: only consecutive-gap spacing matters, not axis alignment.
+    points = [(0.0, 0.0), (6.0, 8.0), (12.0, 16.0)]  # each gap is 10 px
+    assert CameraCalibration.scale_from_points(points, spacing_mm=2.0) == pytest.approx(5.0)
+
+
+def test_scale_from_points_rejects_too_few_points() -> None:
+    with pytest.raises(CalibrationError):
+        CameraCalibration.scale_from_points([(0.0, 0.0)], spacing_mm=1.0)
+
+
+def test_scale_from_points_rejects_non_positive_spacing() -> None:
+    with pytest.raises(CalibrationError):
+        CameraCalibration.scale_from_points([(0.0, 0.0), (10.0, 0.0)], spacing_mm=0.0)
+
+
+def _synthetic_checkerboard_views(
+    true_camera_matrix: np.ndarray, true_dist_coeffs: np.ndarray, rows: int, columns: int
+) -> list[CheckerboardDetection]:
+    square_mm = 20.0
+    mm_points = [(c * square_mm, r * square_mm) for r in range(rows) for c in range(columns)]
+    object_points = np.array([(x, y, 0.0) for x, y in mm_points], dtype=np.float64)
+
+    # A handful of plausible board poses (rotation in degrees, translation in mm).
+    poses = [
+        (0.0, 0.0, 0.0, 0.0, 0.0, 400.0),
+        (10.0, 5.0, 0.0, 20.0, -10.0, 420.0),
+        (-8.0, 12.0, 5.0, -30.0, 15.0, 380.0),
+        (5.0, -15.0, 0.0, 10.0, 30.0, 410.0),
+    ]
+    views = []
+    for rx, ry, rz, tx, ty, tz in poses:
+        rvec = np.radians([rx, ry, rz]).reshape(3, 1)
+        tvec = np.array([[tx], [ty], [tz]], dtype=np.float64)
+        projected, _ = cv2.projectPoints(
+            object_points, rvec, tvec, true_camera_matrix, true_dist_coeffs
+        )
+        views.append(
+            CheckerboardDetection(
+                pixel_points=[(float(x), float(y)) for x, y in projected.reshape(-1, 2)],
+                mm_points=mm_points,
+                pixels_per_mm_x=0.0,
+                pixels_per_mm_y=0.0,
+                corners_px=projected.reshape(-1, 1, 2).astype(np.float32),
+            )
+        )
+    return views
+
+
+def test_calibrate_lens_rejects_too_few_views() -> None:
+    views = _synthetic_checkerboard_views(
+        np.eye(3), np.zeros(5), rows=5, columns=8
+    )[:2]
+    with pytest.raises(CalibrationError):
+        CameraCalibration.calibrate_lens(views, image_size=(1280, 960))
+
+
+def test_calibrate_lens_rejects_mismatched_board_sizes() -> None:
+    views = _synthetic_checkerboard_views(np.eye(3), np.zeros(5), rows=5, columns=8)
+    views[0] = CheckerboardDetection(
+        pixel_points=views[0].pixel_points[:-1],
+        mm_points=views[0].mm_points[:-1],
+        pixels_per_mm_x=0.0,
+        pixels_per_mm_y=0.0,
+        corners_px=views[0].corners_px[:-1],
+    )
+    with pytest.raises(CalibrationError):
+        CameraCalibration.calibrate_lens(views, image_size=(1280, 960))
+
+
+def test_calibrate_lens_recovers_known_camera_and_distortion() -> None:
+    true_camera_matrix = np.array(
+        [[1000.0, 0.0, 640.0], [0.0, 1000.0, 480.0], [0.0, 0.0, 1.0]]
+    )
+    true_dist_coeffs = np.array([-0.15, 0.05, 0.0, 0.0, 0.0])
+    views = _synthetic_checkerboard_views(true_camera_matrix, true_dist_coeffs, rows=6, columns=8)
+
+    result = CameraCalibration.calibrate_lens(views, image_size=(1280, 960))
+
+    assert result.overall_rms_px < 1.0
+    assert len(result.per_view_rms_px) == len(views)
+    assert result.camera_matrix[0, 0] == pytest.approx(true_camera_matrix[0, 0], rel=0.05)
+    assert result.camera_matrix[1, 1] == pytest.approx(true_camera_matrix[1, 1], rel=0.05)
+    assert result.dist_coeffs.reshape(-1)[0] == pytest.approx(true_dist_coeffs[0], abs=0.05)
+
+
+def test_undistort_points_is_identity_under_zero_distortion() -> None:
+    camera_matrix = np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
+    dist_coeffs = np.zeros(5)
+    result = CameraCalibration.undistort_points([(400.0, 300.0)], camera_matrix, dist_coeffs)
+    assert result[0] == pytest.approx((400.0, 300.0), abs=1e-6)
+
+
+def test_pixel_to_mm_undistorts_before_scaling() -> None:
+    camera_matrix = np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
+    dist_coeffs = np.array([-0.2, 0.05, 0.0, 0.0, 0.0])
+    calibration = CameraCalibration(
+        camera_index=1,
+        pixels_per_mm_x=10.0,
+        pixels_per_mm_y=10.0,
+        camera_matrix=camera_matrix,
+        dist_coeffs=dist_coeffs,
+    )
+    x_mm, y_mm = calibration.pixel_to_mm(400.0, 300.0)
+    expected_x_px, expected_y_px = CameraCalibration.undistort_points(
+        [(400.0, 300.0)], camera_matrix, dist_coeffs
+    )[0]
+    assert (x_mm, y_mm) == pytest.approx((expected_x_px / 10.0, expected_y_px / 10.0))
+
+
+def test_pixel_to_mm_zero_distortion_is_a_no_op() -> None:
+    camera_matrix = np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
+    calibration = CameraCalibration(
+        camera_index=1,
+        pixels_per_mm_x=10.0,
+        pixels_per_mm_y=10.0,
+        camera_matrix=camera_matrix,
+        dist_coeffs=np.zeros(5),
+    )
+    assert calibration.pixel_to_mm(400.0, 300.0) == pytest.approx((40.0, 30.0), abs=1e-6)
+
+
+def test_row_round_trip_with_lens_distortion() -> None:
+    camera_matrix = np.array([[500.0, 0.0, 320.0], [0.0, 500.0, 240.0], [0.0, 0.0, 1.0]])
+    dist_coeffs = np.array([-0.2, 0.05, 0.0, 0.0, 0.0])
+    original = CameraCalibration(
+        camera_index=4,
+        pixels_per_mm_x=10.0,
+        pixels_per_mm_y=10.0,
+        camera_matrix=camera_matrix,
+        dist_coeffs=dist_coeffs,
+    )
+    restored = CameraCalibration.from_row(original.to_row())
+    assert restored.camera_matrix == pytest.approx(camera_matrix)
+    assert restored.dist_coeffs == pytest.approx(dist_coeffs)
+    assert restored.pixel_to_mm(400.0, 300.0) == pytest.approx(original.pixel_to_mm(400.0, 300.0))
 
 
 def test_row_round_trip() -> None:

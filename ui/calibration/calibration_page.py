@@ -1,13 +1,26 @@
 """Calibration page: pixel→mm scale, reference point, perspective correction.
 
 Workflow (per camera):
-0. **Auto Calibrate** (optional, recommended) — place a checkerboard on/near
-   the inspection plane, capture, and "Auto Calibrate" detects its corners
-   and fills in the scale (Step 1) and homography (Step 3) from dozens of
-   correspondences in one shot. Remove the board and redo Step 2 afterwards —
-   the reference point must be captured through the fresh homography.
-1. **Scale** — enter a known distance in px and mm ("Compute"), or type
-   pixels-per-mm directly. Skippable if Auto Calibrate already filled it in.
+0. **Auto Calibrate** (optional, recommended) — click "Start Auto Calibrate"
+   to open a live preview and hold/move a checkerboard in view. A view is
+   captured automatically whenever the board is visible **and** at least
+   :data:`AUTO_CALIBRATE_MIN_GAP_S` seconds have passed since the last
+   capture — move or tilt the board between captures so the up-to-
+   :data:`AUTO_CALIBRATE_MAX_VIEWS` views are different enough poses for
+   :meth:`CameraCalibration.calibrate_lens` to separate lens distortion from
+   perspective (a single photo can't). The session ends automatically at the
+   view cap, or early via "Stop & Compute" once at least
+   :data:`AUTO_CALIBRATE_MIN_VIEWS` views are in. The result fills in the
+   scale (Step 1) and homography (Step 3), with pixels undistorted through
+   the fitted lens model first. Remove the board and redo Step 2 afterwards —
+   the reference point must be captured through the fresh calibration.
+1. **Scale** — three interchangeable ways to fill in pixels-per-mm, in
+   increasing order of effort/accuracy: type it directly, enter a known
+   two-point pixel/mm distance ("Compute"), or place a ruler in frame and
+   click 5-10 points spaced a fixed distance apart ("Pick Ruler Points" +
+   "Compute PPMM from Points") — the average of the clicked segments' pixel
+   lengths averages out clicking jitter better than a single two-point read.
+   All three are skippable if Auto Calibrate already filled this in.
 2. **Reference point** — "Detect Hole → Set Reference" runs the vision engine
    on the captured frame and stores the hole position (in mm, through the
    current scale/homography) as the nominal position.
@@ -20,8 +33,11 @@ Workflow (per camera):
 
 from __future__ import annotations
 
+import time
+
 import cv2
 import numpy as np
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -37,11 +53,21 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.calibration import CalibrationManager, CameraCalibration
+from core.calibration import CalibrationManager, CameraCalibration, CheckerboardDetection
 from core.utilities.exceptions import VisionSystemError
 from core.vision import VisionEngine, draw_detection_overlay
 from services.camera_service import CameraService
-from ui.widgets import ImageView
+from ui.widgets import PointPicker
+
+# Live-preview auto-calibrate session tuning (see module docstring, step 0).
+AUTO_CALIBRATE_TICK_MS = 250
+AUTO_CALIBRATE_MIN_GAP_S = 10.0
+AUTO_CALIBRATE_MAX_VIEWS = 10
+AUTO_CALIBRATE_MIN_VIEWS = 3  # cv2.calibrateCamera needs several distinct poses
+
+# Hand-clicked ruler scale (Step 1): recommended point count, see scale_from_points.
+RULER_MIN_POINTS = 5
+RULER_MAX_POINTS = 10
 
 
 def _dspin(maximum: float = 100000.0, decimals: int = 2) -> QDoubleSpinBox:
@@ -72,6 +98,14 @@ class CalibrationPage(QWidget):
         self._manager = calibration_manager
         self._engine = vision_engine
         self._frame: np.ndarray | None = None
+
+        # Auto Calibrate session state (see module docstring, step 0).
+        self._auto_session_active = False
+        self._auto_views: list[CheckerboardDetection] = []
+        self._auto_last_capture_time = 0.0  # time.monotonic(), 0 = "capture immediately"
+        self._auto_timer = QTimer(self)
+        self._auto_timer.setInterval(AUTO_CALIBRATE_TICK_MS)
+        self._auto_timer.timeout.connect(self._on_auto_tick)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
@@ -117,20 +151,21 @@ class CalibrationPage(QWidget):
         )
         self._board_square_mm = _dspin(500.0, 2)
         self._board_square_mm.setValue(25.0)
-        auto_calibrate_btn = QPushButton("Capture && Auto Calibrate")
-        auto_calibrate_btn.setProperty("class", "primary")
-        auto_calibrate_btn.clicked.connect(self._on_auto_calibrate)
+        self._auto_calibrate_btn = QPushButton("Start Auto Calibrate")
+        self._auto_calibrate_btn.setProperty("class", "primary")
+        self._auto_calibrate_btn.clicked.connect(self._on_auto_calibrate_clicked)
         auto_form.addRow("Inner Corners (cols x rows)", board_w)
         auto_form.addRow("Square Size (mm)", self._board_square_mm)
-        auto_form.addRow(auto_calibrate_btn)
-        hint = QLabel(
-            "Place a checkerboard flat on/near the inspection plane, filling "
-            "as much of the frame as practical, then run this. Afterwards "
-            "remove it, place the real part, and redo Step 2."
+        auto_form.addRow(self._auto_calibrate_btn)
+        self._auto_status = QLabel(
+            f"Opens a live preview; hold a checkerboard in view and it captures "
+            f"a view every {AUTO_CALIBRATE_MIN_GAP_S:.0f}+ s (move/tilt the board "
+            f"between captures) for up to {AUTO_CALIBRATE_MAX_VIEWS} views, then "
+            f"fits lens distortion + perspective from all of them together."
         )
-        hint.setWordWrap(True)
-        hint.setProperty("class", "dim")
-        auto_form.addRow(hint)
+        self._auto_status.setWordWrap(True)
+        self._auto_status.setProperty("class", "dim")
+        auto_form.addRow(self._auto_status)
         left.addWidget(auto_box)
 
         scale_box = QGroupBox("Step 1 — Pixel to mm scale")
@@ -152,6 +187,37 @@ class CalibrationPage(QWidget):
         scale_form.addRow("Pixels per mm X", self._ppmm_x)
         scale_form.addRow("Pixels per mm Y", self._ppmm_y)
         scale_form.addRow("Known distance", known_w)
+
+        ruler_row = QHBoxLayout()
+        self._ruler_pick_btn = QPushButton("Pick Ruler Points")
+        self._ruler_pick_btn.setCheckable(True)
+        self._ruler_pick_btn.toggled.connect(self._on_ruler_pick_toggled)
+        self._ruler_spacing_mm = _dspin(1000.0, 3)
+        self._ruler_spacing_mm.setValue(1.0)
+        self._ruler_points_label = QLabel("Points: 0")
+        self._ruler_points_label.setProperty("class", "dim")
+        ruler_compute_btn = QPushButton("Compute PPMM from Points")
+        ruler_compute_btn.clicked.connect(self._on_compute_ruler_scale)
+        ruler_clear_btn = QPushButton("Clear Points")
+        ruler_clear_btn.clicked.connect(self._on_clear_ruler_points)
+        ruler_row.addWidget(self._ruler_pick_btn)
+        ruler_row.addWidget(QLabel("mm/point"))
+        ruler_row.addWidget(self._ruler_spacing_mm)
+        ruler_row.addWidget(self._ruler_points_label)
+        ruler_row.addWidget(ruler_compute_btn)
+        ruler_row.addWidget(ruler_clear_btn)
+        ruler_row.addStretch()
+        ruler_w = QWidget()
+        ruler_w.setLayout(ruler_row)
+        scale_form.addRow("Ruler (click points)", ruler_w)
+        ruler_hint = QLabel(
+            f"Place a ruler in frame, enable picking, and left-click {RULER_MIN_POINTS}-"
+            f"{RULER_MAX_POINTS} points each exactly one division apart (right-click "
+            f"undoes the last one) — the average spacing becomes pixels-per-mm."
+        )
+        ruler_hint.setWordWrap(True)
+        ruler_hint.setProperty("class", "dim")
+        scale_form.addRow(ruler_hint)
         left.addWidget(scale_box)
 
         ref_box = QGroupBox("Step 2 — Reference (nominal) position")
@@ -194,6 +260,8 @@ class CalibrationPage(QWidget):
         hom_layout.addLayout(hom_row)
         left.addWidget(homography_box)
         self._homography: np.ndarray | None = None
+        self._camera_matrix: np.ndarray | None = None
+        self._dist_coeffs: np.ndarray | None = None
         self._rms = 0.0
 
         action_row = QHBoxLayout()
@@ -212,8 +280,9 @@ class CalibrationPage(QWidget):
         body.addLayout(left)
 
         # -------------------------------------------------------- right view
-        self._view = ImageView()
+        self._view = PointPicker()
         self._view.setMinimumSize(480, 380)
+        self._view.points_changed.connect(self._on_ruler_points_changed)
         body.addWidget(self._view, stretch=1)
 
         self._load_existing()
@@ -227,10 +296,14 @@ class CalibrationPage(QWidget):
         index = self._camera_index()
         if index is None:
             return
+        if self._auto_session_active:
+            self._cancel_auto_calibrate_session("camera changed")
         calibration = self._manager.get(index)
         if calibration is None:
             self._status.setText("No active calibration — identity fallback (1 px = 1 mm)")
             self._homography = None
+            self._camera_matrix = None
+            self._dist_coeffs = None
             self._hom_status.setText("not set")
             return
         self._ppmm_x.setValue(calibration.pixels_per_mm_x)
@@ -238,9 +311,12 @@ class CalibrationPage(QWidget):
         self._ref_x.setValue(calibration.ref_point_mm[0])
         self._ref_y.setValue(calibration.ref_point_mm[1])
         self._homography = calibration.homography
+        self._camera_matrix = calibration.camera_matrix
+        self._dist_coeffs = calibration.dist_coeffs
         self._rms = calibration.rms_error
+        lens_note = " + lens distortion" if calibration.camera_matrix is not None else ""
         self._hom_status.setText(
-            f"active (rms {calibration.rms_error:.3f} mm)"
+            f"active (rms {calibration.rms_error:.3f} mm{lens_note})"
             if calibration.homography is not None
             else "not set"
         )
@@ -251,6 +327,8 @@ class CalibrationPage(QWidget):
         index = self._camera_index()
         if index is None:
             return
+        if self._auto_session_active:
+            self._cancel_auto_calibrate_session("manual capture requested")
         try:
             self._frame = self._cameras.test_capture(index)
         except VisionSystemError as exc:
@@ -259,46 +337,190 @@ class CalibrationPage(QWidget):
         self._view.set_frame(self._frame)
         self._status.setText("Frame captured")
 
-    def _on_auto_calibrate(self) -> None:
+    def _on_auto_calibrate_clicked(self) -> None:
+        if self._auto_session_active:
+            self._finish_auto_calibrate_session()
+        else:
+            self._start_auto_calibrate_session()
+
+    def _start_auto_calibrate_session(self) -> None:
+        if self._camera_index() is None:
+            return
+        self._auto_views = []
+        self._auto_last_capture_time = 0.0
+        self._auto_session_active = True
+        self._auto_calibrate_btn.setText(f"Stop && Compute (0/{AUTO_CALIBRATE_MAX_VIEWS})")
+        self._auto_status.setText(
+            "Live preview running — show the checkerboard; a view is captured "
+            f"automatically once it's been visible for {AUTO_CALIBRATE_MIN_GAP_S:.0f}+ s "
+            "since the last capture. Move/tilt the board between captures."
+        )
+        self._auto_timer.start()
+
+    def _on_auto_tick(self) -> None:
         index = self._camera_index()
         if index is None:
+            self._cancel_auto_calibrate_session("no camera selected")
             return
         try:
-            self._frame = self._cameras.test_capture(index)
+            frame = self._cameras.test_capture(index)
         except VisionSystemError as exc:
-            QMessageBox.warning(self, "Auto Calibrate", str(exc))
+            self._cancel_auto_calibrate_session(f"capture failed: {exc}")
             return
+        self._frame = frame
 
         columns = self._board_columns.value()
         rows = self._board_rows.value()
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY) if frame.ndim == 3 else frame
+        found, corners = cv2.findChessboardCorners(
+            gray, (columns, rows),
+            flags=(
+                cv2.CALIB_CB_ADAPTIVE_THRESH
+                | cv2.CALIB_CB_NORMALIZE_IMAGE
+                | cv2.CALIB_CB_FAST_CHECK
+            ),
+        )
+        overlay = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) if frame.ndim == 2 else frame.copy()
+        if found:
+            cv2.drawChessboardCorners(overlay, (columns, rows), corners, True)
+        self._view.set_frame(overlay)
+
+        progress = f"{len(self._auto_views)}/{AUTO_CALIBRATE_MAX_VIEWS} views captured"
+        if not found:
+            self._auto_status.setText(f"{progress} — checkerboard not visible")
+            return
+
+        remaining = AUTO_CALIBRATE_MIN_GAP_S - (time.monotonic() - self._auto_last_capture_time)
+        if remaining > 0:
+            self._auto_status.setText(
+                f"{progress} — board visible, next capture in {remaining:.0f} s"
+            )
+            return
+
         try:
+            # Fast-check above only screens frames; the accepted view still needs
+            # the full sub-pixel pass find_checkerboard does.
             detection = CameraCalibration.find_checkerboard(
-                self._frame, columns, rows, self._board_square_mm.value()
+                frame, columns, rows, self._board_square_mm.value()
             )
-            self._homography, self._rms = CameraCalibration.compute_homography(
-                detection.pixel_points, detection.mm_points
+        except VisionSystemError:
+            self._auto_status.setText(f"{progress} — board visible, refining corners...")
+            return
+
+        self._auto_views.append(detection)
+        self._auto_last_capture_time = time.monotonic()
+        self._auto_calibrate_btn.setText(
+            f"Stop && Compute ({len(self._auto_views)}/{AUTO_CALIBRATE_MAX_VIEWS})"
+        )
+        self._auto_status.setText(
+            f"{len(self._auto_views)}/{AUTO_CALIBRATE_MAX_VIEWS} views captured — "
+            "move/tilt the board for the next one"
+        )
+        if len(self._auto_views) >= AUTO_CALIBRATE_MAX_VIEWS:
+            self._finish_auto_calibrate_session()
+
+    def _cancel_auto_calibrate_session(self, reason: str) -> None:
+        self._auto_timer.stop()
+        self._auto_session_active = False
+        self._auto_calibrate_btn.setText("Start Auto Calibrate")
+        self._auto_status.setText(f"Auto Calibrate stopped: {reason}")
+
+    def _finish_auto_calibrate_session(self) -> None:
+        self._auto_timer.stop()
+        self._auto_session_active = False
+        self._auto_calibrate_btn.setText("Start Auto Calibrate")
+        views = self._auto_views
+        if len(views) < AUTO_CALIBRATE_MIN_VIEWS:
+            self._auto_status.setText(
+                f"Stopped with only {len(views)} view(s) captured — need at least "
+                f"{AUTO_CALIBRATE_MIN_VIEWS} at different poses; nothing computed."
             )
+            return
+        if self._frame is None:
+            self._auto_status.setText("Stopped before any frame was captured; nothing computed.")
+            return
+
+        height, width = self._frame.shape[:2]
+        try:
+            lens = CameraCalibration.calibrate_lens(views, (width, height))
         except VisionSystemError as exc:
-            self._view.set_frame(self._frame)
             QMessageBox.warning(self, "Auto Calibrate", str(exc))
             return
 
-        self._ppmm_x.setValue(detection.pixels_per_mm_x)
-        self._ppmm_y.setValue(detection.pixels_per_mm_y)
-        self._hom_status.setText(
-            f"auto-calibrated (rms {self._rms:.3f} mm, {len(detection.pixel_points)} points)"
+        last = views[-1]
+        undistorted_pixels = CameraCalibration.undistort_points(
+            last.pixel_points, lens.camera_matrix, lens.dist_coeffs
+        )
+        try:
+            self._homography, self._rms = CameraCalibration.compute_homography(
+                undistorted_pixels, last.mm_points
+            )
+        except VisionSystemError as exc:
+            QMessageBox.warning(self, "Auto Calibrate", str(exc))
+            return
+
+        self._camera_matrix = lens.camera_matrix
+        self._dist_coeffs = lens.dist_coeffs
+
+        columns, rows = self._board_columns.value(), self._board_rows.value()
+        grid = np.asarray(undistorted_pixels, dtype=np.float64).reshape(rows, columns, 2)
+        square_mm = self._board_square_mm.value()
+        self._ppmm_x.setValue(
+            float(np.linalg.norm(grid[:, 1:, :] - grid[:, :-1, :], axis=2).mean()) / square_mm
+        )
+        self._ppmm_y.setValue(
+            float(np.linalg.norm(grid[1:, :, :] - grid[:-1, :, :], axis=2).mean()) / square_mm
         )
 
-        overlay = (
-            cv2.cvtColor(self._frame, cv2.COLOR_GRAY2BGR)
-            if self._frame.ndim == 2 else self._frame.copy()
+        self._hom_status.setText(
+            f"auto-calibrated (lens rms {lens.overall_rms_px:.3f} px over {len(views)} "
+            f"views, homography rms {self._rms:.3f} mm)"
         )
-        cv2.drawChessboardCorners(overlay, (columns, rows), detection.corners_px, True)
-        self._view.set_frame(overlay)
+        self._auto_status.setText(
+            f"Done — {len(views)} views, lens rms {lens.overall_rms_px:.3f} px."
+        )
         self._status.setText(
-            f"Auto-calibrated from {len(detection.pixel_points)} checkerboard corners "
-            f"(rms {self._rms:.3f} mm). Remove the board, place the part, and redo "
-            f"Step 2 (reference) before saving."
+            f"Auto-calibrated from {len(views)} checkerboard views "
+            f"(lens rms {lens.overall_rms_px:.3f} px, homography rms {self._rms:.3f} mm). "
+            f"Remove the board, place the part, and redo Step 2 (reference) before saving."
+        )
+
+    def _on_ruler_pick_toggled(self, checked: bool) -> None:
+        if checked and self._frame is None:
+            QMessageBox.information(self, "Ruler", "Capture a frame first.")
+            self._ruler_pick_btn.setChecked(False)
+            return
+        self._view.set_pick_mode(checked)
+
+    def _on_ruler_points_changed(self, points: list) -> None:
+        self._ruler_points_label.setText(f"Points: {len(points)}")
+
+    def _on_clear_ruler_points(self) -> None:
+        self._view.clear_points()
+
+    def _on_compute_ruler_scale(self) -> None:
+        points = self._view.points()
+        if len(points) < RULER_MIN_POINTS:
+            QMessageBox.warning(
+                self, "Ruler",
+                f"Place at least {RULER_MIN_POINTS} points, each one division "
+                f"apart, then Compute.",
+            )
+            return
+        if len(points) > RULER_MAX_POINTS:
+            QMessageBox.warning(self, "Ruler", f"Use at most {RULER_MAX_POINTS} points.")
+            return
+        spacing_mm = self._ruler_spacing_mm.value()
+        try:
+            ppmm = CameraCalibration.scale_from_points(points, spacing_mm)
+        except VisionSystemError as exc:
+            QMessageBox.warning(self, "Ruler", str(exc))
+            return
+        self._ppmm_x.setValue(ppmm)
+        self._ppmm_y.setValue(ppmm)
+        self._status.setText(
+            f"Pixels-per-mm set to {ppmm:.3f} from {len(points)} ruler points "
+            f"({spacing_mm:g} mm apart)"
         )
 
     def _on_compute_scale(self) -> None:
@@ -313,11 +535,14 @@ class CalibrationPage(QWidget):
         self._ppmm_y.setValue(ppmm)
 
     def _on_detect_reference(self) -> None:
+        index = self._camera_index()
+        if index is None:
+            return
         if self._frame is None:
             QMessageBox.information(self, "Reference", "Capture a frame first.")
             return
         try:
-            result = self._engine.detect(self._frame)
+            result = self._engine.detect(self._frame, index)
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Reference", str(exc))
             return
@@ -348,6 +573,8 @@ class CalibrationPage(QWidget):
 
     def _on_clear_homography(self) -> None:
         self._homography = None
+        self._camera_matrix = None
+        self._dist_coeffs = None
         self._rms = 0.0
         self._hom_status.setText("not set")
 
@@ -357,6 +584,8 @@ class CalibrationPage(QWidget):
             pixels_per_mm_x=self._ppmm_x.value() or 1.0,
             pixels_per_mm_y=self._ppmm_y.value() or 1.0,
             homography=self._homography,
+            camera_matrix=self._camera_matrix,
+            dist_coeffs=self._dist_coeffs,
             ref_point_mm=(self._ref_x.value(), self._ref_y.value()),
             rms_error=self._rms,
         )
@@ -377,13 +606,19 @@ class CalibrationPage(QWidget):
             return
         self._status.setText(f"Calibration saved for camera {index}")
 
+    # --------------------------------------------------------------- events
+    def hideEvent(self, event) -> None:  # noqa: N802
+        super().hideEvent(event)
+        if self._auto_session_active:
+            self._cancel_auto_calibrate_session("page hidden")  # never hammer test_capture off-screen
+
     def _on_live_test(self) -> None:
         index = self._camera_index()
         if index is None:
             return
         try:
             frame = self._cameras.test_capture(index)
-            result = self._engine.detect(frame)
+            result = self._engine.detect(frame, index)
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Live Test", str(exc))
             return

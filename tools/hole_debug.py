@@ -39,11 +39,19 @@ from core.vision.vision_engine import draw_detection_overlay
 PANEL_LABELS = ("1 source", "2 darker-than-surroundings", "3 mask", "4 result")
 
 
-def load_params(config_path: Path, overrides: argparse.Namespace) -> dict:
-    """``dark_hole`` block from detection.json, with any CLI overrides applied."""
-    params: dict = {}
-    if config_path.is_file():
-        params = dict(json.loads(config_path.read_text(encoding="utf-8")).get("dark_hole", {}))
+def camera_block(config_path: Path, camera_index: int | None) -> dict:
+    """One camera's block from the per-camera detection.json (``--camera``
+    defaults to camera 1 when not given, since there is no longer a single
+    global block)."""
+    if not config_path.is_file():
+        return {}
+    document = json.loads(config_path.read_text(encoding="utf-8"))
+    return document.get("cameras", {}).get(str(camera_index or 1), {})
+
+
+def load_params(config_path: Path, camera_index: int | None, overrides: argparse.Namespace) -> dict:
+    """``dark_hole`` block for one camera, with any CLI overrides applied."""
+    params: dict = dict(camera_block(config_path, camera_index).get("dark_hole", {}))
     if overrides.min_d is not None:
         params["min_hole_diameter_px"] = overrides.min_d
     if overrides.max_d is not None:
@@ -151,10 +159,10 @@ def main() -> int:
         print(f"No images found at {args.target}")
         return 1
 
-    params = load_params(args.config, args)
+    params = load_params(args.config, args.camera, args)
     threshold = args.confidence
-    if threshold is None and args.config.is_file():
-        common = json.loads(args.config.read_text(encoding="utf-8")).get("common", {})
+    if threshold is None:
+        common = camera_block(args.config, args.camera).get("common", {})
         threshold = float(common.get("confidence_threshold", 0.6))
     threshold = threshold if threshold is not None else 0.6
 
@@ -163,6 +171,8 @@ def main() -> int:
     args.out.mkdir(parents=True, exist_ok=True)
     if args.camera is not None:
         print(f"frames taken through camera {args.camera} (resolution fit + ROI crop)")
+    else:
+        print("no --camera given; using camera 1's dark_hole block")
     print(f"dark_hole parameters: {json.dumps(params, sort_keys=True)}")
     print(f"confidence threshold: {threshold}\n")
 

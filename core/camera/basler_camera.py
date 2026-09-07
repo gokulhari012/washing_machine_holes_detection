@@ -83,7 +83,6 @@ GIGE_DEVICE_CLASS = "BaslerGigE"
 DEFAULT_GRAB_TIMEOUT_MS = 5000
 DEFAULT_PACKET_SIZE = 1500
 DEFAULT_NUM_BUFFERS = 5
-UI_BRIGHTNESS_RANGE = 100.0  # Camera page spin box is -100..+100
 
 
 def _require_sdk(context: str) -> None:
@@ -341,9 +340,8 @@ class BaslerCamera(CameraBase):
         self._write_bool(True, "GammaEnable")
         self._write_enum("User", "GammaSelector")
         self._write_float(settings.gamma, "Gamma")
-
-        if settings.brightness:  # ace 2 / dart only; skipped elsewhere
-            self._write_scaled(settings.brightness / UI_BRIGHTNESS_RANGE, "BslBrightness")
+        # settings.brightness is a PLC-driven external light level, not an
+        # in-camera setting — see CameraSettings.brightness and CameraService.
 
     def _apply_trigger(self, settings: CameraSettings) -> None:
         self._write_enum("Continuous", "AcquisitionMode")
@@ -467,12 +465,3 @@ class BaslerCamera(CameraBase):
         node.SetValue(bool(value))
         return True
 
-    def _write_scaled(self, fraction: float, *names: str) -> bool:
-        """Write ``fraction`` in -1..+1 mapped onto the node's own range."""
-        node = self._writable(names)
-        if node is None:
-            return False
-        low, high = node.GetMin(), node.GetMax()
-        fraction = min(max(fraction, -1.0), 1.0)
-        node.SetValue(high * fraction if fraction >= 0 else -low * fraction)
-        return True

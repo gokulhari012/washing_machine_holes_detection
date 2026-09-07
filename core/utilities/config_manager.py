@@ -107,21 +107,31 @@ class ConfigManager:
         logger.info("Configuration '%s' saved", name)
         self._notify(name, callbacks, data)
 
+    def load_defaults(self, name: str) -> dict[str, Any]:
+        """Read configuration *name*'s shipped default without touching the
+        live file — unlike :meth:`restore_defaults`, this never saves or
+        notifies subscribers. Use it to peek at (or selectively merge from)
+        the pristine copy, e.g. resetting one sub-section of a config domain.
+
+        Raises:
+            ConfigurationError: no defaults file exists for *name*, or it's invalid.
+        """
+        defaults_path = self.defaults_path_for(name)
+        try:
+            with defaults_path.open("r", encoding="utf-8") as fh:
+                return json.load(fh)
+        except FileNotFoundError as exc:
+            raise ConfigurationError(f"No defaults shipped for '{name}' ({defaults_path})") from exc
+        except json.JSONDecodeError as exc:
+            raise ConfigurationError(f"Invalid JSON in defaults {defaults_path}: {exc}") from exc
+
     def restore_defaults(self, name: str) -> dict[str, Any]:
         """Overwrite configuration *name* with its shipped default and return it.
 
         Raises:
             ConfigurationError: no defaults file exists for *name*.
         """
-        defaults_path = self.defaults_path_for(name)
-        try:
-            with defaults_path.open("r", encoding="utf-8") as fh:
-                data = json.load(fh)
-        except FileNotFoundError as exc:
-            raise ConfigurationError(f"No defaults shipped for '{name}' ({defaults_path})") from exc
-        except json.JSONDecodeError as exc:
-            raise ConfigurationError(f"Invalid JSON in defaults {defaults_path}: {exc}") from exc
-
+        data = self.load_defaults(name)
         self.save(name, data)
         logger.info("Configuration '%s' restored to defaults", name)
         return copy.deepcopy(data)

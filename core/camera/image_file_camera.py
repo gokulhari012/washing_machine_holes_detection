@@ -14,9 +14,11 @@ a folder cycles through its images, one per grab.
 The picture is fitted into the configured resolution — aspect ratio
 preserved, padded with black — so holes stay circular and their pixel
 diameters stay comparable with the thresholds on the Detection page.
-``brightness`` and ``gamma`` are applied so those fields still give visible
-feedback; ``exposure_us``/``gain_db`` are sensor concepts with no meaning
-for a file and are ignored.
+``gamma`` is applied so that field still gives visible feedback;
+``exposure_us``/``gain_db`` are sensor concepts with no meaning for a file
+and are ignored, and ``brightness`` is a 0-255 external light-brightness
+level (pushed to a PLC register by ``CameraService``, not applied to the
+picture — see ``CameraSettings.brightness``).
 """
 
 from __future__ import annotations
@@ -161,10 +163,13 @@ class ImageFileCamera(CameraBase):
         return canvas
 
     def _adjust(self, frame: np.ndarray) -> np.ndarray:
-        """Brightness offset + gamma curve, so those form fields still act."""
+        """Gamma curve, so that form field still acts on the picture.
+
+        ``brightness`` is deliberately not applied here — it is a 0-255
+        light-brightness level for an external, PLC-controlled light source,
+        not a post-capture adjustment to an already-taken picture.
+        """
         s = self._settings
-        if s.brightness:
-            frame = np.clip(frame.astype(np.int16) + s.brightness, 0, 255).astype(np.uint8)
         if abs(s.gamma - 1.0) > 1e-3:
             lut = np.clip(
                 ((np.arange(256, dtype=np.float32) / 255.0) ** (1.0 / s.gamma)) * 255.0, 0, 255
