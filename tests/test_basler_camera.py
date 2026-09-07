@@ -8,13 +8,14 @@ value silently rejected by a GenICam node is the classic Basler bring-up bug.
 
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 
 from core.camera import create_camera
-from core.camera.basler_camera import BaslerCamera
+from core.camera.basler_camera import INCOMPLETE_BUFFER_ERROR, BaslerCamera
 from core.camera.camera_base import CameraSettings
 from core.utilities.enums import TriggerMode
-from core.utilities.exceptions import CameraConfigurationError
+from core.utilities.exceptions import CameraCaptureError, CameraConfigurationError
 
 
 class FakeNumberNode:
@@ -155,3 +156,79 @@ def test_timeout_message_names_the_trigger_line_in_hardware_mode() -> None:
     camera = make_camera(trigger_mode="hardware", basler={"trigger_source": "Line3"})
     assert "Line3" in camera._timeout_hint(5000)
     assert camera._settings.trigger_mode is TriggerMode.HARDWARE
+
+
+# ------------------------------------------------------- incomplete buffers
+class FakeGrabResult:
+    """One RetrieveResult outcome: a good frame or an error code."""
+
+    def __init__(self, error_code: int | None = None) -> None:
+        self._error_code = error_code
+        self.released = False
+
+    def IsValid(self):
+        return True
+
+    def GrabSucceeded(self):
+        return self._error_code is None
+
+    def GetErrorCode(self):
+        return self._error_code
+
+    def GetErrorDescription(self):
+        return "The buffer was incompletely grabbed."
+
+    def GetArray(self):
+        return np.zeros((4, 4), np.uint8)
+
+    def Release(self):
+        self.released = True
+
+
+def grabbing_camera(results: list[FakeGrabResult]) -> SimpleNamespace:
+    """A camera whose RetrieveResult hands back ``results`` in order."""
+    pending = list(results)
+    return SimpleNamespace(
+        IsGrabbing=lambda: True,
+        WaitForFrameTriggerReady=lambda _timeout, _handling: True,
+        ExecuteSoftwareTrigger=lambda: None,
+        RetrieveResult=lambda _timeout, _handling: pending.pop(0) if pending else None,
+    )
+
+
+def make_grabbing(results, **overrides) -> BaslerCamera:
+    camera = make_camera(trigger_mode="continuous", **overrides)  # skips _flush_pending
+    camera._camera = grabbing_camera(results)
+    camera._options.setdefault("color_conversion", "native")
+    return camera
+
+
+def test_incomplete_buffer_is_retried_rather_than_failing_the_grab() -> None:
+    """0xE1000014 is a dropped packet on a shared NIC — the next trigger usually works."""
+    results = [FakeGrabResult(INCOMPLETE_BUFFER_ERROR), FakeGrabResult()]
+    camera = make_grabbing(results)
+
+    assert camera._grab().shape == (4, 4)
+    assert all(result.released for result in results)  # buffers always returned
+
+
+def test_incomplete_buffer_raises_once_the_retries_are_spent() -> None:
+    camera = make_grabbing(
+        [FakeGrabResult(INCOMPLETE_BUFFER_ERROR) for _ in range(3)],
+        basler={"grab_retries": 2},
+    )
+    with pytest.raises(CameraCaptureError) as excinfo:
+        camera._grab()
+
+    assert "0xe1000014" in str(excinfo.value)
+    assert "jumbo frames" in str(excinfo.value)  # says what actually cures it
+
+
+def test_a_non_transient_grab_error_is_not_retried() -> None:
+    """Only an incomplete buffer is worth another trigger; anything else raises."""
+    results = [FakeGrabResult(0xE1000001), FakeGrabResult()]
+    camera = make_grabbing(results)
+
+    with pytest.raises(CameraCaptureError):
+        camera._grab()
+    assert results[1].released is False  # the second result was never fetched

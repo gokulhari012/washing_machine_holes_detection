@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from core.camera import CameraHealth, CameraManager, CameraSettings
+from core.camera import DEFAULT_VIEW_FPS, CameraHealth, CameraManager, CameraSettings
 from core.logging import get_logger
 from core.utilities import ConfigManager
 from core.utilities.enums import ConnectionState, LogSource
@@ -45,6 +45,21 @@ class CameraService:
     # -------------------------------------------------------------- queries
     def get_configs(self) -> list[dict]:
         return self._config.load("camera").get("cameras", [])
+
+    def camera_fps(self, index: int) -> float:
+        """Configured frame rate for camera ``index``, as set on the Camera page.
+
+        The cadence every continuous viewing mode paces itself by — the
+        Camera page's Continuous Capture and the Calibration page's Auto
+        Calibrate scan both size their loop from this (via
+        :func:`core.camera.frame_interval_ms`), and it is the rate the live
+        preview workers run at too. Falls back to :data:`DEFAULT_VIEW_FPS`
+        for an unknown camera or an entry predating the setting.
+        """
+        for cfg in self.get_configs():
+            if int(cfg.get("index", -1)) == index:
+                return float(cfg.get("fps", DEFAULT_VIEW_FPS) or DEFAULT_VIEW_FPS)
+        return DEFAULT_VIEW_FPS
 
     def health(self, index: int) -> CameraHealth:
         return self._manager.health(index)
@@ -156,6 +171,7 @@ class CameraService:
                 "gain_db": settings.gain_db,
                 "gamma": settings.gamma,
                 "brightness": settings.brightness,
+                "fps": settings.fps,
                 "width": settings.width,
                 "height": settings.height,
                 "roi_x": settings.roi[0],

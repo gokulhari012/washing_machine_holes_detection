@@ -32,6 +32,27 @@ from core.utilities.exceptions import (
 logger = get_logger(LogSource.CAMERA)
 
 
+# Rate assumed for a camera whose ``fps`` is missing or nonsensical — an
+# entry written before ``fps`` existed, or hand-edited to 0. It is a guard
+# against a divide-by-zero, not a cadence any call site is meant to rely on:
+# every continuous view is paced by the camera's own configured rate.
+DEFAULT_VIEW_FPS = 4.0
+
+
+def frame_interval_ms(fps: float) -> int:
+    """Loop/timer interval in ms for a continuous view running at ``fps``.
+
+    Every continuous viewing mode in the app — live preview, the Camera
+    page's Continuous Capture, Auto Calibrate's board scan — sizes its
+    cadence through here from :attr:`CameraSettings.fps`, so the one
+    Camera-tab setting drives all of them and no site keeps a fixed rate of
+    its own. A missing/zero rate falls back to :data:`DEFAULT_VIEW_FPS`.
+    """
+    if fps <= 0:
+        fps = DEFAULT_VIEW_FPS
+    return max(1, int(round(1000.0 / fps)))
+
+
 @dataclass
 class CameraSettings:
     """Driver-independent camera parameters (mirrors one entry of camera.json)."""
@@ -50,6 +71,15 @@ class CameraSettings:
     # camera's PLC brightness register on every apply/save instead (see
     # core.plc.register_map.RegisterMap.camera_brightness).
     brightness: int = 0
+    # Frames per second requested from this camera by every *continuous*
+    # viewing mode — live preview, the Camera page's Continuous Capture and
+    # the Calibration page's Auto Calibrate scan all pace themselves by this
+    # one value (see :func:`frame_interval_ms`). It throttles how often the
+    # app asks for a frame; it does not program an acquisition frame rate
+    # into the device. Whether the *background* preview threads run at all is
+    # a separate station-wide switch (``app_config.ui.live_preview_fps``);
+    # this is the rate they use once they do.
+    fps: float = DEFAULT_VIEW_FPS
     width: int = 1280
     height: int = 1024
     roi: tuple[int, int, int, int] = (0, 0, 0, 0)  # x, y, w, h; w/h 0 = full frame
@@ -75,6 +105,7 @@ class CameraSettings:
                 gain_db=float(cfg.get("gain_db", 0.0)),
                 gamma=float(cfg.get("gamma", 1.0)),
                 brightness=int(cfg.get("brightness", 0)),
+                fps=float(cfg.get("fps", DEFAULT_VIEW_FPS)),
                 width=int(cfg.get("width", 1280)),
                 height=int(cfg.get("height", 1024)),
                 roi=(

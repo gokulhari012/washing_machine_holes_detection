@@ -10,6 +10,7 @@
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 0,
+      "fps": 4,
       "width": 4024,
       "height": 3036,
       "roi": {
@@ -41,6 +42,7 @@
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 0,
+      "fps": 4,
       "width": 4024,
       "height": 3036,
       "roi": {
@@ -68,17 +70,18 @@
       "driver": "basler",
       "connection_id": "3",
       "enabled": true,
-      "exposure_us": 10000,
+      "exposure_us": 50000,
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 0,
+      "fps": 3.0,
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 0,
-        "y": 0,
-        "width": 0,
-        "height": 0
+        "x": 830,
+        "y": 1020,
+        "width": 3892,
+        "height": 1596
       },
       "trigger_mode": "software",
       "basler": {
@@ -96,20 +99,21 @@
     {
       "index": 4,
       "name": "Camera 4 - Rear Right",
-      "driver": "simulated",
+      "driver": "image_file",
       "connection_id": "3",
       "enabled": true,
-      "exposure_us": 50000,
+      "exposure_us": 5000,
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 0,
-      "width": 4024,
-      "height": 3036,
+      "fps": 4.0,
+      "width": 5496,
+      "height": 3672,
       "roi": {
-        "x": 1243,
-        "y": 1720,
-        "width": 1164,
-        "height": 1210
+        "x": 1533,
+        "y": 1069,
+        "width": 2736,
+        "height": 1706
       },
       "trigger_mode": "software",
       "basler": {
@@ -122,7 +126,7 @@
       "simulation": {
         "image_directory": "resources/sample_images/camera_4"
       },
-      "image_source": "D:/washing_machine_holes_detection-main/washing_machine_holes_detection-main/test images"
+      "image_source": "C:/Users/gokul/Downloads/Image__2026-09-07__17-57-17.bmp"
     }
   ]
 }

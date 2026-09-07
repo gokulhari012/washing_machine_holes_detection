@@ -271,3 +271,27 @@ def test_stop_during_the_tick_pause_is_prompt():
 
     assert not thread.is_alive()
     assert elapsed < 2.0, f"stop waited out the tick interval ({elapsed:.1f}s)"
+
+
+
+def test_a_single_dropped_frame_does_not_end_the_session(full_frame):
+    """A GigE hiccup mid-scan must not discard the views already captured."""
+    calls = {"n": 0}
+
+    def flaky_capture():
+        calls["n"] += 1
+        if calls["n"] == 1:  # e.g. grab error 0xe1000014, incomplete buffer
+            raise CameraCaptureError("camera 3: grab error 0xe1000014 (incomplete)")
+        return full_frame
+
+    reasons: list[str] = []
+    views: list[int] = []
+    worker = make_worker(flaky_capture, max_views=1)
+    worker.failed.connect(reasons.append, Qt.ConnectionType.DirectConnection)
+    worker.view_captured.connect(
+        lambda _d, count: views.append(count), Qt.ConnectionType.DirectConnection
+    )
+    drive(worker, timeout=30)
+
+    assert reasons == []  # the drop was retried, not reported
+    assert views == [1]  # and the scan went on to capture its view

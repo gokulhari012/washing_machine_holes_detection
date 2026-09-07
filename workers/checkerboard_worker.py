@@ -27,6 +27,11 @@ found on the small copy back up and runs the sub-pixel refinement against the
 the homography are in the real image's pixel basis. What the downscale removes
 is the coarse search's cost, not the calibration's resolution.
 
+A dropped frame does not end the session: a capture failure is retried on the
+next tick and only reported through ``failed`` once
+:data:`MAX_CONSECUTIVE_CAPTURE_FAILURES` grabs in a row have failed, so a
+GigE hiccup mid-session no longer discards the views already captured.
+
 Results come back as queued signals carrying the **full-resolution** frame, so
 the page's picker keeps its image-pixel coordinate basis and the frame handed to
 ``calibrate_lens`` is the same one the single-threaded version used. The worker
@@ -60,6 +65,13 @@ logger = get_logger(LogSource.VISION)
 # camera in this station while staying far above the resolution needed to
 # locate a board; the sub-pixel refinement still runs at full resolution.
 SCREEN_MAX_DIM = 1000
+
+# A scan runs for minutes, so it must survive the odd dropped frame: a GigE
+# camera on a shared NIC hands back an incomplete buffer now and then (the
+# driver already re-triggers a couple of times before it reports one), and
+# ending the session on a single one throws away every view captured so far.
+# Only a camera that fails this many times *in a row* is genuinely gone.
+MAX_CONSECUTIVE_CAPTURE_FAILURES = 5
 
 _FIND_FLAGS = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
 
@@ -112,6 +124,7 @@ class CheckerboardScanWorker(QThread):
     # ----------------------------------------------------------------- loop
     def run(self) -> None:  # noqa: D102 — see class docstring
         views_captured = 0
+        consecutive_failures = 0
         last_capture = 0.0  # monotonic; 0 means "capture the first sighting"
 
         while not self._stop_event.is_set():
@@ -119,13 +132,28 @@ class CheckerboardScanWorker(QThread):
             try:
                 frame = self._capture()
             except VisionSystemError as exc:
-                logger.warning("Auto Calibrate capture failed: %s", exc)
-                self.failed.emit(str(exc))
-                return
+                consecutive_failures += 1
+                logger.warning(
+                    "Auto Calibrate capture failed (%d/%d): %s",
+                    consecutive_failures,
+                    MAX_CONSECUTIVE_CAPTURE_FAILURES,
+                    exc,
+                )
+                if consecutive_failures >= MAX_CONSECUTIVE_CAPTURE_FAILURES:
+                    self.failed.emit(str(exc))
+                    return
+                self.status.emit(
+                    f"{views_captured}/{self._max_views} views captured — "
+                    f"frame dropped ({consecutive_failures}/"
+                    f"{MAX_CONSECUTIVE_CAPTURE_FAILURES}), retrying"
+                )
+                self._sleep_remainder(started)
+                continue
             except Exception:  # pragma: no cover — programming error, keep the UI alive
                 logger.exception("Auto Calibrate capture raised unexpectedly")
                 self.failed.emit("unexpected capture error (see logs)")
                 return
+            consecutive_failures = 0
 
             if self._stop_event.is_set():
                 return

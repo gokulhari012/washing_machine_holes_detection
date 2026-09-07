@@ -112,6 +112,7 @@ class CameraConfiguration(Base):
     gain_db: Mapped[float] = mapped_column(Float, default=0.0)
     gamma: Mapped[float] = mapped_column(Float, default=1.0)
     brightness: Mapped[int] = mapped_column(Integer, default=0)
+    fps: Mapped[float] = mapped_column(Float, default=0.0)  # 0 = not configured
     width: Mapped[int] = mapped_column(Integer, default=1280)
     height: Mapped[int] = mapped_column(Integer, default=1024)
     roi_x: Mapped[int] = mapped_column(Integer, default=0)

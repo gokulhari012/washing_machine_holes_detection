@@ -2,9 +2,20 @@
 
 Left: camera list + lifecycle buttons + health + PLC jog D-pad (physical
 camera-mount alignment). Centre: parameter form (exposure/gain/gamma/
-light brightness/resolution/trigger/ROI). Right: live preview on a
+light brightness/frame rate/resolution/trigger/ROI). Right: live preview on a
 :class:`RoiEditor` — "Draw ROI" lets the operator drag the region directly
 on the image and the spin boxes follow.
+
+"Frame Rate (fps)" paces every *continuous* viewing mode for this camera —
+the live preview/video workers, "Continuous Capture" below, and the
+Calibration page's Auto Calibrate board scan all size their loop from it
+(core.camera.frame_interval_ms), so none of them keeps a fixed rate of its
+own. It throttles how often the app asks the camera for a frame; it does not
+program an acquisition rate into the device. Whether the background preview
+threads run at all remains a separate station-wide switch
+(``app_config.ui.live_preview_fps``) — this is the rate they use once they
+do. Continuous Capture re-paces the moment the value changes; the preview
+workers are rebuilt on Save, by the composition root's config subscription.
 
 "Light Brightness" (0-255) is not an in-camera setting — it is the level
 pushed to that camera's PLC register (CameraService._push_brightness),
@@ -63,6 +74,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.camera import DEFAULT_VIEW_FPS, frame_interval_ms
 from core.camera.image_file_camera import IMAGE_NAME_FILTER, IMAGE_PATTERNS, read_image
 from core.utilities.enums import CameraDriver, ConnectionState, TriggerMode
 from core.utilities.exceptions import VisionSystemError
@@ -77,7 +89,6 @@ from ui.widgets import LabeledLed, RoiEditor, minus_icon, plus_icon
 # stay in CameraDriver for config-file compatibility but are hidden from this dropdown.
 _SUPPORTED_DRIVERS = (CameraDriver.SIMULATED, CameraDriver.IMAGE_FILE, CameraDriver.BASLER)
 
-CONTINUOUS_CAPTURE_INTERVAL_MS = 250
 _JOG_ICON_PX = 15
 
 
@@ -257,6 +268,17 @@ class CameraPage(QWidget):
             "Light-brightness level pushed to this camera's PLC register "
             "(not an in-camera setting) — takes effect on Apply/Save"
         )
+        self._fps = QDoubleSpinBox()
+        self._fps.setRange(0.1, 120.0)
+        self._fps.setDecimals(1)
+        self._fps.setSingleStep(1.0)
+        self._fps.setSuffix(" fps")
+        self._fps.setToolTip(
+            "Frames per second for every continuous view of this camera — live "
+            "preview, Continuous Capture and Auto Calibrate's board scan all "
+            "run at this rate."
+        )
+        self._fps.valueChanged.connect(self._on_fps_changed)
         self._width = QSpinBox()
         self._width.setRange(64, 8192)
         self._height = QSpinBox()
@@ -297,6 +319,7 @@ class CameraPage(QWidget):
         form.addRow("Gain", self._gain)
         form.addRow("Gamma", self._gamma)
         form.addRow("Light Brightness (PLC)", self._brightness)
+        form.addRow("Frame Rate", self._fps)
         form.addRow("Width", self._width)
         form.addRow("Height", self._height)
         detect_res_btn = QPushButton("Detect Resolution")
@@ -368,7 +391,7 @@ class CameraPage(QWidget):
 
         # ---------------------------------------------------------- wiring
         self._continuous_timer = QTimer(self)
-        self._continuous_timer.setInterval(CONTINUOUS_CAPTURE_INTERVAL_MS)
+        self._continuous_timer.setInterval(frame_interval_ms(DEFAULT_VIEW_FPS))
         self._continuous_timer.timeout.connect(self._on_continuous_tick)
 
         app_state.preview_frame.connect(self._on_preview_frame)
@@ -417,6 +440,7 @@ class CameraPage(QWidget):
             self._gain.setValue(float(cfg.get("gain_db", 0.0)))
             self._gamma.setValue(float(cfg.get("gamma", 1.0)))
             self._brightness.setValue(int(cfg.get("brightness", 0)))
+            self._fps.setValue(float(cfg.get("fps", DEFAULT_VIEW_FPS)))
             self._width.setValue(int(cfg.get("width", 1280)))
             self._height.setValue(int(cfg.get("height", 1024)))
             self._trigger.setCurrentText(cfg.get("trigger_mode", "software"))
@@ -446,6 +470,7 @@ class CameraPage(QWidget):
                 "gain_db": self._gain.value(),
                 "gamma": self._gamma.value(),
                 "brightness": self._brightness.value(),
+                "fps": self._fps.value(),
                 "width": self._width.value(),
                 "height": self._height.value(),
                 "trigger_mode": self._trigger.currentText(),
@@ -581,7 +606,22 @@ class CameraPage(QWidget):
         if self._current_index() is None:
             self._continuous_btn.setChecked(False)
             return
+        self._apply_continuous_interval()
         self._continuous_timer.start()
+
+    def _apply_continuous_interval(self) -> None:
+        """Pace the capture loop from the form's frame rate.
+
+        Read off the spin box rather than the saved config so the operator can
+        dial the rate in while watching the stream, before committing it.
+        """
+        self._continuous_timer.setInterval(frame_interval_ms(self._fps.value()))
+
+    def _on_fps_changed(self, _value: float) -> None:
+        """Re-pace a running Continuous Capture the moment the rate changes."""
+        if self._loading:
+            return
+        self._apply_continuous_interval()
 
     def _on_continuous_tick(self) -> None:
         index = self._current_index()

@@ -110,6 +110,9 @@ class DatabaseEngine:
         # alongside the Calibration page's checkerboard Auto Calibrate flow.
         ("calibrations", "camera_matrix_json", "TEXT"),
         ("calibrations", "dist_coeffs_json", "TEXT"),
+        # Per-camera viewing frame rate, added with the Camera page's FPS
+        # setting (paces live preview, Continuous Capture, Auto Calibrate).
+        ("camera_configurations", "fps", "REAL"),
     )
 
     def _add_missing_columns(self) -> None:

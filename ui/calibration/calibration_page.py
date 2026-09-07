@@ -20,7 +20,10 @@ Workflow (per camera):
    station's 12-20 MP cameras, and driving that from a GUI-thread timer froze
    the page. The worker searches for the board on a downscaled copy and
    refines the corners it finds sub-pixel against the full-resolution frame,
-   so what reaches this page is always in the actual image's pixel basis. This page only consumes the worker's signals, and it never waits
+   so what reaches this page is always in the actual image's pixel basis. Its
+   scan cadence is the selected camera's own ``fps`` (camera.json / Camera
+   page) — the same rate every other continuous view of that camera runs at.
+   This page only consumes the worker's signals, and it never waits
    on that thread — stopping is a request, with the button re-enabled when the
    thread's ``finished`` arrives.
 1. **Scale** — three interchangeable ways to fill in pixels-per-mm, in
@@ -60,6 +63,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.calibration import CalibrationManager, CameraCalibration, CheckerboardDetection
+from core.camera import frame_interval_ms
 from core.utilities.exceptions import VisionSystemError
 from core.vision import VisionEngine, draw_detection_overlay
 from services.camera_service import CameraService
@@ -67,7 +71,8 @@ from ui.widgets import PointPicker
 from workers import CheckerboardScanWorker
 
 # Live-preview auto-calibrate session tuning (see module docstring, step 0).
-AUTO_CALIBRATE_TICK_MS = 250
+# The scan tick is not tuned here: it is the selected camera's configured
+# frame rate, so one Camera-tab setting drives every continuous view of it.
 AUTO_CALIBRATE_MIN_GAP_S = 10.0
 AUTO_CALIBRATE_MAX_VIEWS = 10
 AUTO_CALIBRATE_MIN_VIEWS = 3  # cv2.calibrateCamera needs several distinct poses
@@ -393,7 +398,7 @@ class CalibrationPage(QWidget):
             square_size_mm=self._board_square_mm.value(),
             min_gap_s=AUTO_CALIBRATE_MIN_GAP_S,
             max_views=AUTO_CALIBRATE_MAX_VIEWS,
-            tick_s=AUTO_CALIBRATE_TICK_MS / 1000.0,
+            tick_s=frame_interval_ms(self._cameras.camera_fps(index)) / 1000.0,
             parent=self,
         )
         worker.scanned.connect(self._on_auto_scanned)

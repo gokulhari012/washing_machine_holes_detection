@@ -1,6 +1,11 @@
 """Camera layer: abstract interface, driver adapters, manager, factory."""
 
-from core.camera.camera_base import CameraBase, CameraSettings
+from core.camera.camera_base import (
+    DEFAULT_VIEW_FPS,
+    CameraBase,
+    CameraSettings,
+    frame_interval_ms,
+)
 from core.camera.camera_manager import CameraHealth, CameraManager
 from core.camera.image_file_camera import ImageFileCamera
 from core.camera.simulated_camera import SimulatedCamera
@@ -12,6 +17,8 @@ from core.utilities.exceptions import ConfigurationError
 __all__ = [
     "CameraBase",
     "CameraSettings",
+    "frame_interval_ms",
+    "DEFAULT_VIEW_FPS",
     "CameraHealth",
     "CameraManager",
     "ImageFileCamera",

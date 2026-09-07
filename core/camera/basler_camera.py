@@ -29,6 +29,7 @@ camera.json entry — every key may be omitted::
       "heartbeat_timeout_ms": 5000,   // raise while debugging with breakpoints
       "grab_timeout_ms": 5000,
       "num_buffers": 5,
+      "grab_retries": 2,              // re-triggers on an incomplete buffer
       "pixel_format": "Mono8",        // device default when omitted
       "color_conversion": "bgr8",     // or "native" to keep Mono8 2-D frames
       "offset_x": 0,                  // sensor window origin for width/height
@@ -83,6 +84,23 @@ GIGE_DEVICE_CLASS = "BaslerGigE"
 DEFAULT_GRAB_TIMEOUT_MS = 5000
 DEFAULT_PACKET_SIZE = 1500
 DEFAULT_NUM_BUFFERS = 5
+# A GigE frame arrives as hundreds of UDP packets; lose one and pylon hands
+# back an *incomplete buffer* (0xE1000014) instead of an image. On a shared
+# NIC that is a transient transport hiccup, not a broken camera, so a grab
+# re-triggers a couple of times before it gives up — one dropped packet must
+# not fail an inspection or end an Auto Calibrate session.
+DEFAULT_GRAB_RETRIES = 2
+INCOMPLETE_BUFFER_ERROR = 0xE1000014
+
+
+# What actually cures a repeating incomplete buffer — none of it is fixable
+# from inside the app, so the message says where to go.
+_INCOMPLETE_BUFFER_HELP = (
+    "Packets are being dropped on the way in. Enable jumbo frames (MTU 9014) "
+    "on the NIC and raise this camera's basler.packet_size to 8192, or raise "
+    "basler.inter_packet_delay so cameras sharing the NIC stop colliding; "
+    "basler.num_buffers and basler.grab_retries can also be raised."
+)
 
 
 def _require_sdk(context: str) -> None:
@@ -220,7 +238,24 @@ class BaslerCamera(CameraBase):
         if camera is None or not camera.IsGrabbing():
             raise CameraCaptureError(f"{self.name}: acquisition is not running")
         timeout_ms = int(self._options.get("grab_timeout_ms", DEFAULT_GRAB_TIMEOUT_MS))
+        attempts = 1 + max(0, int(self._options.get("grab_retries", DEFAULT_GRAB_RETRIES)))
 
+        for attempt in range(1, attempts + 1):
+            frame, incomplete = self._grab_once(timeout_ms)
+            if frame is not None:
+                return frame
+            # Incomplete buffer: a packet went missing on the way in. Trying
+            # again costs one more trigger and usually succeeds; anything else
+            # (timeout, no trigger signal) has already been raised.
+            logger.warning(
+                "%s: %s (attempt %d/%d)", self.name, incomplete, attempt, attempts
+            )
+        raise CameraCaptureError(f"{self.name}: {incomplete}. {_INCOMPLETE_BUFFER_HELP}")
+
+    def _grab_once(self, timeout_ms: int) -> tuple[np.ndarray | None, str]:
+        """One trigger+retrieve. ``(frame, "")`` or ``(None, reason)`` when the
+        buffer came back incomplete — the one fault worth retrying."""
+        camera = self._camera
         try:
             if self._settings.trigger_mode is TriggerMode.SOFTWARE:
                 self._flush_pending()
@@ -238,11 +273,12 @@ class BaslerCamera(CameraBase):
             raise CameraCaptureError(f"{self.name}: {self._timeout_hint(timeout_ms)}")
         try:
             if not result.GrabSucceeded():
-                raise CameraCaptureError(
-                    f"{self.name}: grab error 0x{result.GetErrorCode():08x} "
-                    f"({result.GetErrorDescription()})"
-                )
-            return self._to_frame(result)
+                code = result.GetErrorCode()
+                reason = f"grab error 0x{code:08x} ({result.GetErrorDescription()})"
+                if code == INCOMPLETE_BUFFER_ERROR:
+                    return None, reason
+                raise CameraCaptureError(f"{self.name}: {reason}")
+            return self._to_frame(result), ""
         finally:
             result.Release()
 

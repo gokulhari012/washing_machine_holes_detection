@@ -1,9 +1,14 @@
 """Live-preview acquisition thread, one per camera.
 
-Grabs frames at a throttled rate (``ui.live_preview_fps``) and publishes them
-through ``AppState.preview_frame``. Grabs go through the CameraManager so
-health statistics stay accurate, and the camera's internal capture lock
-serialises preview grabs with inspection grabs on the same device.
+Grabs frames at a throttled rate and publishes them through
+``AppState.preview_frame``. The rate is that camera's own ``fps``
+(camera.json, editable on the Camera Configuration page) — the same field
+that paces every other continuous view of it. Whether these threads run at
+all is a separate station-wide switch, ``ui.live_preview_fps``.
+
+Grabs go through the CameraManager so health statistics stay accurate, and
+the camera's internal capture lock serialises preview grabs with inspection
+grabs on the same device.
 
 Fault behaviour: on a capture error the worker backs off (2 s) instead of
 hammering a dead camera; the manager has already recorded the failure and
@@ -17,7 +22,7 @@ import time
 
 from PySide6.QtCore import QThread
 
-from core.camera import CameraManager
+from core.camera import DEFAULT_VIEW_FPS, CameraManager
 from core.logging import get_logger
 from core.utilities.enums import LogSource
 from core.utilities.exceptions import CameraError
@@ -37,14 +42,17 @@ class AcquisitionWorker(QThread):
         camera_manager: CameraManager,
         camera_index: int,
         app_state: AppState,
-        fps: float = 15.0,
+        fps: float = DEFAULT_VIEW_FPS,
     ) -> None:
         super().__init__()
         self.setObjectName(f"AcquisitionWorker-{camera_index}")
         self._manager = camera_manager
         self._index = camera_index
         self._app_state = app_state
-        self._frame_interval_s = 1.0 / max(1.0, fps)
+        # No 1 fps floor: a 20 MP GigE camera is legitimately configured at
+        # a fraction of a frame per second, and clamping that up would make
+        # the preview thread hammer a camera the operator asked to sip from.
+        self._frame_interval_s = 1.0 / max(0.01, fps)
         self._stop_event = threading.Event()
 
     @property
@@ -87,18 +95,24 @@ class AcquisitionWorker(QThread):
 
 
 def create_acquisition_workers(
-    camera_manager: CameraManager, app_state: AppState, fps: float
+    camera_manager: CameraManager, app_state: AppState, preview_enabled_fps: float
 ) -> list[AcquisitionWorker]:
     """One worker per configured camera (composition-root helper).
 
-    ``fps <= 0`` means "no live video": no worker is created, cameras are
-    touched only when an inspection triggers, and the dashboard shows the
-    pictures each cycle takes instead of a stream.
+    ``preview_enabled_fps`` is ``app_config.ui.live_preview_fps``, and it is
+    read as a **switch**, not a rate: ``<= 0`` means "no live video" — no
+    preview threads exist at all, cameras are touched only when an inspection
+    triggers, and the dashboard shows the pictures each cycle takes instead of
+    a stream. When preview is on, each worker runs at its own camera's
+    ``settings.fps`` (the Camera page's "Frame Rate"), so the station-wide
+    value never overrides what a camera was tuned to.
     """
-    if fps <= 0:
+    if preview_enabled_fps <= 0:
         logger.info("Live preview disabled (ui.live_preview_fps <= 0)")
         return []
     return [
-        AcquisitionWorker(camera_manager, index, app_state, fps)
+        AcquisitionWorker(
+            camera_manager, index, app_state, camera_manager.get(index).settings.fps
+        )
         for index in sorted(camera_manager.cameras)
     ]

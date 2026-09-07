@@ -327,9 +327,9 @@ SLMP frame variant selected by `connection.slmp_frame`: `iq_r` (default) or `q`.
 | Main (Qt) | event loop | rendering + input only; never blocks |
 | `PlcPollWorker` (QThread) | 50 ms | trigger edge detection, heartbeat, model poll, reconnect driving |
 | `InspectionWorker` (QObject on QThread) | per trigger | runs the pipeline; re-entrant triggers dropped with a loud warning |
-| `AcquisitionWorker` ×N (QThread) | `ui.live_preview_fps` | live preview grabs; 2 s backoff on fault |
+| `AcquisitionWorker` ×N (QThread) | that camera's `fps` | live preview grabs; 2 s backoff on fault |
 | `DatabaseWorker` (QThread) | batched | log persistence only |
-| `CheckerboardScanWorker` (QThread) | while Auto Calibrate runs | Calibration page's board scan; page-owned, not in `main.py` |
+| `CheckerboardScanWorker` (QThread) | that camera's `fps` | Calibration page's board scan; page-owned, not in `main.py` |
 | detection pool | per cycle | `ThreadPoolExecutor`, parallel mode only |
 
 `CheckerboardScanWorker` is the one worker the composition root does not build —
@@ -440,12 +440,32 @@ A camera with no calibration entry in the profile is simply left alone (sparse, 
 
 ## 9. Gotchas & traps
 
-**`ui.live_preview_fps` is `0` — live preview is deliberately off.** `fps <= 0` makes
-`create_acquisition_workers` return an **empty list**: no preview threads exist at all,
-cameras are touched only when an inspection triggers, and the dashboard shows each
-cycle's captured pictures instead of a stream. Don't "fix" a blank live view without
-checking this. (`AcquisitionWorker` itself clamps `fps` to ≥1.0 internally, so the
-zero-check in the factory is the only thing that disables preview.)
+**`ui.live_preview_fps` is `0` — live preview is deliberately off.** It is read as
+a **switch, not a rate**: `<= 0` makes `create_acquisition_workers` return an
+**empty list**, so no preview threads exist at all, cameras are touched only when an
+inspection triggers, and the dashboard shows each cycle's captured pictures instead of
+a stream. Don't "fix" a blank live view without checking this. When it is on, each
+worker runs at *its own camera's* `fps` — this value never sets the rate.
+
+**One `fps` field is the rate for every continuous view of a camera**, by design:
+the preview workers, the Camera page's "Continuous Capture", and the Calibration
+page's Auto Calibrate board scan all size their loop through
+`core.camera.frame_interval_ms(fps)`. No call site keeps a fixed cadence of its own —
+`AUTO_CALIBRATE_TICK_MS` and `CONTINUOUS_CAPTURE_INTERVAL_MS` are gone. `fps` lives
+per camera in `camera.json` (Camera page → "Frame Rate", 0.1-120, currently 4 on
+every camera, i.e. the 250 ms both page loops used to hard-code); fractional rates
+are honoured, since a 20 MP GigE camera at 0.5 fps is a real setting, and there is no
+≥1 fps clamp. `DEFAULT_VIEW_FPS` (4.0) is only the divide-by-zero guard for an entry
+predating the setting — not a cadence to rely on. One-shot grabs ("Test Camera", the
+Detection page's preview) are unaffected.
+
+Continuous Capture re-paces the instant the spin box changes (it reads the live form
+value, so a rate can be dialled in while watching the stream); Auto Calibrate reads
+the *saved* value when the session starts; the preview workers are rebuilt on
+**Save**, by `main.py`'s camera config subscription. `fps` is a *rig* setting, not a
+per-part one, so it is deliberately **not** in `_TUNABLE_CAMERA_FIELDS` — a machine
+model never overrides it (and could not take effect anyway, since `apply_live`
+doesn't rebuild the preview workers).
 
 **Live config ≠ shipped defaults.** The station has been tuned away from defaults:
 
@@ -504,6 +524,18 @@ import from them; prefer `tools/hole_debug.py` for tuning.
 Raising it to `8192` requires jumbo frames (MTU 9014) enabled on the shared NIC first,
 verified with `ping -f -l 8000 <camera IP>`. Raising it without jumbo frames causes
 dropped frames and grab timeouts, not a speedup.
+
+**Incomplete buffers (`0xE1000014`) are transient, and handled in two places.** A
+GigE frame is hundreds of UDP packets; lose one and pylon returns an *incomplete
+buffer* rather than an image — routine on a shared NIC, especially with a 20 MP
+camera at `packet_size: 1500`. `BaslerCamera._grab` therefore re-triggers
+`basler.grab_retries` times (default 2) on **that error code only** — every other
+grab error still raises at once — and `CheckerboardScanWorker` tolerates
+`MAX_CONSECUTIVE_CAPTURE_FAILURES` (5) failed grabs in a row before ending an Auto
+Calibrate session, so one hiccup no longer throws away the views already captured.
+Neither is a cure: a *repeating* incomplete buffer is a network problem (jumbo frames
++ `packet_size`, `inter_packet_delay`, `num_buffers`), which is what the raised
+message tells the operator.
 
 **`from_config` swallows unknown keys into `extra`.** `CameraSettings.extra` is
 `dict(cfg)` — the *whole* raw entry, so driver-specific blocks (`basler`, `simulation`,
