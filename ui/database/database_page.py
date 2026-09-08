@@ -5,6 +5,9 @@ result, shift, serial substring. The shift dropdown is filled from the rota
 configured on the Settings page, so it always offers exactly the shifts this
 station stamps — a shift that has since been renamed is not offered, and its
 historical rows keep the name they were recorded under.
+The table is re-queried every time the page is shown — inspections keep
+arriving while the operator is on another tab, so anything held on screen is
+stale the moment the page is left; switching to this tab is the refresh.
 Pagination is server-side (repository offset/limit)
 so the page stays fast at millions of rows; sorting within the loaded page is
 client-side via the table headers. Export writes the **entire current filter**
@@ -34,11 +37,15 @@ from PySide6.QtWidgets import (
 )
 
 from core.database import Inspection, InspectionFilter
+from core.logging import get_logger
+from core.utilities.enums import LogSource
 from core.utilities.exceptions import VisionSystemError
 from services.database_service import DatabaseService
 from services.export_service import ExportService
 from services.shift_service import ShiftService
 from ui.theme import COLOR_DIM, COLOR_GOOD, COLOR_NG, COLOR_WARN
+
+logger = get_logger(LogSource.UI)
 
 PAGE_SIZE = 50
 EXPORT_CAP = 5000
@@ -153,21 +160,35 @@ class DatabasePage(QWidget):
         root.addLayout(bottom)
 
         self._on_quick_changed(self._quick.currentText())
-        self._on_search()
+        # No initial query here: showEvent fills the table before the page can
+        # ever be seen, so a station that never opens this tab never pays for it.
 
     # -------------------------------------------------------------- filters
     def showEvent(self, event) -> None:  # noqa: N802
-        """Refill the shift list — the rota may have been edited on the
-        Settings page since this widget was built."""
+        """Refill the shift list and re-run the current query.
+
+        The rota may have been edited on the Settings page since this widget
+        was built, and — more often — cycles have been inspected while the
+        operator was on another page, so the table on screen is stale the
+        moment it is left. Re-querying on every show keeps the page honest
+        without a refresh button or a polling timer; the query is a single
+        indexed offset/limit read, so it costs nothing at this cadence.
+        The current page number and filters are kept, so returning to the
+        viewer does not throw away where the operator was."""
         super().showEvent(event)
         names = ["All shifts", *self._shifts.schedule().names]
-        if names == [self._shift.itemText(i) for i in range(self._shift.count())]:
-            return
-        previous = self._shift.currentText()
-        self._shift.clear()
-        self._shift.addItems(names)
-        if previous in names:
-            self._shift.setCurrentText(previous)
+        if names != [self._shift.itemText(i) for i in range(self._shift.count())]:
+            previous = self._shift.currentText()
+            self._shift.clear()
+            self._shift.addItems(names)
+            if previous in names:
+                self._shift.setCurrentText(previous)
+        try:
+            self._go_page(self._page)
+        except VisionSystemError:
+            # A read fault must not block the page switch, and a modal on
+            # every tab click would be unusable — the Logs page carries it.
+            logger.exception("Could not refresh the inspection table")
 
     def _on_quick_changed(self, text: str) -> None:
         custom = text == "Custom"
