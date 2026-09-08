@@ -50,6 +50,10 @@ class InspectionFilter:
     machine_number: int | None = None
     result: str | None = None
     serial_number: str | None = None
+    #: Exact shift name as stamped on the inspection. Matched exactly rather
+    #: than by substring: shift names are picked from the configured rota, so
+    #: there is nothing to guess, and "Night" must not also match "Late Night".
+    shift: str | None = None
 
 
 @dataclass(frozen=True)
@@ -101,6 +105,8 @@ class InspectionRepository(BaseRepository):
             conditions.append(Inspection.overall_result == criteria.result)
         if criteria.serial_number:
             conditions.append(Inspection.serial_number.contains(criteria.serial_number))
+        if criteria.shift:
+            conditions.append(Inspection.shift == criteria.shift)
 
         with self._db.session_scope() as session:
             total = session.scalar(

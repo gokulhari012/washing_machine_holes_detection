@@ -1,7 +1,11 @@
 """Database Viewer: searchable, paginated inspection history with export.
 
 Filters: quick ranges (Today/Yesterday/7 days/All/Custom), machine number,
-result, serial substring. Pagination is server-side (repository offset/limit)
+result, shift, serial substring. The shift dropdown is filled from the rota
+configured on the Settings page, so it always offers exactly the shifts this
+station stamps — a shift that has since been renamed is not offered, and its
+historical rows keep the name they were recorded under.
+Pagination is server-side (repository offset/limit)
 so the page stays fast at millions of rows; sorting within the loaded page is
 client-side via the table headers. Export writes the **entire current filter**
 (capped) to CSV/Excel/PDF.
@@ -33,6 +37,7 @@ from core.database import Inspection, InspectionFilter
 from core.utilities.exceptions import VisionSystemError
 from services.database_service import DatabaseService
 from services.export_service import ExportService
+from services.shift_service import ShiftService
 from ui.theme import COLOR_DIM, COLOR_GOOD, COLOR_NG, COLOR_WARN
 
 PAGE_SIZE = 50
@@ -43,8 +48,11 @@ _RESULT_COLORS = {"GOOD": COLOR_GOOD, "NG": COLOR_NG, "ERROR": COLOR_WARN}
 COLUMNS = [
     "ID", "Date", "Time", "Machine", "Serial",
     "Cam1 (mm)", "Cam2 (mm)", "Cam3 (mm)", "Cam4 (mm)",
-    "Overall", "Cycle (ms)", "Detect (ms)", "Operator",
+    "Overall", "Cycle (ms)", "Detect (ms)", "Operator", "Shift",
 ]
+#: Only column that gets a verdict colour — derived rather than hard-coded so
+#: adding a column cannot silently start tinting the wrong one.
+RESULT_COLUMN = COLUMNS.index("Overall")
 
 
 class DatabasePage(QWidget):
@@ -54,11 +62,13 @@ class DatabasePage(QWidget):
         self,
         database_service: DatabaseService,
         export_service: ExportService,
+        shift_service: ShiftService,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._db = database_service
         self._export = export_service
+        self._shifts = shift_service
         self._page = 0
         self._total = 0
 
@@ -83,6 +93,9 @@ class DatabasePage(QWidget):
         self._machine.setFixedWidth(100)
         self._result = QComboBox()
         self._result.addItems(["All", "GOOD", "NG", "ERROR"])
+        self._shift = QComboBox()
+        self._shift.addItems(["All shifts", *self._shifts.schedule().names])
+        self._shift.setToolTip("Filter by the shift an inspection was produced in")
         self._serial = QLineEdit()
         self._serial.setPlaceholderText("Serial contains…")
         search_btn = QPushButton("Search")
@@ -95,6 +108,7 @@ class DatabasePage(QWidget):
         filters.addWidget(self._date_to)
         filters.addWidget(self._machine)
         filters.addWidget(self._result)
+        filters.addWidget(self._shift)
         filters.addWidget(self._serial, stretch=1)
         filters.addWidget(search_btn)
         root.addLayout(filters)
@@ -136,6 +150,19 @@ class DatabasePage(QWidget):
         self._on_search()
 
     # -------------------------------------------------------------- filters
+    def showEvent(self, event) -> None:  # noqa: N802
+        """Refill the shift list — the rota may have been edited on the
+        Settings page since this widget was built."""
+        super().showEvent(event)
+        names = ["All shifts", *self._shifts.schedule().names]
+        if names == [self._shift.itemText(i) for i in range(self._shift.count())]:
+            return
+        previous = self._shift.currentText()
+        self._shift.clear()
+        self._shift.addItems(names)
+        if previous in names:
+            self._shift.setCurrentText(previous)
+
     def _on_quick_changed(self, text: str) -> None:
         custom = text == "Custom"
         self._date_from.setEnabled(custom)
@@ -160,12 +187,14 @@ class DatabasePage(QWidget):
 
         machine_text = self._machine.text().strip()
         result = self._result.currentText()
+        shift = self._shift.currentText()
         return InspectionFilter(
             date_from=date_from,
             date_to=date_to,
             machine_number=int(machine_text) if machine_text.isdigit() else None,
             result=result if result != "All" else None,
             serial_number=self._serial.text().strip() or None,
+            shift=shift if self._shift.currentIndex() > 0 else None,
         )
 
     # --------------------------------------------------------------- search
@@ -209,11 +238,12 @@ class DatabasePage(QWidget):
                 f"{inspection.plc_cycle_time_ms:.0f}",
                 f"{inspection.detection_time_ms:.0f}",
                 inspection.operator,
+                inspection.shift,
             ]
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-                if column == 9:
+                if column == RESULT_COLUMN:
                     item.setForeground(QColor(_RESULT_COLORS.get(value, COLOR_DIM)))
                 self._table.setItem(row_index, column, item)
         self._table.setSortingEnabled(True)

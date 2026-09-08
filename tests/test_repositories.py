@@ -86,3 +86,34 @@ def test_users(db) -> None:
     assert user is not None and user.role == "admin"
     assert repo.update_password("admin", "hash2") is True
     assert repo.get_by_username("admin").password_hash == "hash2"
+
+
+def test_search_filters_by_shift_exactly(db) -> None:
+    """Shift names come from a fixed rota, so the filter matches whole names —
+    'Night' must not also pull in 'Late Night'."""
+    repo = InspectionRepository(db)
+    for machine, shift in ((1, "Morning"), (2, "Night"), (3, "Late Night"), (4, "Night")):
+        inspection = make_inspection(machine, "GOOD")
+        inspection.shift = shift
+        repo.add(inspection)
+
+    _rows, total = repo.search(InspectionFilter(shift="Night"), limit=10)
+    assert total == 2
+
+    _rows, total = repo.search(InspectionFilter(shift="Morning"), limit=10)
+    assert total == 1
+
+    # no shift filter -> every row, including those stamped with nothing
+    _rows, total = repo.search(InspectionFilter(), limit=10)
+    assert total == 4
+
+
+def test_shift_filter_combines_with_the_other_criteria(db) -> None:
+    repo = InspectionRepository(db)
+    for machine, shift, result in ((1, "Night", "GOOD"), (2, "Night", "NG"), (3, "Morning", "NG")):
+        inspection = make_inspection(machine, result)
+        inspection.shift = shift
+        repo.add(inspection)
+
+    rows, total = repo.search(InspectionFilter(shift="Night", result="NG"), limit=10)
+    assert total == 1 and rows[0].machine_number == 2

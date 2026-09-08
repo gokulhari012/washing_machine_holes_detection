@@ -4,10 +4,33 @@
     "version": "1.0.0",
     "factory_name": "Factory 1",
     "operator_name": "Operator",
-    "shift": "A",
+    "shift": "Morning",
     "serial_prefix": "WM-",
     "language": "en",
     "theme": "dark"
+  },
+  "shifts": {
+    "automatic": true,
+    "schedule": [
+      {
+        "id": "morning",
+        "name": "Morning",
+        "start": "06:00",
+        "end": "14:00"
+      },
+      {
+        "id": "evening",
+        "name": "Evening",
+        "start": "14:00",
+        "end": "22:00"
+      },
+      {
+        "id": "night",
+        "name": "Night",
+        "start": "22:00",
+        "end": "06:00"
+      }
+    ]
   },
   "database": {
     "path": "data/inspection.db",

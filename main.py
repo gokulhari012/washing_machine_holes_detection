@@ -51,7 +51,9 @@ from services import (
     InspectionService,
     MachineModelService,
     PlcService,
+    ShiftService,
 )
+from services.shift_service import POLL_INTERVAL_MS as SHIFT_POLL_INTERVAL_MS
 from workers import (
     DatabaseWorker,
     InspectionWorker,
@@ -128,9 +130,13 @@ class Application:
         self.plc.subscribe_state(self.app_state.update_plc_state)
 
         # ------------------------------------------------------- services
+        # Built before the inspection service: the pipeline stamps every cycle
+        # with whatever shift this resolves at the moment the cycle starts.
+        self.shift_service = ShiftService(self.config)
         self.inspection = InspectionService(
             self.cameras, self.vision, self.calibration,
             self.plc, self.database, self.app_state, self.config,
+            self.shift_service,
         )
         self.plc_service = PlcService(self.plc, self.config, self.database)
         self.camera_service = CameraService(
@@ -205,10 +211,16 @@ class Application:
             MachineModelsPage(self.machine_models, self.auth_service, self.app_state),
             admin_only=True,
         )
-        self.window.add_page("Database", "▤", DatabasePage(self.database, self.export_service))
+        self.window.add_page(
+            "Database", "▤",
+            DatabasePage(self.database, self.export_service, self.shift_service),
+        )
         self.window.add_page("Logs", "≡", LogsPage(self.app_state, self.database))
         self.window.add_page(
-            "Settings", "⚙", SettingsPage(self.config, self.auth_service, self.backup_service),
+            "Settings", "⚙",
+            SettingsPage(
+                self.config, self.auth_service, self.backup_service, self.shift_service
+            ),
             admin_only=True,
         )
 
@@ -217,6 +229,14 @@ class Application:
         self.config.subscribe("plc", self._on_plc_config_saved)
         self._maintenance_timer = QTimer(self.window)
         self._maintenance_timer.timeout.connect(self._run_maintenance_async)
+        # The rota's only clock. Polling (rather than a one-shot timer armed
+        # at the next handover) keeps the shift correct across a system clock
+        # correction — see ShiftService's module docstring. It runs on the GUI
+        # thread because all it does is publish to AppState, which is where
+        # every page picks it up; the pipeline resolves its own stamp
+        # independently on the inspection thread.
+        self._shift_timer = QTimer(self.window)
+        self._shift_timer.timeout.connect(self.shift_service.poll)
         self._shutdown_done = False
 
     # ------------------------------------------------------------ lifecycle
@@ -238,6 +258,14 @@ class Application:
 
         self._maintenance_timer.start(MAINTENANCE_INTERVAL_MS)
         self._run_maintenance_async()
+
+        # Subscribe, then poll once: the first poll always counts as a change
+        # (the service starts with no shift), so this publishes the opening
+        # shift to the dashboard and status bar before anything can be
+        # inspected, rather than leaving them blank until the first handover.
+        self.shift_service.subscribe(self.app_state.set_current_shift)
+        self.shift_service.poll()
+        self._shift_timer.start(SHIFT_POLL_INTERVAL_MS)
         self.logger.info("Application started")
 
     def shutdown(self) -> None:
@@ -247,6 +275,7 @@ class Application:
         self._shutdown_done = True
         self.logger.info("Shutting down")
         self._maintenance_timer.stop()
+        self._shift_timer.stop()
         self.poll_worker.stop()                       # no new triggers
         for worker in self.acquisition_workers:       # stop preview grabs
             worker.stop()

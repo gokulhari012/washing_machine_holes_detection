@@ -1,4 +1,4 @@
-"""Settings page: general options, storage/backup, change password.
+"""Settings page: general options, shift rota, storage/backup, change password.
 
 Reachable only after an administrator logs in via the toolbar (this page is
 ``admin_only`` in the nav rail — see ``MainWindow``), so unlike the PLC/
@@ -6,10 +6,27 @@ Cameras pages it does not need its own "not logged in" gate for the general
 and backup groups. When ``security.settings_password_protected`` is
 disabled, editing is allowed without that admin session too. First run ships
 a default ``admin``/``admin`` account — change it here.
+
+The Shift Schedule group configures the three-shift rota. With "set the shift
+automatically" ticked — the shipped setting — the shift stamped on every
+inspection follows the clock, and the General group's manual Shift dropdown
+becomes a read-only display of what the rota currently resolves to. Untick it
+and the dropdown is the source of truth again, which is what the station did
+before the rota existed. Either way the value reaches the rest of the
+application through ``ShiftService`` and ``AppState``, never by a page reading
+``application.shift`` for itself.
+
+Editing the rota is validated *before* it is saved: an unparsable time or a
+zero-length shift is refused outright, while a rota that leaves part of the
+day uncovered is only warned about (some plants genuinely stop overnight —
+production in an uncovered hour falls back to the manual shift name).
 """
 
 from __future__ import annotations
 
+from datetime import datetime
+
+from PySide6.QtCore import QTime
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -21,14 +38,77 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QTimeEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from core.utilities import ConfigManager
-from core.utilities.exceptions import VisionSystemError
+from core.utilities.exceptions import ConfigurationError, VisionSystemError
+from core.utilities.shift_schedule import Shift, ShiftSchedule, format_clock
 from services.auth_service import AuthService
 from services.backup_service import BackupService
+from services.shift_service import ShiftService
+
+
+def _to_qtime(value) -> QTime:
+    return QTime(value.hour, value.minute)
+
+
+class ShiftRow:
+    """The three editors for one shift, kept together so the page can read
+    them back as a config entry.
+
+    Not a QWidget: the fields are laid out directly into the group's form so
+    the three rows' columns line up, and this object is only the handle onto
+    them. ``shift_id`` is preserved untouched through an edit — it is the
+    stable key a rename must not disturb.
+    """
+
+    def __init__(self, shift: Shift) -> None:
+        self.shift_id = shift.id
+        self.name = QLineEdit(shift.name)
+        self.name.setMaxLength(32)
+        self.name.setToolTip(
+            "Stamped on every inspection produced in this shift, and shown on "
+            "the dashboard. Renaming affects new records only."
+        )
+        self.start = QTimeEdit(_to_qtime(shift.start))
+        self.end = QTimeEdit(_to_qtime(shift.end))
+        for editor in (self.start, self.end):
+            editor.setDisplayFormat("HH:mm")
+            editor.setFixedWidth(72)
+        self.start.setToolTip("First minute of the shift (inclusive)")
+        self.end.setToolTip(
+            "First minute of the *next* shift (exclusive) — an end earlier "
+            "than the start means the shift runs through midnight."
+        )
+
+    def widget(self) -> QWidget:
+        """The three editors on one horizontal strip."""
+        row = QWidget()
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        layout.addWidget(self.name, stretch=1)
+        layout.addWidget(self.start)
+        layout.addWidget(QLabel("to"))
+        layout.addWidget(self.end)
+        return row
+
+    def set_shift(self, shift: Shift) -> None:
+        self.shift_id = shift.id
+        self.name.setText(shift.name)
+        self.start.setTime(_to_qtime(shift.start))
+        self.end.setTime(_to_qtime(shift.end))
+
+    def to_config(self) -> dict[str, str]:
+        return {
+            "id": self.shift_id,
+            "name": self.name.text().strip(),
+            "start": self.start.time().toString("HH:mm"),
+            "end": self.end.time().toString("HH:mm"),
+        }
 
 
 class SettingsPage(QWidget):
@@ -39,12 +119,14 @@ class SettingsPage(QWidget):
         config_manager: ConfigManager,
         auth_service: AuthService,
         backup_service: BackupService,
+        shift_service: ShiftService,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._config = config_manager
         self._auth = auth_service
         self._backup = backup_service
+        self._shifts = shift_service
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
@@ -62,14 +144,21 @@ class SettingsPage(QWidget):
         general = QFormLayout(self._general_box)
         self._factory = QLineEdit()
         self._operator = QLineEdit()
+        # Populated from the configured rota (not a fixed A/B/C), so the
+        # manual choice can only ever be a shift that actually exists.
         self._shift = QComboBox()
-        self._shift.addItems(["A", "B", "C"])
+        self._shift.setToolTip(
+            "Which shift inspections are stamped with. Driven by the clock "
+            "while the rota below is set to automatic."
+        )
         self._serial_prefix = QLineEdit()
         general.addRow("Factory Name", self._factory)
         general.addRow("Operator Name", self._operator)
         general.addRow("Shift", self._shift)
         general.addRow("Serial Prefix", self._serial_prefix)
         left.addWidget(self._general_box)
+
+        left.addWidget(self._build_shift_box())
 
         self._storage_box = QGroupBox("Storage && Backup")
         storage = QFormLayout(self._storage_box)
@@ -147,6 +236,147 @@ class SettingsPage(QWidget):
         self._load()
         self._apply_protection()
 
+    # ----------------------------------------------------------- shift rota
+    def _build_shift_box(self) -> QGroupBox:
+        """The three-shift rota: automatic switch, three windows, live preview.
+
+        The rows are built from whatever the config currently holds rather
+        than from a hard-coded three, so a rota edited by hand to a different
+        number of shifts still round-trips through this page instead of being
+        silently truncated on the next Save.
+        """
+        self._shift_box = QGroupBox("Shift Schedule")
+        layout = QVBoxLayout(self._shift_box)
+
+        self._auto_shift = QCheckBox("Set the shift automatically from the time of day")
+        self._auto_shift.setToolTip(
+            "Unticked, the shift stays whatever is selected above until "
+            "somebody changes it by hand."
+        )
+        self._auto_shift.toggled.connect(self._on_auto_shift_toggled)
+        layout.addWidget(self._auto_shift)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 4, 0, 0)
+        self._shift_rows: list[ShiftRow] = []
+        for shift in self._shifts.schedule().shifts:
+            row = ShiftRow(shift)
+            row.name.textChanged.connect(self._on_shift_edited)
+            row.start.timeChanged.connect(self._on_shift_edited)
+            row.end.timeChanged.connect(self._on_shift_edited)
+            self._shift_rows.append(row)
+            form.addRow(f"Shift {len(self._shift_rows)}", row.widget())
+        layout.addLayout(form)
+
+        layout.addWidget(self._note(
+            "Each shift runs from its start time up to (but not including) its "
+            "end time, so consecutive shifts share a boundary without "
+            "overlapping. An end time earlier than the start means the shift "
+            "runs through midnight — the usual night shift."
+        ))
+
+        self._shift_preview = QLabel()
+        self._shift_preview.setProperty("class", "dim")
+        self._shift_preview.setWordWrap(True)
+        layout.addWidget(self._shift_preview)
+        return self._shift_box
+
+    def _form_schedule(self) -> ShiftSchedule:
+        """The rota as currently typed, validated.
+
+        Raises:
+            ConfigurationError: a blank name, an unparsable time or a
+                zero-length shift — surfaced to the operator on Save.
+        """
+        return ShiftSchedule.from_config(
+            {
+                "automatic": self._auto_shift.isChecked(),
+                "schedule": [row.to_config() for row in self._shift_rows],
+            }
+        )
+
+    def _on_shift_edited(self, *_args) -> None:
+        """Re-sync the manual dropdown and the preview to what is typed.
+
+        Runs on every keystroke, so it must never raise: a half-typed name is
+        an invalid rota, and that is normal mid-edit — the preview simply says
+        so and Save is where the operator is actually told.
+        """
+        try:
+            schedule = self._form_schedule()
+        except ConfigurationError as exc:
+            self._shift_preview.setText(str(exc))
+            return
+        self._sync_shift_choices(schedule)
+        self._shift_preview.setText(self._preview_text(schedule))
+
+    def _sync_shift_choices(self, schedule: ShiftSchedule) -> None:
+        """Refill the manual dropdown from the rota, keeping the selection.
+
+        A shift the operator renames should stay selected, so the choice is
+        preserved *by position* when its old name has disappeared — matching
+        by name alone would silently jump the selection to another shift.
+        """
+        names = schedule.names
+        if names == [self._shift.itemText(i) for i in range(self._shift.count())]:
+            return
+        position = self._shift.currentIndex()
+        previous = self._shift.currentText()
+        blocked = self._shift.blockSignals(True)
+        self._shift.clear()
+        self._shift.addItems(names)
+        if previous in names:
+            self._shift.setCurrentText(previous)
+        elif 0 <= position < len(names):
+            self._shift.setCurrentIndex(position)
+        self._shift.blockSignals(blocked)
+
+    def _preview_text(self, schedule: ShiftSchedule) -> str:
+        """One line describing what the typed rota does, and any gap in it."""
+        if not schedule.automatic:
+            return "Automatic switching is off — the shift stays as selected above."
+        now = datetime.now()
+        current = schedule.shift_at(now)
+        if current is None:
+            head = "Right now the rota covers no shift"
+        else:
+            head = f"Right now: {current.name} ({current.window_text})"
+        following = schedule.next_change_after(now)
+        if following is not None:
+            upcoming = schedule.shift_at(following)
+            head += f", changes to {upcoming.name} at {format_clock(following.time())}" if upcoming else ""
+        gaps = schedule.coverage_gaps()
+        if gaps:
+            windows = ", ".join(
+                f"{format_clock(start)}-{format_clock(end)}" for start, end in gaps
+            )
+            head += (
+                f".\nUncovered: {windows} — inspections there are stamped with "
+                f"the manually selected shift."
+            )
+        return head
+
+    def _on_auto_shift_toggled(self, checked: bool) -> None:
+        """The manual dropdown is only an input while automatic is off; with
+        it on the dropdown shows what the clock resolved to, read-only, so
+        the two can never disagree on screen."""
+        self._shift.setEnabled(not checked)
+        if checked:
+            self._apply_automatic_selection()
+        self._on_shift_edited()
+
+    def _apply_automatic_selection(self) -> None:
+        """Point the dropdown at whatever the typed rota says it is now."""
+        try:
+            schedule = self._form_schedule()
+        except ConfigurationError:
+            return
+        name = schedule.name_at(datetime.now())
+        if name:
+            blocked = self._shift.blockSignals(True)
+            self._shift.setCurrentText(name)
+            self._shift.blockSignals(blocked)
+
     @staticmethod
     def _note(text: str) -> QLabel:
         """Small wrapped caption explaining what a storage option actually does."""
@@ -170,8 +400,22 @@ class SettingsPage(QWidget):
         storage = cfg.get("storage", {})
         self._factory.setText(application.get("factory_name", ""))
         self._operator.setText(application.get("operator_name", ""))
-        self._shift.setCurrentText(application.get("shift", "A"))
         self._serial_prefix.setText(application.get("serial_prefix", ""))
+
+        # The rota must be in the form before the dropdown is filled from it.
+        schedule = self._shifts.schedule()
+        self._auto_shift.setChecked(schedule.automatic)
+        by_id = {shift.id: shift for shift in schedule.shifts}
+        for row in self._shift_rows:
+            shift = by_id.get(row.shift_id)
+            if shift is not None:
+                row.set_shift(shift)
+        self._sync_shift_choices(schedule)
+        self._shift.setCurrentText(str(application.get("shift", "")))
+        self._shift.setEnabled(not schedule.automatic)
+        if schedule.automatic:
+            self._apply_automatic_selection()
+        self._shift_preview.setText(self._preview_text(schedule))
         self._save_images.setChecked(bool(storage.get("save_images", True)))
         self._ng_only.setChecked(bool(storage.get("save_ng_only", False)))
         self._ng_only.setEnabled(self._save_images.isChecked())
@@ -179,6 +423,16 @@ class SettingsPage(QWidget):
         self._retention.setValue(int(database.get("retention_days", 90)))
 
     def _on_save(self) -> None:
+        # Validate the rota before anything is written: a refused save must
+        # leave app_config.json exactly as it was, not half-updated.
+        try:
+            schedule = self._form_schedule()
+        except ConfigurationError as exc:
+            QMessageBox.warning(self, "Shift Schedule", str(exc))
+            return
+        if schedule.automatic and not self._confirm_coverage(schedule):
+            return
+
         cfg = self._config.load("app_config")
         cfg.setdefault("application", {}).update(
             {
@@ -188,6 +442,7 @@ class SettingsPage(QWidget):
                 "serial_prefix": self._serial_prefix.text(),
             }
         )
+        cfg["shifts"] = schedule.to_config()
         cfg.setdefault("storage", {}).update(
             {
                 "save_images": self._save_images.isChecked(),
@@ -205,7 +460,35 @@ class SettingsPage(QWidget):
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Save Settings", str(exc))
             return
+        # ShiftService drops its cache on this save through its own config
+        # subscription and re-publishes; the page just re-renders its preview.
+        self._on_shift_edited()
         QMessageBox.information(self, "Save Settings", "Settings saved.")
+
+    def _confirm_coverage(self, schedule: ShiftSchedule) -> bool:
+        """Warn — but do not refuse — when the rota leaves part of the day open.
+
+        A plant that genuinely stops overnight has a legitimate gap, so this
+        is a question rather than an error; cycles produced in an uncovered
+        window are stamped with the manually selected shift.
+        """
+        gaps = schedule.coverage_gaps()
+        if not gaps:
+            return True
+        windows = ", ".join(
+            f"{format_clock(start)}-{format_clock(end)}" for start, end in gaps
+        )
+        answer = QMessageBox.question(
+            self,
+            "Shift Schedule",
+            f"The rota leaves {windows} uncovered.\n\n"
+            f"Inspections in that window will be stamped with the manually "
+            f"selected shift ({self._shift.currentText() or 'none'}).\n\n"
+            f"Save anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return answer == QMessageBox.StandardButton.Yes
 
     # -------------------------------------------------------------- security
     def _protection_enabled(self) -> bool:
@@ -215,7 +498,7 @@ class SettingsPage(QWidget):
 
     def _apply_protection(self) -> None:
         allowed = self._auth.is_admin or not self._protection_enabled()
-        for box in (self._general_box, self._storage_box):
+        for box in (self._general_box, self._shift_box, self._storage_box):
             box.setEnabled(allowed)
         self._save_btn.setEnabled(allowed)
         user = self._auth.current_user

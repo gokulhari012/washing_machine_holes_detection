@@ -8,6 +8,7 @@ from services.export_service import ExportService
 from services.inspection_service import InspectionService
 from services.machine_model_service import MachineModelService
 from services.plc_service import PlcService
+from services.shift_service import ShiftService
 
 __all__ = [
     "AuthService",
@@ -18,4 +19,5 @@ __all__ = [
     "InspectionService",
     "MachineModelService",
     "PlcService",
+    "ShiftService",
 ]

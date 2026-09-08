@@ -1,4 +1,4 @@
-"""Shared utilities: configuration, enums, exception hierarchy."""
+"""Shared utilities: configuration, enums, shift rota, exception hierarchy."""
 
 from core.utilities.config_manager import ConfigManager
 from core.utilities.enums import (
@@ -10,6 +10,13 @@ from core.utilities.enums import (
     PlcResultCode,
     TriggerMode,
     UserRole,
+)
+from core.utilities.shift_schedule import (
+    DEFAULT_SHIFT_SPECS,
+    Shift,
+    ShiftSchedule,
+    format_clock,
+    parse_clock,
 )
 from core.utilities.exceptions import (
     AuthenticationError,
@@ -40,6 +47,11 @@ __all__ = [
     "PlcResultCode",
     "TriggerMode",
     "UserRole",
+    "DEFAULT_SHIFT_SPECS",
+    "Shift",
+    "ShiftSchedule",
+    "format_clock",
+    "parse_clock",
     "AuthenticationError",
     "CalibrationError",
     "CameraCaptureError",

@@ -21,7 +21,7 @@ over Ethernet; every cycle is stored in SQLite with an annotated PNG.
 ```bash
 python main.py                # normal start
 python main.py --selftest 8   # start hidden, run 8 s, save logs/selftest.png, exit 0
-pytest                        # 199 tests, ~2 s, all passing as of 2026-09-06
+pytest                        # 317 tests, ~3 s, all passing as of 2026-09-08
 python tools/hole_debug.py path/to/images/   # detector tuner; --camera N applies that camera's ROI
 python scripts/build_exe.py   # PyInstaller onedir -> dist/WMHoleDetection/
 ```
@@ -57,14 +57,14 @@ Workers own **threads only** — zero business logic. Business logic lives in se
 | [main.py](main.py) | composition root, startup/shutdown order, global excepthook | adding any new service/page/worker |
 | [config/](config/) | live JSON: `app_config`, `plc`, `camera`, `detection`, `machine_models` | changing runtime settings |
 | [config/defaults/](config/defaults/) | pristine copies for "Restore Defaults" | **must mirror any new config key** |
-| [core/utilities/](core/utilities/) | `ConfigManager`, enums, exception hierarchy | adding a config domain, enum value, error type |
+| [core/utilities/](core/utilities/) | `ConfigManager`, enums, `ShiftSchedule`, exception hierarchy | adding a config domain, enum value, error type |
 | [core/plc/](core/plc/) | `PlcClientBase`, Modbus/SLMP/Simulated adapters, `RegisterMap`, `PlcManager` | protocol or register work |
 | [core/camera/](core/camera/) | `CameraBase`, 5 drivers, `CameraManager` | camera driver work |
 | [core/vision/](core/vision/) | `HoleDetector` ABC, 4 detectors, `VisionEngine`, overlay drawing | detection algorithm work |
 | [core/calibration/](core/calibration/) | px→mm scale / homography, reference point | coordinate math |
 | [core/database/](core/database/) | SQLAlchemy engine (WAL), ORM models, repositories | schema/query work |
 | [models/](models/) | `AppState` (observable QObject) + frozen DTOs | new cross-thread signal or payload field |
-| [services/](services/) | orchestration; `InspectionService` is the pipeline | business rules |
+| [services/](services/) | orchestration; `InspectionService` is the pipeline, `ShiftService` the rota | business rules |
 | [workers/](workers/) | 4 thread hosts (see [§7](#7-threading-model)) | cadence/lifecycle work |
 | [ui/](ui/) | `main_window` + 9 pages + `widgets/` | any screen change |
 | [resources/styles/](resources/) | dark QSS theme | styling |
@@ -146,6 +146,10 @@ PlcPollWorker sees trigger 0→1  (≤50 ms)
        6.   persist to SQLite             │  synchronous, WAL makes it ms-fast
        7.   publish to AppState           │  dashboard updates
 ```
+
+The cycle's `shift` is resolved by `ShiftService` against the cycle's own
+`started_at`, so a cycle straddling a handover is filed under the shift it
+*began* in — see [§11](#11-shift-rota).
 
 **Capture modes** (`app_config.inspection.capture_mode`):
 - `sequential` (**current setting**) — one camera at a time, each picture published to
@@ -346,6 +350,7 @@ SLMP frame variant selected by `connection.slmp_frame`: `iq_r` (default) or `q`.
 | `DatabaseWorker` (QThread) | batched | log persistence only |
 | `CheckerboardScanWorker` (QThread) | that camera's `fps` | Calibration page's board scan; page-owned, not in `main.py` |
 | detection pool | per cycle | `ThreadPoolExecutor`, parallel mode only |
+| shift timer (`QTimer`, GUI thread) | 30 s | re-resolves the rota, publishes `AppState.current_shift` |
 
 `CheckerboardScanWorker` is the one worker the composition root does not build —
 `CalibrationPage` starts and stops it for the length of an Auto Calibrate
@@ -406,7 +411,7 @@ Five domains in `KNOWN_CONFIGS`: `app_config`, `plc`, `camera`, `detection`,
 | `detection` | Hot-swapped **manually** by the page, which calls `VisionEngine.apply_camera_config(index, cfg)` *before* `save()` so validation happens first ([ui/detection/detection_page.py](ui/detection/detection_page.py)) — only the edited camera's block is swapped/persisted, the other three are untouched |
 | `plc` | **Subscribed** (`main.py`'s `_on_plc_config_saved`) → stops the poll worker, rebuilds `PlcManager` in place via `PlcManager.rebuild`, starts a fresh poll worker |
 | `machine_models` | Applied live via `MachineModelService.apply_profile` |
-| `app_config` | Read per-cycle in the pipeline; other keys read at startup |
+| `app_config` | Read per-cycle in the pipeline; other keys read at startup. The `shifts` block is **subscribed** by `ShiftService`, which drops its cached rota and re-polls on every save |
 
 `detection.json`'s shape is per-camera: `{"cameras": {"1": {"active_detector": ...,
 "common": {...}, "opencv": {...}, "dark_hole": {...}, ...}, "2": {...}, ...}}` — each
@@ -600,3 +605,83 @@ what it is, but treat these as stale:
 - **Type hints throughout**, `from __future__ import annotations` in every module.
 - DTOs are frozen/plain dataclasses, treated as immutable after emit; `frame` arrays
   are display-only and never written to downstream.
+
+---
+
+## 11. Shift rota
+
+Three named windows of the day (`morning`/`evening`/`night`), configured on the
+Settings page. The shift is stamped on every inspection and is what the
+dashboard tile, the status bar, and the Database Viewer's column/filter show.
+
+```
+config app_config.shifts ──► ShiftSchedule (core/utilities/shift_schedule.py)
+                             pure value object, no Qt, no clock of its own
+                                       │
+                             ShiftService (services/shift_service.py)
+                             caches the parsed rota, Qt-free
+                              │                      │
+       main.py QTimer (30 s) ─┘                      └─ InspectionService
+       → poll() → AppState.set_current_shift            → cycle.shift
+       → current_shift_changed → dashboard tile,
+                                 status bar
+```
+
+### Config shape (`config/app_config.json`)
+
+```json
+"shifts": {
+  "automatic": true,
+  "schedule": [
+    {"id": "morning", "name": "Morning", "start": "06:00", "end": "14:00"},
+    {"id": "evening", "name": "Evening", "start": "14:00", "end": "22:00"},
+    {"id": "night",   "name": "Night",   "start": "22:00", "end": "06:00"}
+  ]
+}
+```
+
+`id` is the stable key the Settings page addresses a row by; **`name` is what
+gets persisted onto inspections**, so a rename affects new records only and
+historical rows keep the name they were recorded under. A missing or empty
+`shifts` block parses as the shipped rota above, so an older `app_config.json`
+keeps loading.
+
+### Rules that are easy to break
+
+- **Windows are half-open** — `start` inclusive, `end` exclusive. 14:00 is the
+  first minute of Evening and the last minute of Morning is 13:59, so two
+  back-to-back shifts never both claim the same instant.
+- **`end` < `start` means the shift wraps midnight** (the night shift). That is
+  the *only* meaning; `start == end` is rejected as `ConfigurationError` rather
+  than guessed at ("never" vs "all day" are equally plausible readings).
+- **Overlaps are allowed, first match wins** in configured order. **Gaps are
+  allowed too** — `shift_at` returns `None` there and `ShiftService.current_name`
+  falls back to `application.shift`, the manual name, because an uncovered hour
+  still produced parts and a blank shift column is worse for reporting than a
+  slightly wrong one. The Settings page warns about a gap on save but does not
+  refuse it.
+- **`automatic: false`** keeps the rota parsed and displayed but makes
+  `application.shift` (the General group's dropdown) the source of truth again
+  — the station's pre-rota behaviour. That dropdown's items come from the
+  configured names, never a fixed A/B/C.
+- **The shift is polled, not scheduled.** A one-shot timer armed at the next
+  boundary would misfire or strand the app on a stale shift after an NTP
+  correction or a DST step; re-reading the clock every 30 s is self-correcting.
+  Don't "optimise" this into `next_change_after` — that method exists for
+  *display* ("changes to Evening at 14:00"), not for arming a timer.
+- **A malformed block degrades, it does not raise at startup.** `ShiftService`
+  falls back to the default rota and warns once per fault, not once per tick.
+
+### Where the shift is read
+
+| Consumer | How |
+|---|---|
+| `InspectionService` | `current_name(started_at)` on the inspection thread — the cycle's *start* time, never `now()` |
+| Dashboard "Current Shift" tile | `AppState.current_shift_changed` (**not** `cycle.shift`, which goes stale on the tile) |
+| Status bar | same signal |
+| Database Viewer | `InspectionFilter.shift`, matched **exactly**; the dropdown refills from the rota on `showEvent` |
+| CSV/Excel/PDF export | the stored `Inspection.shift` column (already present, unchanged) |
+
+Adding a fourth shift needs no code: add an entry to both `config/app_config.json`
+and `config/defaults/app_config.json`. The Settings page builds one row per
+configured shift, so it picks the new one up on next start.

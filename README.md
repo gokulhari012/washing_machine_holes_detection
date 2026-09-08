@@ -149,6 +149,27 @@ pytest
    (and generally should) carry its own gates for the optics it actually looks
    through.
 
+5. **Shift rota** — on the Settings page (admin only), the **Shift Schedule**
+   group sets the three shifts' names and hours. With *"Set the shift
+   automatically from the time of day"* ticked — the shipped setting — the
+   shift changes on its own as the clock crosses a boundary: it is stamped on
+   every inspection, shown on the dashboard's "Current Shift" tile and in the
+   status bar, and is a filter and a column on the Database Viewer, so a
+   day's output can be reported shift by shift.
+
+   Each shift runs from its start time up to *but not including* its end, so
+   consecutive shifts share a boundary without overlapping (an inspection at
+   exactly 14:00 belongs to the shift starting then). An end time earlier than
+   the start means the shift runs through midnight — the usual night shift,
+   `22:00 → 06:00`. The page shows which shift is current and when it next
+   changes as you edit, refuses a shift with no name or a zero-length window,
+   and warns — without blocking — if the three shifts leave part of the day
+   uncovered.
+
+   Untick automatic and the **Shift** dropdown in the General group is the
+   source of truth again, changed by hand at handover. That dropdown is also
+   what an uncovered hour falls back to.
+
 ## Architecture
 
 Layered MVVM: `ui/` → `models/` (AppState + DTOs) → `services/` → `workers/`

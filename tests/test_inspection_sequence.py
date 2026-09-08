@@ -80,6 +80,19 @@ class FakeConfig:
         return self._document
 
 
+class FakeShifts:
+    """Stands in for ShiftService: the pipeline only ever asks it to name the
+    shift a cycle started in."""
+
+    def __init__(self, name: str = "Morning") -> None:
+        self.name = name
+        self.asked: list = []
+
+    def current_name(self, moment=None) -> str:
+        self.asked.append(moment)
+        return self.name
+
+
 @pytest.fixture()
 def service_parts():
     cameras = FakeCameraManager()
@@ -98,7 +111,7 @@ def service_parts():
 def build_service(parts, config: FakeConfig) -> InspectionService:
     cameras, app_state, calibration, plc, database = parts
     return InspectionService(
-        cameras, FakeVision(), calibration, plc, database, app_state, config
+        cameras, FakeVision(), calibration, plc, database, app_state, config, FakeShifts()
     )
 
 
@@ -206,7 +219,7 @@ def test_calibrated_camera_picks_the_hole_nearest_the_reference_point(service_pa
     calibration = SimpleNamespace(has=lambda index: True, evaluate=evaluate)
     service = InspectionService(
         cameras, MultiHoleVision(), calibration, plc, database, app_state,
-        FakeConfig(camera_delay_ms=0),
+        FakeConfig(camera_delay_ms=0), FakeShifts(),
     )
 
     cycle = service.run_inspection(machine_number=7)
@@ -225,7 +238,7 @@ def test_uncalibrated_camera_still_picks_the_highest_confidence_hole(service_par
     )
     service = InspectionService(
         cameras, MultiHoleVision(), calibration, plc, database, app_state,
-        FakeConfig(camera_delay_ms=0),
+        FakeConfig(camera_delay_ms=0), FakeShifts(),
     )
 
     cycle = service.run_inspection(machine_number=8)
@@ -233,3 +246,41 @@ def test_uncalibrated_camera_still_picks_the_highest_confidence_hole(service_par
     for data in cycle.cameras.values():
         assert (data.x_px, data.y_px) == (_FAR_FROM_REF_HOLE.x_px, _FAR_FROM_REF_HOLE.y_px)
         assert data.confidence == _FAR_FROM_REF_HOLE.confidence
+
+
+# ---------------------------------------------------------------------- shift
+def test_cycle_is_stamped_with_the_shift_it_started_in(service_parts) -> None:
+    """The shift comes from ShiftService, resolved against the cycle's own
+    start time — not read as a static string out of app_config."""
+    cameras, app_state, calibration, plc, database = service_parts
+    shifts = FakeShifts("Night")
+    service = InspectionService(
+        cameras, FakeVision(), calibration, plc, database, app_state,
+        FakeConfig(camera_delay_ms=0), shifts,
+    )
+
+    cycle = service.run_inspection(machine_number=11)
+
+    assert cycle.shift == "Night"
+    # asked exactly once, and with the moment the cycle started rather than
+    # with no argument (which would re-read the clock after the cameras ran)
+    assert len(shifts.asked) == 1
+    assert shifts.asked[0] == cycle.started_at
+
+
+def test_single_camera_cycle_is_stamped_the_same_way(service_parts) -> None:
+    cameras, app_state, calibration, plc, database = service_parts
+    plc = SimpleNamespace(
+        write_camera_inspection_output=lambda index, position, result: None,
+        read_serial_number=lambda: None,
+    )
+    shifts = FakeShifts("Evening")
+    service = InspectionService(
+        cameras, FakeVision(), calibration, plc, database, app_state,
+        FakeConfig(camera_delay_ms=0), shifts,
+    )
+
+    cycle = service.run_camera_inspection(camera_index=2, machine_number=12)
+
+    assert cycle.shift == "Evening"
+    assert shifts.asked == [cycle.started_at]

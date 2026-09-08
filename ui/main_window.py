@@ -169,12 +169,20 @@ class MainWindow(QMainWindow):
             bar.addWidget(self._space(8))
 
         self._clock = QLabel("")
+        # The shift sits beside the clock because that is what it is derived
+        # from: an operator glancing at the bar can see the handover happen.
+        self._shift = QLabel("")
+        self._shift.setProperty("class", "dim")
+        self._shift.setToolTip("Current production shift (Settings -> Shift Schedule)")
         factory = QLabel(factory_name)
         factory.setProperty("class", "dim")
         bar.addPermanentWidget(factory)
         bar.addPermanentWidget(self._space(16))
+        bar.addPermanentWidget(self._shift)
+        bar.addPermanentWidget(self._space(16))
         bar.addPermanentWidget(self._clock)
         bar.addPermanentWidget(self._space(8))
+        self._on_shift_changed(self._app_state.current_shift)
 
     @staticmethod
     def _space(width: int) -> QWidget:
@@ -280,6 +288,7 @@ class MainWindow(QMainWindow):
             lambda value: self._plc_led.set_state(value, f"PLC {value}")
         )
         state.camera_state_changed.connect(self._on_camera_state)
+        state.current_shift_changed.connect(self._on_shift_changed)
         state.status_message.connect(
             lambda message: self.statusBar().showMessage(message, STATUS_MESSAGE_MS)
         )
@@ -294,6 +303,11 @@ class MainWindow(QMainWindow):
         led = self._camera_leds.get(camera_index)
         if led is not None:
             led.set_state(state)
+
+    def _on_shift_changed(self, name: str) -> None:
+        """Blank the label rather than show a placeholder when no shift is
+        resolved — an empty rota is not worth a permanent dash in the bar."""
+        self._shift.setText(f"Shift: {name}" if name else "")
 
     def _update_clock(self) -> None:
         self._clock.setText(datetime.now().strftime("%Y-%m-%d  %H:%M:%S"))

@@ -27,6 +27,7 @@ class AppState(QObject):
     plc_state_changed = Signal(str)            # ConnectionState value
     camera_state_changed = Signal(int, str)    # camera index, ConnectionState value
     active_machine_model_changed = Signal(str, int)  # profile name, PLC code
+    current_shift_changed = Signal(str)        # shift name, from the configured rota
 
     # inspection flow
     trigger_received = Signal(int)             # machine number
@@ -54,6 +55,7 @@ class AppState(QObject):
         self._last_machine_number: int | None = None
         self._active_machine_model: str = ""
         self._active_machine_model_code: int | None = None
+        self._current_shift: str = ""
 
     # ------------------------------------------------------------- updaters
     def update_plc_state(self, state: ConnectionState) -> None:
@@ -71,6 +73,19 @@ class AppState(QObject):
             self._active_machine_model = name
             self._active_machine_model_code = plc_code
         self.active_machine_model_changed.emit(name, plc_code)
+
+    def set_current_shift(self, name: str) -> None:
+        """Publish the shift the rota now resolves to.
+
+        Pushed by the composition root's shift timer, never derived by a
+        page: the shift a cycle is stamped with and the shift shown on
+        screen must be the same string, and this is where they meet.
+        """
+        with self._lock:
+            if name == self._current_shift:
+                return
+            self._current_shift = name
+        self.current_shift_changed.emit(name)
 
     def notify_trigger(self, machine_number: int) -> None:
         with self._lock:
@@ -154,3 +169,8 @@ class AppState(QObject):
     def active_machine_model(self) -> tuple[str, int | None]:
         with self._lock:
             return self._active_machine_model, self._active_machine_model_code
+
+    @property
+    def current_shift(self) -> str:
+        with self._lock:
+            return self._current_shift

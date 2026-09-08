@@ -10,6 +10,12 @@ inspection, and the delay spin box sets how long the pipeline waits between
 cameras when the sequential capture mode is on. The delay is persisted to
 app_config.json immediately, so the next cycle — and the next start of the
 application — uses it.
+
+The summary card's "Current Shift" tile follows ``AppState.current_shift``,
+which the composition root republishes as the configured rota crosses a
+handover. It is deliberately *not* driven by the finished cycle's own
+``shift`` stamp: that records the shift a cycle began in, which goes stale on
+the tile the moment the rota moves on.
 """
 
 from __future__ import annotations
@@ -111,7 +117,7 @@ class DashboardPage(QWidget):
         model_name, model_code = app_state.active_machine_model
         if model_name:
             self._summary.set_model(f"{model_name} ({model_code})")
-        self._summary.set_shift(self._stored_shift())
+        self._summary.set_shift(app_state.current_shift)
         side.addWidget(self._summary)
         side.addWidget(self._coordinates)
         side.addStretch()
@@ -128,6 +134,7 @@ class DashboardPage(QWidget):
         app_state.inspection_completed.connect(self._on_inspection)
         app_state.counters_changed.connect(self._on_counters)
         app_state.active_machine_model_changed.connect(self._on_machine_model_changed)
+        app_state.current_shift_changed.connect(self._summary.set_shift)
 
         self._load_initial()
 
@@ -264,8 +271,10 @@ class DashboardPage(QWidget):
         self._summary.set_serial(cycle.serial_number)
         self._summary.set_last_trigger(cycle.started_at.strftime("%H:%M:%S"))
         self._summary.push_cycle_time(cycle.plc_cycle_time_ms)
-        if cycle.shift:
-            self._summary.set_shift(cycle.shift)
+        # The shift tile is fed by current_shift_changed, not by the finished
+        # cycle: cycle.shift is the stamp of the shift the cycle *started* in,
+        # which is a moment in the past and would read as stale on the tile
+        # for any cycle that straddled a handover.
 
         for camera_index, data in cycle.cameras.items():
             panel = self._panels.get(camera_index)
@@ -319,13 +328,4 @@ class DashboardPage(QWidget):
         else:
             self._coordinates.clear_position(camera_index)
 
-    def _stored_shift(self) -> str:
-        """Shift as configured on the Settings page (what the pipeline
-        stamps on each cycle); a completed cycle overwrites it."""
-        if self._config is None:
-            return ""
-        try:
-            return str(self._config.get_value("app_config", "application.shift", ""))
-        except (ConfigurationError, TypeError, ValueError):
-            return ""
 

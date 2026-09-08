@@ -25,6 +25,12 @@ Capture modes (``app_config.inspection``):
 - ``parallel`` — all cameras grab and detect at once (fastest cycle, needs the
   bandwidth for it).
 
+Every cycle is stamped with the operator and the shift it ran in. The shift
+comes from ``ShiftService`` -- resolved from the configured rota against the
+cycle's own ``started_at``, so a cycle that straddles a handover is filed
+under the shift it *began* in, and a cycle replayed from a queue would be
+filed correctly too.
+
 Fault policy (a production line must keep moving):
 - one dead camera            → that camera reports ERROR, others proceed
 - detection algorithm error  → that camera reports ERROR
@@ -58,6 +64,7 @@ from core.vision import DetectionResult, VisionEngine, draw_detection_overlay
 from models.app_state import AppState
 from models.dto import CameraInspectionData, InspectionCycleData
 from services.database_service import DatabaseService
+from services.shift_service import ShiftService
 
 logger = get_logger(LogSource.VISION)
 
@@ -83,6 +90,7 @@ class InspectionService:
         database_service: DatabaseService,
         app_state: AppState,
         config_manager: ConfigManager,
+        shift_service: ShiftService,
     ) -> None:
         self._cameras = camera_manager
         self._vision = vision_engine
@@ -91,6 +99,7 @@ class InspectionService:
         self._database = database_service
         self._app_state = app_state
         self._config = config_manager
+        self._shifts = shift_service
 
     # -------------------------------------------------------------- pipeline
     def run_inspection(self, machine_number: int) -> InspectionCycleData:
@@ -145,7 +154,7 @@ class InspectionService:
             plc_cycle_time_ms=(time.perf_counter() - cycle_started) * 1000.0,
             detection_time_ms=detection_ms,
             operator=str(application.get("operator_name", "")),
-            shift=str(application.get("shift", "")),
+            shift=self._shifts.current_name(started_at),
             plc_write_ok=plc_write_ok,
         )
 
@@ -233,7 +242,7 @@ class InspectionService:
             plc_cycle_time_ms=(time.perf_counter() - cycle_started) * 1000.0,
             detection_time_ms=detection_ms,
             operator=str(application.get("operator_name", "")),
-            shift=str(application.get("shift", "")),
+            shift=self._shifts.current_name(started_at),
             plc_write_ok=plc_write_ok,
             partial=True,
         )

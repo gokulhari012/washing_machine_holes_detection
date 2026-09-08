@@ -279,6 +279,19 @@ class RecordingPlc:
         self.full_writes += 1
 
 
+class FakeShifts:
+    """Stands in for ShiftService: the pipeline only ever asks it to name the
+    shift a cycle started in."""
+
+    def __init__(self, name: str = "Morning") -> None:
+        self.name = name
+        self.asked: list = []
+
+    def current_name(self, moment=None) -> str:
+        self.asked.append(moment)
+        return self.name
+
+
 @pytest.fixture()
 def service() -> tuple[InspectionService, FakeCameraManager, AppState, RecordingPlc]:
     cameras = FakeCameraManager()
@@ -290,7 +303,8 @@ def service() -> tuple[InspectionService, FakeCameraManager, AppState, Recording
     )
     database = SimpleNamespace(save_inspection=lambda cycle: 1)
     svc = InspectionService(
-        cameras, FakeVision(), calibration, plc, database, app_state, FakeConfig()
+        cameras, FakeVision(), calibration, plc, database, app_state, FakeConfig(),
+        FakeShifts(),
     )
     return svc, cameras, app_state, plc
 
@@ -373,6 +387,7 @@ def _service_with(plc: RecordingPlc) -> InspectionService:
         SimpleNamespace(save_inspection=lambda cycle: 1),
         AppState(),
         FakeConfig(),
+        FakeShifts(),
     )
 
 
