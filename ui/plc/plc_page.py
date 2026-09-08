@@ -1,7 +1,7 @@
 """PLC Configuration page.
 
-Left: connection settings + scaling/jog-step scalars (not registers — they
-have no PLC address of their own), with Test/Save/Reconnect. Right: one
+Left: connection settings + the position-scale scalar (not a register — it
+has no PLC address of its own), with Test/Save/Reconnect. Right: one
 table listing every named PLC register this application knows about — its
 configured address (an embedded, editable spin box) and its current live
 value (auto-refreshed while the page is visible). Saving connection or
@@ -122,66 +122,6 @@ def _camera_scalar_field(
     )
 
 
-def _jog_axis_field(camera: int, axis: str, name: str, tooltip: str) -> _RegisterField:
-    idx = str(camera)
-    return _RegisterField(
-        name, tooltip, False,
-        get=lambda cfg, idx=idx, axis=axis: int(
-            cfg.get("camera_jog", {}).get("registers", {}).get(idx, {}).get(axis, 0)
-        ),
-        set=lambda cfg, v, idx=idx, axis=axis: (
-            cfg.setdefault("camera_jog", {}).setdefault("registers", {})
-            .setdefault(idx, {}).__setitem__(axis, v)
-        ),
-    )
-
-
-def _jog_z_field(camera: int) -> _RegisterField:
-    idx = str(camera)
-    return _RegisterField(
-        f"Camera {camera} Jog Z",
-        "Independent of Jog X/Y. \"Not used\" means this camera has no Z axis "
-        "wired up — the Z jog buttons and Home's Z component are then simply "
-        "inert for it.",
-        True,
-        get=lambda cfg, idx=idx: int(
-            cfg.get("camera_jog", {}).get("registers", {}).get(idx, {}).get("z", 0)
-        ),
-        set=lambda cfg, v, idx=idx: (
-            cfg.setdefault("camera_jog", {}).setdefault("registers", {})
-            .setdefault(idx, {}).__setitem__("z", v)
-        ),
-        clear=lambda cfg, idx=idx: (
-            cfg.get("camera_jog", {}).get("registers", {}).get(idx, {}).pop("z", None)
-        ),
-    )
-
-
-def _jog_busy_field(camera: int) -> _RegisterField:
-    idx = str(camera)
-    return _RegisterField(
-        f"Camera {camera} Jog Busy",
-        "Coil, not a data register. The PC raises this right after writing a "
-        "new jog/home/go-to-default position (a data-register write alone "
-        "doesn't make a real servo move); the PLC clears it back to 0 once "
-        "the physical move finishes. A new position command for this camera "
-        "is refused while it reads 1. \"Not used\" means no interlock — every "
-        "position command is sent unconditionally, as before this existed.",
-        True,
-        get=lambda cfg, idx=idx: int(
-            cfg.get("camera_jog", {}).get("registers", {}).get(idx, {}).get("busy", 0)
-        ),
-        set=lambda cfg, v, idx=idx: (
-            cfg.setdefault("camera_jog", {}).setdefault("registers", {})
-            .setdefault(idx, {}).__setitem__("busy", v)
-        ),
-        clear=lambda cfg, idx=idx: (
-            cfg.get("camera_jog", {}).get("registers", {}).get(idx, {}).pop("busy", None)
-        ),
-        kind="coil",
-    )
-
-
 def _model_select_field() -> _RegisterField:
     return _RegisterField(
         "Machine Model Select",
@@ -286,16 +226,6 @@ def _build_fields() -> list[_RegisterField]:
                 ),
                 optional=True,
             ),
-            _jog_axis_field(
-                camera, "x", f"Camera {camera} Jog X",
-                "PC ↔ PLC: this camera mount's physical X position (read-modify-write)",
-            ),
-            _jog_axis_field(
-                camera, "y", f"Camera {camera} Jog Y",
-                "PC ↔ PLC: this camera mount's physical Y position (read-modify-write)",
-            ),
-            _jog_z_field(camera),
-            _jog_busy_field(camera),
         ]
     return fields
 
@@ -419,10 +349,7 @@ class PlcPage(QWidget):
             "Millimetres are multiplied by this before being added to the "
             "servo home position (10 = one decimal place)"
         )
-        self._jog_step = _reg_spin(10)
-        self._jog_step.setToolTip("Register units moved per jog button press, on whichever axis was pressed")
         scale_form.addRow("Position Scale", self._scale)
-        scale_form.addRow("Jog Step", self._jog_step)
         left.addWidget(scale_box)
 
         buttons = QHBoxLayout()
@@ -520,7 +447,6 @@ class PlcPage(QWidget):
         self._timeout.setValue(int(connection.get("timeout_ms", 1000)))
         self._poll.setValue(int(connection.get("poll_interval_ms", 50)))
         self._scale.setValue(int(scaling.get("position_scale", 10)))
-        self._jog_step.setValue(int(cfg.get("camera_jog", {}).get("step", 10)))
         for field, spin in zip(self._fields, self._row_spins):
             spin.setValue(int(field.get(cfg) or 0))
         self._on_protocol_changed(self._protocol.currentText())
@@ -549,7 +475,6 @@ class PlcPage(QWidget):
                 continue
             field.set(cfg, value)
         cfg["scaling"] = {"position_scale": self._scale.value()}
-        cfg.setdefault("camera_jog", {})["step"] = self._jog_step.value()
         return cfg
 
     # -------------------------------------------------------------- actions

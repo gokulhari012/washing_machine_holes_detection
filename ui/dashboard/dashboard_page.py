@@ -34,13 +34,10 @@ from PySide6.QtWidgets import (
 from core.logging import get_logger
 from core.utilities import ConfigManager
 from core.utilities.enums import LogSource
-from core.utilities.exceptions import ConfigurationError, VisionSystemError
+from core.utilities.exceptions import ConfigurationError
 from models.app_state import AppState
 from models.dto import CameraInspectionData, InspectionCycleData
-from services.auth_service import AuthService
 from services.inspection_service import DEFAULT_CAMERA_DELAY_MS, SEQUENTIAL_MODE
-from services.machine_model_service import MachineModelService
-from services.plc_service import PlcService
 from ui.dashboard.camera_panel import CameraPanel
 from ui.dashboard.summary_panels import CameraCoordinatesPanel, CycleSummaryPanel
 
@@ -55,9 +52,6 @@ class DashboardPage(QWidget):
         self,
         app_state: AppState,
         camera_configs: list[dict],
-        plc_service: PlcService,
-        auth_service: AuthService,
-        machine_model_service: MachineModelService,
         config_manager: ConfigManager | None = None,
         on_simulate_trigger=None,
         on_camera_trigger=None,
@@ -65,9 +59,6 @@ class DashboardPage(QWidget):
     ) -> None:
         super().__init__(parent)
         self._app_state = app_state
-        self._plc = plc_service
-        self._auth = auth_service
-        self._machine_models = machine_model_service
         self._config = config_manager
         self._on_simulate_trigger = on_simulate_trigger
         self._on_camera_trigger = on_camera_trigger
@@ -100,9 +91,7 @@ class DashboardPage(QWidget):
             name = str(cfg.get("name", f"Camera {cfg['index']}"))
             camera_names.append((index, name))
             panel = CameraPanel(index, name)
-            panel.set_home_enabled(self._plc.jog_configured(index))
             panel.set_trigger_enabled(on_camera_trigger is not None)
-            panel.home_requested.connect(self._on_home_requested)
             panel.trigger_requested.connect(self._on_camera_trigger_clicked)
             self._panels[index] = panel
             grid.addWidget(panel, position // 2, position % 2)
@@ -284,35 +273,6 @@ class DashboardPage(QWidget):
 
     def _on_machine_model_changed(self, name: str, code: int) -> None:
         self._summary.set_model(f"{name} ({code})")
-
-    def _on_home_requested(self, camera_index: int) -> None:
-        """Home button on a camera panel — moves the camera to the *active*
-        machine model's saved image capture position (the same target
-        "Go to Default" on the Camera Configuration page writes), not to
-        zero; admin-gated like the PLC page's manual register write. No
-        QMessageBox precedent on this page, so both the auth check and any
-        failure surface as an alarm instead."""
-        if not self._auth.is_admin:
-            self._app_state.raise_alarm(
-                "warning", "Administrator login required to move a camera (toolbar Login button)."
-            )
-            return
-        _name, code = self._app_state.active_machine_model
-        profile = self._machine_models.get_by_code(code) if code is not None else None
-        position = (profile or {}).get("jog_positions", {}).get(str(camera_index))
-        if position is None:
-            self._app_state.raise_alarm(
-                "warning",
-                f"Camera {camera_index}: no image capture position saved for the "
-                f"active machine model.",
-            )
-            return
-        try:
-            self._plc.set_camera_position(
-                camera_index, int(position["x"]), int(position["y"]), int(position.get("z", 0))
-            )
-        except VisionSystemError as exc:
-            self._app_state.raise_alarm("warning", f"Camera {camera_index} move failed: {exc}")
 
     def _on_counters(self, total: int, good: int, ng: int) -> None:
         """Only the total is shown; good/ng still arrive on the signal and

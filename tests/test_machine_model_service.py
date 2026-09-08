@@ -74,21 +74,8 @@ class FakePlcService:
     """Mimics the PlcService methods MachineModelService calls."""
 
     def __init__(self) -> None:
-        self.positions: dict[int, tuple[int, int, int]] = {}
-        self.rejects: set[int] = set()
         self.model_select: int | None = None
         self.model_select_rejected = False
-
-    def read_camera_position(self, camera_index: int) -> tuple[int, int, int]:
-        return self.positions.get(camera_index, (0, 0, 0))
-
-    def set_camera_position(
-        self, camera_index: int, x: int, y: int, z: int = 0
-    ) -> tuple[int, int, int]:
-        if camera_index in self.rejects:
-            raise VisionSystemError(f"no jog registers configured for camera {camera_index}")
-        self.positions[camera_index] = (x, y, z)
-        return x, y, z
 
     def set_model_select(self, code: int) -> bool:
         if self.model_select_rejected:
@@ -246,45 +233,6 @@ def test_delete_removes_profile(tmp_path) -> None:
     assert service.list_profiles() == []
     with pytest.raises(ConfigurationError):
         service.delete(profile["id"])
-
-
-def test_save_camera_position_persists_on_profile(tmp_path) -> None:
-    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
-    profile = service.capture_current("Model A", 3, created_by="admin")
-
-    updated = service.save_camera_position(profile["id"], 1, 250, 340, 430, updated_by="admin")
-    assert updated["jog_positions"]["1"] == {"x": 250, "y": 340, "z": 430}
-    assert service.get_by_id(profile["id"])["jog_positions"]["1"] == {
-        "x": 250, "y": 340, "z": 430,
-    }
-
-
-def test_save_camera_position_rejects_unknown_profile(tmp_path) -> None:
-    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
-    with pytest.raises(ConfigurationError):
-        service.save_camera_position(999, 1, 0, 0, 0, updated_by="admin")
-
-
-def test_apply_profile_pushes_saved_jog_positions(tmp_path) -> None:
-    service, _cameras, _engine, plc, _calibration = make_service(tmp_path)
-    profile = service.capture_current("Model A", 3, created_by="admin")
-    profile = service.save_camera_position(profile["id"], 1, 250, 340, 430, updated_by="admin")
-
-    warnings = service.apply_profile(profile)
-    assert warnings == []
-    assert plc.positions[1] == (250, 340, 430)
-
-
-def test_apply_profile_warns_when_position_rejected(tmp_path) -> None:
-    service, _cameras, _engine, plc, _calibration = make_service(tmp_path)
-    profile = service.capture_current("Model A", 3, created_by="admin")
-    profile = service.save_camera_position(profile["id"], 1, 250, 340, 430, updated_by="admin")
-    plc.rejects.add(1)
-
-    warnings = service.apply_profile(profile)
-    assert len(warnings) == 1
-    assert "camera 1" in warnings[0]
-    assert 1 not in plc.positions
 
 
 def test_apply_profile_writes_model_select_register(tmp_path) -> None:

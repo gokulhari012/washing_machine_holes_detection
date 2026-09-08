@@ -8,8 +8,8 @@
   to be driven by the PLC poll thread calling :meth:`ensure_connected` each
   tick,
 - typed operations for the inspection workflow (trigger, machine number,
-  heartbeat, position/result writes), camera jog/home for physical alignment,
-  and raw access for the manual register viewer on the PLC page,
+  heartbeat, position/result writes) and raw access for the manual register
+  viewer on the PLC page,
 - :meth:`rebuild` to swap in a new client/register map in place after a PLC
   configuration save, so the connection and register addresses take effect
   live instead of requiring an application restart.
@@ -19,7 +19,7 @@ Thread ownership: connection-lifecycle methods (:meth:`connect`,
 PLC worker thread only. Individual register reads/writes are safe to call
 from the UI thread too — the underlying client (``ModbusTcpPlcClient``,
 ``SimulatedPlc``) locks every transaction — which is what the PLC page's
-manual write and the camera jog/home buttons do; just note that a *sequence*
+manual write does; just note that a *sequence*
 of several register writes (like :meth:`write_inspection_output`) is not
 atomic across threads, so multi-register workflows stay on the worker thread.
 """
@@ -32,9 +32,9 @@ from typing import Callable
 
 from core.logging import get_logger
 from core.plc.plc_client_base import PlcClientBase
-from core.plc.register_map import UINT16_MAX, RegisterMap
+from core.plc.register_map import RegisterMap
 from core.utilities.enums import ConnectionState, LogSource, PlcResultCode
-from core.utilities.exceptions import CameraBusyError, ConfigurationError, PlcError
+from core.utilities.exceptions import PlcError
 
 logger = get_logger(LogSource.PLC)
 
@@ -44,18 +44,6 @@ StateCallback = Callable[[ConnectionState], None]
 PositionMap = dict[int, tuple[float, float] | None]
 
 DEFAULT_BACKOFF_MS = (1000, 2000, 5000, 10000)
-
-# jog direction -> (axis, sign); the single place that decides which way
-# each button moves its register. If a real rig turns out mirrored on an
-# axis, flip that axis's sign here rather than touching plc.json.
-_JOG_AXES: dict[str, tuple[str, int]] = {
-    "x+": ("x", 1),
-    "x-": ("x", -1),
-    "y+": ("y", 1),
-    "y-": ("y", -1),
-    "z+": ("z", 1),
-    "z-": ("z", -1),
-}
 
 
 class PlcManager:
@@ -503,177 +491,6 @@ class PlcManager:
     def camera_brightness_configured(self, camera_index: int) -> bool:
         return camera_index in self._map.camera_brightness
 
-    # --------------------------------------------------- camera jog / home
-    def jog_camera(self, camera_index: int, direction: str) -> int:
-        """Nudge one axis of camera *camera_index*'s physical-position
-        registers one step in *direction* ('x+'/'x-'/'y+'/'y-'/'z+'/'z-').
-        Read-modify-write on that single register, clamped to the uint16
-        range, and only written back if the value actually changed. Raises
-        the busy coil (if configured) once the write lands — see
-        :meth:`_signal_move_started`.
-
-        Returns:
-            That axis's new register value.
-
-        Raises:
-            CameraBusyError: this camera's busy coil already reads 1 — a
-                previous move hasn't finished yet.
-            ConfigurationError: unknown direction, or that axis has no jog
-                register configured for this camera (X/Y are configured as
-                a pair; Z is independent and optional).
-            PlcError: communication failure.
-        """
-        if direction not in _JOG_AXES:
-            raise ConfigurationError(f"Unknown jog direction: {direction!r}")
-        self._check_not_busy(camera_index)
-        axis, sign = _JOG_AXES[direction]
-        address = self._axis_address(camera_index, axis)
-        result = self._apply_single_jog(address, sign * self._map.jog_step)
-        self._signal_move_started(camera_index)
-        return result
-
-    def home_camera(self, camera_index: int) -> tuple[int, int, int]:
-        """Move camera *camera_index* to home: X and Y set to zero, and Z
-        too if this camera has a Z jog register configured. Home is not a
-        stored value — the mount's true home is electrical/mechanical zero.
-
-        Returns:
-            ``(0, 0, 0)`` — the third value is 0 regardless of whether a Z
-            register is actually configured for this camera.
-
-        Raises:
-            CameraBusyError: this camera's busy coil already reads 1.
-            ConfigurationError: no X/Y jog registers configured for this
-                camera.
-            PlcError: communication failure.
-        """
-        self._check_not_busy(camera_index)
-        x_addr, y_addr = self._jog_addresses(camera_index)
-        self._write(x_addr, [0])
-        self._write(y_addr, [0])
-        z_addr = self._map.camera_jog_z.get(camera_index)
-        if z_addr is not None:
-            self._write(z_addr, [0])
-        self._signal_move_started(camera_index)
-        logger.info("Camera %d homed -> (0, 0, 0)", camera_index)
-        return 0, 0, 0
-
-    def read_camera_jog_position(self, camera_index: int) -> tuple[int, int, int]:
-        """Current physical jog position (x, y, z) for *camera_index* — the
-        value to snapshot as a machine model's image capture position. z is
-        reported as 0 when this camera has no Z jog register configured.
-
-        Raises:
-            ConfigurationError: no X/Y jog registers configured for this
-                camera.
-            PlcError: communication failure.
-        """
-        x_addr, y_addr = self._jog_addresses(camera_index)
-        x = self._read(x_addr, 1)[0]
-        y = self._read(y_addr, 1)[0]
-        z_addr = self._map.camera_jog_z.get(camera_index)
-        z = self._read(z_addr, 1)[0] if z_addr is not None else 0
-        return x, y, z
-
-    def set_camera_jog_position(
-        self, camera_index: int, x: int, y: int, z: int = 0
-    ) -> tuple[int, int, int]:
-        """Write camera *camera_index*'s jog X/Y(/Z) registers directly to
-        *(x, y, z)* — used to restore a machine model's saved image capture
-        position (manually via "Go to Default", or automatically whenever a
-        machine model is applied). *z* is silently dropped (returned as 0)
-        when this camera has no Z jog register configured, the same way an
-        absent X/Y camera is skipped elsewhere in this class.
-
-        Raises:
-            CameraBusyError: this camera's busy coil already reads 1.
-            ConfigurationError: no X/Y jog registers configured for this
-                camera.
-            PlcError: communication failure.
-        """
-        self._check_not_busy(camera_index)
-        x_addr, y_addr = self._jog_addresses(camera_index)
-        x = max(0, min(UINT16_MAX, int(x)))
-        y = max(0, min(UINT16_MAX, int(y)))
-        self._write(x_addr, [x])
-        self._write(y_addr, [y])
-        z_addr = self._map.camera_jog_z.get(camera_index)
-        if z_addr is not None:
-            z = max(0, min(UINT16_MAX, int(z)))
-            self._write(z_addr, [z])
-        else:
-            z = 0
-        self._signal_move_started(camera_index)
-        logger.info("Camera %d position set -> (%d, %d, %d)", camera_index, x, y, z)
-        return x, y, z
-
-    def jog_configured(self, camera_index: int) -> bool:
-        return camera_index in self._map.camera_jog
-
-    def jog_z_configured(self, camera_index: int) -> bool:
-        return camera_index in self._map.camera_jog_z
-
-    def jog_busy_configured(self, camera_index: int) -> bool:
-        return camera_index in self._map.camera_jog_busy
-
-    def read_camera_jog_busy(self, camera_index: int) -> bool:
-        """Current value of camera *camera_index*'s busy/moving coil.
-
-        Returns False (no I/O, never busy) when the camera has no busy coil
-        configured — the interlock is simply inert until one is wired up,
-        the same way every other optional per-camera register degrades.
-
-        Raises:
-            PlcError: communication failure.
-        """
-        address = self._map.camera_jog_busy.get(camera_index)
-        if address is None:
-            return False
-        return self._read_coil(address)
-
-    def _check_not_busy(self, camera_index: int) -> None:
-        """Raise CameraBusyError if this camera is still executing a
-        previous move. Called before every jog/home/position write so a
-        second command can't be issued on top of one already in flight."""
-        if self.read_camera_jog_busy(camera_index):
-            raise CameraBusyError(
-                f"Camera {camera_index} is still moving — wait for the current move to finish"
-            )
-
-    def _signal_move_started(self, camera_index: int) -> None:
-        """Raise the busy coil (if configured) so the PLC knows a new
-        position was just written and it's time to start moving; the PLC
-        clears it back to 0 once the physical move completes. No-op (no I/O)
-        when this camera has no busy coil configured."""
-        address = self._map.camera_jog_busy.get(camera_index)
-        if address is not None:
-            self._write_coil(address, True)
-
-    def _jog_addresses(self, camera_index: int) -> tuple[int, int]:
-        addresses = self._map.camera_jog.get(camera_index)
-        if addresses is None:
-            raise ConfigurationError(f"No jog registers configured for camera {camera_index}")
-        return addresses
-
-    def _axis_address(self, camera_index: int, axis: str) -> int:
-        if axis == "z":
-            address = self._map.camera_jog_z.get(camera_index)
-            if address is None:
-                raise ConfigurationError(
-                    f"No Z jog register configured for camera {camera_index}"
-                )
-            return address
-        x_addr, y_addr = self._jog_addresses(camera_index)
-        return x_addr if axis == "x" else y_addr
-
-    def _apply_single_jog(self, address: int, delta: int) -> int:
-        value = self._read(address, 1)[0]
-        new_value = max(0, min(UINT16_MAX, value + delta))
-        if new_value != value:
-            self._write(address, [new_value])
-        logger.info("Camera jog register %d -> %d", address, new_value)
-        return new_value
-
     # ------------------------------------------------- manual register access
     def read_raw(self, address: int, count: int = 1) -> list[int]:
         """Manual/live register viewer read (PLC Configuration page)."""
@@ -710,9 +527,6 @@ class PlcManager:
         except PlcError as exc:
             self._handle_comm_error(exc)
             raise
-
-    def _read_coil(self, address: int) -> bool:
-        return self._read_coils(address, 1)[0]
 
     def _read_coils(self, address: int, count: int) -> list[bool]:
         try:

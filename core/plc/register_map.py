@@ -121,29 +121,6 @@ class RegisterMap:
     # PLC can publish 0-65535; the configured serial prefix is added on the
     # PC side and is never read from or written to the PLC.
     serial_number: int | None = None
-    # Physical camera-position jog control — unrelated to camera_positions
-    # above (that's the *detected hole* coordinate the app writes out as an
-    # inspection result; this is the camera *mount's* position, driven by
-    # PLC-controlled actuators). camera_jog: camera index -> (x_addr, y_addr)
-    # register addresses, required as a pair. camera_jog_z: camera index ->
-    # z_addr, independent and optional — a mount without a wired Z axis
-    # simply has no Z jog register, while X/Y keep working. "Home" is not a
-    # configured value: it means writing 0 to every axis this camera has, so
-    # there is no camera_jog_home — a mount's true home is by definition
-    # electrical/mechanical zero, not an arbitrary stored offset.
-    camera_jog: dict[int, tuple[int, int]] = field(default_factory=dict)
-    camera_jog_z: dict[int, int] = field(default_factory=dict)
-    # Busy/moving handshake coil — camera index -> coil address, a
-    # completely separate address space from every register above (see
-    # PlcClientBase). The PC raises it right after writing a new jog/home/
-    # go-to-default position (the "go" signal, since a data-register write
-    # alone doesn't make a real servo move); the PLC clears it back to 0
-    # once the physical move finishes. Optional per camera, like
-    # camera_jog_z — a camera without one simply has no interlock, and every
-    # position command for it is sent unconditionally, same as before this
-    # feature existed.
-    camera_jog_busy: dict[int, int] = field(default_factory=dict)
-    jog_step: int = 10
 
     @classmethod
     def from_config(cls, plc_config: dict) -> "RegisterMap":
@@ -190,23 +167,6 @@ class RegisterMap:
             model_select = registers.get("model_select")
             serial_number = registers.get("serial_number")
 
-            jog_cfg = plc_config.get("camera_jog", {})
-            jog_registers = jog_cfg.get("registers", {})
-            camera_jog = {
-                int(index): (int(entry["x"]), int(entry["y"]))
-                for index, entry in jog_registers.items()
-            }
-            camera_jog_z = {
-                int(index): int(entry["z"])
-                for index, entry in jog_registers.items()
-                if "z" in entry
-            }
-            camera_jog_busy = {
-                int(index): int(entry["busy"])
-                for index, entry in jog_registers.items()
-                if "busy" in entry
-            }
-
             return cls(
                 trigger=int(registers["trigger"]),
                 machine_number=int(registers["machine_number"]),
@@ -224,10 +184,6 @@ class RegisterMap:
                 position_scale=int(scaling.get("position_scale", 10)),
                 model_select=int(model_select) if model_select is not None else None,
                 serial_number=int(serial_number) if serial_number is not None else None,
-                camera_jog=camera_jog,
-                camera_jog_z=camera_jog_z,
-                camera_jog_busy=camera_jog_busy,
-                jog_step=int(jog_cfg.get("step", 10)),
             )
         except (KeyError, TypeError, ValueError) as exc:
             raise ConfigurationError(f"Invalid PLC register configuration: {exc}") from exc

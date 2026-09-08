@@ -1,7 +1,7 @@
 """Reusable UI building blocks shared by all pages."""
 
 from ui.widgets.alarm_banner import AlarmBanner
-from ui.widgets.icons import home_icon, minus_icon, play_icon, plus_icon
+from ui.widgets.icons import play_icon
 from ui.widgets.image_view import ImageView, numpy_to_qpixmap
 from ui.widgets.led_indicator import LabeledLed, LedIndicator
 from ui.widgets.login_dialog import LoginDialog
@@ -12,10 +12,7 @@ from ui.widgets.wheel_guard import install_wheel_guard
 
 __all__ = [
     "AlarmBanner",
-    "home_icon",
-    "minus_icon",
     "play_icon",
-    "plus_icon",
     "ImageView",
     "numpy_to_qpixmap",
     "LabeledLed",

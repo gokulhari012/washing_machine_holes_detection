@@ -107,33 +107,6 @@ def test_model_select_parsed_when_present() -> None:
     assert rmap.model_select == 103
 
 
-def test_camera_jog_defaults_to_empty() -> None:
-    rmap = RegisterMap.from_config(make_config())
-    assert rmap.camera_jog == {}
-    assert rmap.camera_jog_z == {}
-    assert rmap.camera_jog_busy == {}
-    assert rmap.jog_step == 10
-
-
-def test_camera_jog_parsed_when_present() -> None:
-    config = make_config()
-    config["camera_jog"] = {
-        "step": 25,
-        "registers": {
-            "1": {"x": 120, "y": 121, "z": 122, "busy": 200},
-            "2": {"x": 123, "y": 124},  # no Z axis or busy coil wired up for this camera
-        },
-    }
-    rmap = RegisterMap.from_config(config)
-    assert rmap.jog_step == 25
-    assert rmap.camera_jog[1] == (120, 121)
-    assert rmap.camera_jog[2] == (123, 124)
-    assert rmap.camera_jog_z[1] == 122
-    assert 2 not in rmap.camera_jog_z
-    assert rmap.camera_jog_busy[1] == 200
-    assert 2 not in rmap.camera_jog_busy
-
-
 def test_camera_results_defaults_to_empty() -> None:
     rmap = RegisterMap.from_config(make_config())
     assert rmap.camera_results == {}

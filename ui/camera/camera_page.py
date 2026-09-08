@@ -1,7 +1,7 @@
 """Camera Configuration page.
 
-Left: camera list + lifecycle buttons + health + PLC jog D-pad (physical
-camera-mount alignment). Centre: parameter form (exposure/gain/gamma/
+Left: camera list + lifecycle buttons + health. Centre: parameter form
+(exposure/gain/gamma/
 light brightness/frame rate/rotation/resolution/trigger/ROI). Right: live preview on a
 :class:`RoiEditor` — "Draw ROI" lets the operator drag the region directly
 on the image and the spin boxes follow.
@@ -28,27 +28,9 @@ pushed to that camera's PLC register (CameraService._push_brightness),
 driving an external, PLC-controlled light source, whenever settings are
 applied or saved.
 
-The jog controls nudge the camera's physical mounting position through PLC
-registers (a read-modify-write, separate from anything in camera.json) one
-axis at a time — X+/X-/Y+/Y-/Z+/Z- — used to centre a hole in frame before
-capturing it as a machine model's image capture position. "Home" moves all
-three axes to zero (the mount's true home, not a stored value) — Z is
-skipped if this camera has no Z jog register configured. "Continuous
-Capture" repeatedly re-captures the selected camera into the preview so the
-operator can watch the effect of each nudge instead of clicking "Test
-Camera" after every one.
-
-Below the jog controls, a machine-model picker + "Save as Default"/"Go to
-Default" let the operator snapshot the camera's current X/Y/Z position as
-that model's image capture position (via
-MachineModelService.save_camera_position) or restore it on demand. That
-saved position is also pushed automatically whenever the model is applied —
-MachineModelService.apply_profile, invoked both by "Apply Now" on the
-Machine Models page and by the PLC's own model_select signal (main.py's
-Application._on_machine_model_changed) — and by the Home button on each
-dashboard camera panel, which moves that camera to the *active* model's
-saved capture position rather than to zero (see
-DashboardPage._on_home_requested).
+"Continuous Capture" repeatedly re-captures the selected camera into the
+preview so the operator can watch each change take effect instead of clicking
+"Test Camera" after every one.
 
 "Apply Live" pushes settings to the connected device without persisting;
 "Save" writes camera.json (+ DB mirror). Worker/manager rebuilds after a
@@ -60,7 +42,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import QTimer
-from PySide6.QtCore import QSize
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -90,27 +71,12 @@ from core.camera.image_file_camera import IMAGE_NAME_FILTER, IMAGE_PATTERNS, rea
 from core.utilities.enums import CameraDriver, ConnectionState, TriggerMode
 from core.utilities.exceptions import VisionSystemError
 from models.app_state import AppState
-from services.auth_service import AuthService
 from services.camera_service import CameraService
-from services.machine_model_service import MachineModelService
-from services.plc_service import PlcService
-from ui.widgets import LabeledLed, RoiEditor, minus_icon, plus_icon
+from ui.widgets import LabeledLed, RoiEditor
 
 # Adapters actually wired up in core.camera.create_camera(); USB/HikRobot/Daheng/IDS
 # stay in CameraDriver for config-file compatibility but are hidden from this dropdown.
 _SUPPORTED_DRIVERS = (CameraDriver.SIMULATED, CameraDriver.IMAGE_FILE, CameraDriver.BASLER)
-
-_JOG_ICON_PX = 15
-
-
-def _jog_button(icon, tooltip: str) -> QPushButton:
-    button = QPushButton()
-    button.setIcon(icon)
-    button.setIconSize(QSize(_JOG_ICON_PX, _JOG_ICON_PX))
-    button.setFixedSize(32, 32)
-    button.setToolTip(tooltip)
-    return button
-
 
 class CameraPage(QWidget):
     """Add / remove / tune / test cameras."""
@@ -119,17 +85,11 @@ class CameraPage(QWidget):
         self,
         app_state: AppState,
         camera_service: CameraService,
-        plc_service: PlcService,
-        machine_model_service: MachineModelService,
-        auth_service: AuthService,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._app_state = app_state
         self._svc = camera_service
-        self._plc = plc_service
-        self._machine_models = machine_model_service
-        self._auth = auth_service
         self._row_indexes: list[int] = []  # list row -> camera index
         self._loading = False
 
@@ -189,64 +149,12 @@ class CameraPage(QWidget):
         self._continuous_btn.setCheckable(True)
         self._continuous_btn.setToolTip(
             "Keep re-capturing the selected camera into the preview — "
-            "use while jogging so you can see each nudge take effect"
+            "use while tuning so you can see each change take effect"
         )
         self._continuous_btn.toggled.connect(self._on_continuous_toggled)
         left.addWidget(self._continuous_btn)
         self._health = LabeledLed("no camera selected")
         left.addWidget(self._health)
-
-        self._jog_box = QGroupBox("Physical Position (PLC Jog)")
-        jog_layout = QVBoxLayout(self._jog_box)
-        pad = QGridLayout()
-        pad.setSpacing(4)
-        self._jog_plus: dict[str, QPushButton] = {}
-        self._jog_minus: dict[str, QPushButton] = {}
-        for col, axis in enumerate(("X", "Y", "Z")):
-            pad.addWidget(QLabel(axis), 0, col)
-            plus = _jog_button(plus_icon(), f"Jog camera {axis}+")
-            minus = _jog_button(minus_icon(), f"Jog camera {axis}-")
-            plus.clicked.connect(lambda _checked, a=axis: self._on_jog(f"{a.lower()}+"))
-            minus.clicked.connect(lambda _checked, a=axis: self._on_jog(f"{a.lower()}-"))
-            pad.addWidget(plus, 1, col)
-            pad.addWidget(minus, 2, col)
-            self._jog_plus[axis] = plus
-            self._jog_minus[axis] = minus
-        pad_row = QHBoxLayout()
-        pad_row.addStretch()
-        pad_row.addLayout(pad)
-        pad_row.addStretch()
-        jog_layout.addLayout(pad_row)
-
-        self._jog_home = QPushButton("Home")
-        self._jog_home.setToolTip("Move all axes (X/Y/Z) to zero")
-        self._jog_home.clicked.connect(self._on_home)
-        jog_layout.addWidget(self._jog_home)
-
-        self._model_combo = QComboBox()
-        self._model_combo.setToolTip(
-            "Machine model to save/restore this camera's image capture position for"
-        )
-        jog_layout.addWidget(self._model_combo)
-        self._save_default_btn = QPushButton("Save as Default")
-        self._save_default_btn.setToolTip(
-            "Store the camera's current X/Y/Z position as this machine "
-            "model's image capture position"
-        )
-        self._save_default_btn.clicked.connect(self._on_save_default)
-        jog_layout.addWidget(self._save_default_btn)
-        self._goto_default_btn = QPushButton("Go to Default")
-        self._goto_default_btn.setToolTip(
-            "Jog the camera to this machine model's saved image capture position"
-        )
-        self._goto_default_btn.clicked.connect(self._on_go_to_default)
-        jog_layout.addWidget(self._goto_default_btn)
-
-        self._jog_hint = QLabel("")
-        self._jog_hint.setProperty("class", "dim")
-        self._jog_hint.setWordWrap(True)
-        jog_layout.addWidget(self._jog_hint)
-        left.addWidget(self._jog_box)
 
         left.addStretch()
         body.addWidget(left_box)
@@ -415,7 +323,6 @@ class CameraPage(QWidget):
 
         app_state.preview_frame.connect(self._on_preview_frame)
         app_state.camera_state_changed.connect(self._on_camera_state)
-        app_state.active_machine_model_changed.connect(lambda *_: self._reload_model_combo())
         self._on_driver_changed(self._driver.currentText())
         self.reload()
 
@@ -472,7 +379,6 @@ class CameraPage(QWidget):
         finally:
             self._loading = False
         self._refresh_health()
-        self._refresh_jog()
 
     # ------------------------------------------------------------ collecting
     def _collect(self) -> dict:
@@ -745,142 +651,7 @@ class CameraPage(QWidget):
         )
         self._health.set_state(state, f"Camera {index}: {detail}")
 
-    # ---------------------------------------------------------------- jog
-    def _refresh_jog(self) -> None:
-        index = self._current_index()
-        configured = index is not None and self._plc.jog_configured(index)
-        self._jog_box.setEnabled(configured)
-        z_configured = index is not None and self._plc.jog_z_configured(index)
-        z_tooltip = "Jog camera Z{}" if z_configured else "No Z jog register configured for this camera"
-        self._jog_plus["Z"].setEnabled(z_configured)
-        self._jog_plus["Z"].setToolTip(z_tooltip.format("+"))
-        self._jog_minus["Z"].setEnabled(z_configured)
-        self._jog_minus["Z"].setToolTip(z_tooltip.format("-"))
-        self._jog_hint.setText(
-            "" if configured else "No PLC jog registers configured for this camera"
-        )
-        self._reload_model_combo()
-
-    def _reload_model_combo(self) -> None:
-        """Repopulate the default-position model picker, preferring the
-        previously selected profile, else the currently active model."""
-        previous_id = self._model_combo.currentData()
-        active_name, active_code = self._app_state.active_machine_model
-        self._model_combo.blockSignals(True)
-        self._model_combo.clear()
-        for profile in self._machine_models.list_profiles():
-            self._model_combo.addItem(
-                f"{profile['name']} (code {profile['plc_code']})", profile["id"]
-            )
-        restored = False
-        if previous_id is not None:
-            row = self._model_combo.findData(previous_id)
-            if row >= 0:
-                self._model_combo.setCurrentIndex(row)
-                restored = True
-        if not restored and active_name:
-            active_profile = self._machine_models.get_by_code(active_code)
-            if active_profile is not None:
-                row = self._model_combo.findData(active_profile["id"])
-                if row >= 0:
-                    self._model_combo.setCurrentIndex(row)
-        self._model_combo.blockSignals(False)
-
-    def _selected_profile_id(self) -> int | None:
-        return self._model_combo.currentData()
-
-    def _on_save_default(self) -> None:
-        index = self._current_index()
-        if index is None:
-            return
-        profile_id = self._selected_profile_id()
-        if profile_id is None:
-            QMessageBox.warning(self, "Save Default Position", "No machine model selected.")
-            return
-        if not self._auth.is_admin:
-            QMessageBox.warning(
-                self, "Save Default Position",
-                "Administrator login required (toolbar Login button).",
-            )
-            return
-        try:
-            x, y, z = self._plc.read_camera_position(index)
-            profile = self._machine_models.save_camera_position(
-                profile_id, index, x, y, z, updated_by=self._username()
-            )
-        except VisionSystemError as exc:
-            QMessageBox.warning(self, "Save Default Position", str(exc))
-            return
-        self._jog_hint.setText(
-            f"Saved ({x}, {y}, {z}) as image capture position for {profile['name']!r}."
-        )
-
-    def _on_go_to_default(self) -> None:
-        index = self._current_index()
-        if index is None:
-            return
-        profile_id = self._selected_profile_id()
-        if profile_id is None:
-            QMessageBox.warning(self, "Go to Default Position", "No machine model selected.")
-            return
-        profile = self._machine_models.get_by_id(profile_id)
-        position = (profile or {}).get("jog_positions", {}).get(str(index))
-        if position is None:
-            QMessageBox.warning(
-                self, "Go to Default Position",
-                "No image capture position saved for this camera on the selected machine model.",
-            )
-            return
-        if not self._auth.is_admin:
-            QMessageBox.warning(
-                self, "Go to Default Position",
-                "Administrator login required (toolbar Login button).",
-            )
-            return
-        try:
-            self._plc.set_camera_position(
-                index, int(position["x"]), int(position["y"]), int(position.get("z", 0))
-            )
-        except VisionSystemError as exc:
-            QMessageBox.warning(self, "Go to Default Position", str(exc))
-
-    def _username(self) -> str:
-        user = self._auth.current_user
-        return user.username if user is not None else ""
-
-    def _on_jog(self, direction: str) -> None:
-        index = self._current_index()
-        if index is None:
-            return
-        if not self._auth.is_admin:
-            QMessageBox.warning(
-                self, "Jog Camera", "Administrator login required (toolbar Login button)."
-            )
-            return
-        try:
-            self._plc.jog_camera(index, direction)
-        except VisionSystemError as exc:
-            QMessageBox.warning(self, "Jog Camera", str(exc))
-
-    def _on_home(self) -> None:
-        index = self._current_index()
-        if index is None:
-            return
-        if not self._auth.is_admin:
-            QMessageBox.warning(
-                self, "Home Camera", "Administrator login required (toolbar Login button)."
-            )
-            return
-        try:
-            self._plc.home_camera(index)
-        except VisionSystemError as exc:
-            QMessageBox.warning(self, "Home Camera", str(exc))
-
     # --------------------------------------------------------------- events
-    def showEvent(self, event) -> None:  # noqa: N802
-        super().showEvent(event)
-        self._reload_model_combo()  # profiles may have changed on the Machine Models page
-
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
         self._continuous_btn.setChecked(False)  # never keep hammering test_capture off-screen

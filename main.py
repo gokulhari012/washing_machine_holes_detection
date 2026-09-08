@@ -179,9 +179,6 @@ class Application:
             DashboardPage(
                 self.app_state,
                 self.camera_configs,
-                self.plc_service,
-                self.auth_service,
-                self.machine_models,
                 config_manager=self.config,
                 on_simulate_trigger=self._simulate_trigger,
                 on_camera_trigger=self._trigger_camera,
@@ -189,10 +186,7 @@ class Application:
         )
         self.window.add_page(
             "Cameras", "◉",
-            CameraPage(
-                self.app_state, self.camera_service, self.plc_service,
-                self.machine_models, self.auth_service,
-            ),
+            CameraPage(self.app_state, self.camera_service),
             admin_only=True,
         )
         self.window.add_page(

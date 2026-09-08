@@ -18,7 +18,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLay
 
 from core.utilities.enums import ConnectionState, InspectionResult
 from models.dto import CameraInspectionData
-from ui.widgets import ImageView, LabeledLed, home_icon, play_icon
+from ui.widgets import ImageView, LabeledLed, play_icon
 
 RESULT_HOLD_S = 1.5
 PREVIEW_MAX_WIDTH = 640
@@ -27,11 +27,6 @@ ICON_PX = 15  # icon size inside the panel's square header buttons
 
 class CameraPanel(QFrame):
     """Live image + name/LED header + X/Y/confidence/result footer."""
-
-    #: emitted when the Home button is clicked, with this panel's camera index —
-    #: DashboardPage owns the PLC call (admin gate, error handling); the panel
-    #: itself knows nothing about PLC/auth.
-    home_requested = Signal(int)
 
     #: emitted when the Trigger button is clicked, with this panel's camera
     #: index — inspect this camera alone. DashboardPage owns the dispatch.
@@ -47,7 +42,7 @@ class CameraPanel(QFrame):
         root.setContentsMargins(10, 8, 10, 8)
         root.setSpacing(6)
 
-        # header: LED + name + trigger/home buttons + result badge
+        # header: LED + name + trigger button + result badge
         header = QHBoxLayout()
         self._led = LabeledLed(camera_name)
         # Painted icons rather than text glyphs — see ui/widgets/icons.py for
@@ -64,19 +59,11 @@ class CameraPanel(QFrame):
         self._trigger_btn.clicked.connect(
             lambda: self.trigger_requested.emit(self.camera_index)
         )
-        self._home_btn = QPushButton()
-        self._home_btn.setIcon(home_icon())
-        self._home_btn.setIconSize(QSize(ICON_PX, ICON_PX))
-        self._home_btn.setProperty("class", "panelIcon")
-        self._home_btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        self._home_btn.setToolTip("Move this camera to its image capture position (active machine model)")
-        self._home_btn.clicked.connect(lambda: self.home_requested.emit(self.camera_index))
         self._result = QLabel("—")
         self._result.setProperty("result", "")
         header.addWidget(self._led)
         header.addStretch()
         header.addWidget(self._trigger_btn)
-        header.addWidget(self._home_btn)
         header.addWidget(self._result)
         root.addLayout(header)
 
@@ -101,15 +88,6 @@ class CameraPanel(QFrame):
     def set_trigger_enabled(self, enabled: bool) -> None:
         """Disabled while any inspection is running — one cycle at a time."""
         self._trigger_btn.setEnabled(enabled)
-
-    def set_home_enabled(self, enabled: bool) -> None:
-        """Grey out Home when this camera has no jog registers configured."""
-        self._home_btn.setEnabled(enabled)
-        self._home_btn.setToolTip(
-            "Move this camera to its image capture position (active machine model)"
-            if enabled
-            else "No PLC jog registers configured for this camera"
-        )
 
     def update_preview(self, frame: np.ndarray) -> None:
         """Live frame from the acquisition worker; ignored during result hold."""

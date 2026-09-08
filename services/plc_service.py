@@ -96,38 +96,7 @@ class PlcService:
         """Raises PlcError; caller (UI) must gate this behind admin login."""
         self._manager.write_raw_coil(address, value)
 
-    # ---------------------------------------------------------- camera jog
-    def jog_configured(self, camera_index: int) -> bool:
-        return self._manager.jog_configured(camera_index)
-
-    def jog_z_configured(self, camera_index: int) -> bool:
-        return self._manager.jog_z_configured(camera_index)
-
-    def jog_busy_configured(self, camera_index: int) -> bool:
-        return self._manager.jog_busy_configured(camera_index)
-
-    def jog_camera(self, camera_index: int, direction: str) -> int:
-        """direction is one of 'x+'/'x-'/'y+'/'y-'/'z+'/'z-'. Raises
-        ConfigurationError/PlcError; caller (UI) must gate this behind admin
-        login, same as write_register."""
-        return self._manager.jog_camera(camera_index, direction)
-
-    def home_camera(self, camera_index: int) -> tuple[int, int, int]:
-        """Raises ConfigurationError/PlcError; caller (UI) must gate this
-        behind admin login, same as write_register."""
-        return self._manager.home_camera(camera_index)
-
-    def read_camera_position(self, camera_index: int) -> tuple[int, int, int]:
-        """Raises ConfigurationError/PlcError."""
-        return self._manager.read_camera_jog_position(camera_index)
-
-    def set_camera_position(
-        self, camera_index: int, x: int, y: int, z: int = 0
-    ) -> tuple[int, int, int]:
-        """Raises ConfigurationError/PlcError; caller (UI) must gate this
-        behind admin login, same as write_register."""
-        return self._manager.set_camera_jog_position(camera_index, x, y, z)
-
+    # --------------------------------------------------------- camera light
     def set_camera_brightness(self, camera_index: int, level: int) -> bool:
         """Publish camera *camera_index*'s light-brightness level (0-255) so
         an external PLC-controlled light tracks the camera's configured

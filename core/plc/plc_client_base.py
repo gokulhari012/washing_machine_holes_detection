@@ -9,9 +9,9 @@ Register model: 16-bit unsigned holding registers addressed by integer.
 Coil model: single-bit registers (Modbus coils / SLMP "M" internal relays)
 addressed by their own, separate integer space — coil address 5 and holding
 register address 5 are different physical memory on the PLC, not the same
-address read two ways. Used today for the per-camera jog "busy/moving"
-handshake (see ``PlcManager``): the PC raises it before commanding a
-position and the PLC clears it once the physical move is complete.
+address read two ways. No named register in this application is a coil today;
+the path exists for the PLC page's manual coil read/write and for whichever
+handshake bit a station wires up next.
 
 Error contract (all from ``core.utilities.exceptions``):
 - ``PlcConnectionError`` — connect failed / connection lost

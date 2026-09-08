@@ -249,13 +249,11 @@ centre — `PlcManager.read_servo_home` returns `(0, 0)` rather than failing.
 | 110–117 | PC→PLC | Camera 1–4 hole X/Y as a servo target (encoded as above) |
 | 118 | PC→PLC | Overall result: 1=GOOD, 2=NG, 3=ERROR |
 | 119 | PC→PLC | Vision complete (PC sets 1; PLC reads, resets 119 + trigger) |
-| 120–127 | PC→PLC | **`camera_jog`** — physical camera *mount* X/Y (actuators) |
 | 128–131 | PC→PLC | **`camera_results`** — per-camera GOOD/NG/ERROR |
 | 132–135 | PLC→PC | **`camera_triggers`** — inspect camera N alone (0→1 edge; PC writes 0 back **at end of cycle**) |
 | 136–139 | PC→PLC | **`camera_vision_complete`** — camera N's own completion handshake |
 | 140–143 | PC→PLC | **`camera_status`** — 1 = camera N usable, 0 = disconnected/failing |
 | 144–151 | PLC→PC | **`servo_home_positions`** — servo 1–4 home X/Y, the datum for 110–117 |
-| 152–155 | PC→PLC | **`camera_jog`**'s Z axis — one register per camera, in the separate top-level `camera_jog` block, not `registers` |
 | 156–158, 6056 | PC→PLC | **`camera_brightness`** — camera 1–4 light-brightness level (0-255), pushed whenever that camera's settings are applied/saved (see [§8](#8-config-system)) |
 | 159–161, 6058 | PLC→PC | **`gantry_status`** — 1 = camera N's gantry is in position and that camera is inspected; anything else skips it entirely (see below) |
 
@@ -306,15 +304,12 @@ real PLC's memory map has them free.** Note that `SimulatedPlc` seeds every
 configured gantry register to 1 on construction: 0 means parked, so an unseeded
 simulator would skip all four cameras and inspect nothing.
 
-Do not confuse `servo_home_positions` (144–151, PLC→PC, the *datum* a reported hole
-position is measured from) with `camera_jog_home` (a pair of *values* in
-`config/plc.json`'s `camera_jog` block that the Home button writes to the jog
-registers). Similar names, opposite directions.
-
-Do not confuse `camera_positions` (110–117, the *detected hole* coordinate, an
-inspection output) with `camera_jog` (120–127, the *camera mount's* physical
-position, driven by PLC actuators). Both are per-camera X/Y pairs; they mean
-completely different things.
+**Addresses 120–127 and 152–155 are free.** They used to carry `camera_jog` —
+the camera *mount's* physical X/Y/Z, nudged from a D-pad on the Camera page and
+restored per machine model — which has been removed entirely (registers, config
+block, service/manager methods, UI, and the busy-coil interlock that went with
+it). Nothing in the PC application reads or writes them now; confirm with
+whoever maintains the PLC program before reusing them.
 
 Write order in `write_inspection_output` matters: positions → per-camera results →
 overall result → `vision_complete=1` last, because the PLC may read the moment
@@ -489,8 +484,8 @@ it (see [§9](#9-gotchas--traps)).
 Camera and calibration application are both **best-effort** (missing camera, or a
 calibration a camera rejects → warning, skipped); detection is **all-or-nothing**
 (malformed block raises — it's one atomic hot-swap of every camera's strategy at once).
-A camera with no calibration entry in the profile is simply left alone (sparse, like
-`jog_positions`).
+A camera with no calibration entry in the profile is simply left alone — the map is
+sparse by convention, never padded with blanks.
 
 ---
 
@@ -561,7 +556,7 @@ there is no "keep all four consistent" constraint anymore.
 
 **`config/defaults/` must be updated in lockstep.** Adding a config key without adding
 it to `defaults/` means "Restore Defaults" silently drops the feature. (Defaults are
-currently in sync, including `model_select`, `camera_results` and `camera_jog`.)
+currently in sync, including `model_select`, `camera_results` and `gantry_status`.)
 
 **Camera `brightness` is not an in-camera setting.** It used to be (a -100..+100 ISP
 offset, real only on some Basler models via `BslBrightness`, or a pure pixel-offset
@@ -586,7 +581,7 @@ auditable instead of invisible; it is excluded from the overall verdict and from
 
 **The PLC DB audit mirror is incomplete.** `PlcService._mirror_to_database` and the
 `plc_configurations` table cover only the original 100–119 registers — `model_select`,
-`camera_results`, `camera_jog` and `gantry_status` are **not** mirrored. JSON remains the source of
+`camera_results` and `gantry_status` are **not** mirrored. JSON remains the source of
 truth; the table is audit-only, so this is cosmetic unless you start reading from it.
 
 **Duplicate lab scripts.** `scripts/dark_contour_lab.py` and
@@ -625,7 +620,7 @@ what it is, but treat these as stale:
 - no mention of `machine_models` (service, page, config, PLC register 103)
 - no mention of the `dark_hole` detector, the `slmp` and `simulated` protocols, or the
   `image_file` camera driver
-- register table stops at 119 (missing jog 120–127, per-camera results 128–131)
+- register table stops at 119 (missing per-camera results 128–131 and everything above)
 - §6 "Generation Plan" is a historical build checklist, not current state
 
 ---

@@ -142,31 +142,6 @@ class MachineModelService:
         profile["updated_at"] = datetime.now().isoformat(timespec="seconds")
         self._config.save("machine_models", document)
 
-    def save_camera_position(
-        self, profile_id: int, camera_index: int, x: int, y: int, z: int, updated_by: str
-    ) -> dict[str, Any]:
-        """Store *camera_index*'s current physical X/Y/Z position as this
-        profile's image capture position — the position the camera mount is
-        restored to whenever this machine model becomes active (see
-        :meth:`apply_profile`).
-
-        Raises:
-            ConfigurationError: no profile with that id.
-        """
-        document = self._config.load("machine_models")
-        profiles = document.setdefault("profiles", [])
-        profile = self._find(profiles, profile_id)
-        positions = profile.setdefault("jog_positions", {})
-        positions[str(camera_index)] = {"x": int(x), "y": int(y), "z": int(z)}
-        profile["updated_at"] = datetime.now().isoformat(timespec="seconds")
-        profile["updated_by"] = updated_by
-        self._config.save("machine_models", document)
-        logger.info(
-            "Machine model profile %r: camera %d image capture position -> (%d, %d, %d)",
-            profile["name"], camera_index, x, y, z,
-        )
-        return profile
-
     def delete(self, profile_id: int) -> None:
         """Raises ConfigurationError: no profile with that id."""
         document = self._config.load("machine_models")
@@ -180,18 +155,15 @@ class MachineModelService:
 
     # --------------------------------------------------------------- apply
     def apply_profile(self, profile: dict[str, Any]) -> list[str]:
-        """Push *profile* live: per-camera ROI/exposure, X/Y/Z image capture
-        position, per-camera detection, per-camera calibration, then echo the
-        profile's PLC code back to the machine-model-select register.
+        """Push *profile* live: per-camera ROI/exposure, per-camera
+        detection, per-camera calibration, then echo the profile's PLC code
+        back to the machine-model-select register.
 
         Never persists camera.json/detection.json, and never writes a new row
         to the calibration database. Camera and calibration application are
         both best-effort — a camera index the profile mentions that no longer
         exists on this station (or rejects its settings/calibration) is
-        skipped, not fatal; likewise a saved capture position that the PLC
-        rejects (link down, jog registers not configured) is a warning, not
-        fatal — a missing physical reposition shouldn't block the optical
-        settings from applying. Detection is all-or-nothing: a malformed
+        skipped, not fatal. Detection is all-or-nothing: a malformed
         detection block raises, since it is one atomic hot-swap for every
         camera's strategy at once (see ``VisionEngine.apply_config``). A
         profile captured before per-camera detection existed (no "cameras"
@@ -209,8 +181,8 @@ class MachineModelService:
         after a reconnect as a change, not just an edge).
 
         Returns:
-            Warning strings for any camera (settings, calibration, or
-            position) or the model_select write that could not be applied.
+            Warning strings for any camera (settings or calibration) or the
+            model_select write that could not be applied.
 
         Raises:
             VisionSystemError: the detection block was rejected.
@@ -232,15 +204,6 @@ class MachineModelService:
                 self._cameras.apply_live(merged)
             except VisionSystemError as exc:
                 warnings.append(f"camera {index}: {exc}")
-
-        for index_str, position in profile.get("jog_positions", {}).items():
-            index = int(index_str)
-            try:
-                self._plc.set_camera_position(
-                    index, int(position["x"]), int(position["y"]), int(position.get("z", 0))
-                )
-            except VisionSystemError as exc:
-                warnings.append(f"camera {index}: image capture position not applied ({exc})")
 
         for index_str, calibration_data in profile.get("calibration", {}).items():
             index = int(index_str)
@@ -273,7 +236,7 @@ class MachineModelService:
         """Every configured camera's active calibration, JSON-serialised.
 
         A camera with no active calibration (identity fallback) is simply
-        omitted, matching ``jog_positions``'s sparse-by-default convention.
+        omitted — the map is sparse by convention, never padded with blanks.
         """
         snapshot: dict[str, dict[str, Any]] = {}
         for cfg in self._cameras.get_configs():

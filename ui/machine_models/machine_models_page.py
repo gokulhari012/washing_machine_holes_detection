@@ -285,13 +285,12 @@ class MachineModelsPage(QWidget):
 
         self._tree.clear()
         cameras = profile.get("cameras", {})
-        positions = profile.get("jog_positions", {})
         calibrations = profile.get("calibration", {})
         detection = profile.get("detection", {})
         detection_by_camera = "cameras" in detection
 
         indices = sorted(
-            {*cameras, *positions, *calibrations, *(detection.get("cameras", {}) if detection_by_camera else [])},
+            {*cameras, *calibrations, *(detection.get("cameras", {}) if detection_by_camera else [])},
             key=int,
         )
         if not indices:
@@ -305,7 +304,7 @@ class MachineModelsPage(QWidget):
             camera_item.setFont(0, font)
             self._tree.addTopLevelItem(camera_item)
 
-            self._add_camera_branch(camera_item, cameras.get(index, {}), positions.get(index))
+            self._add_camera_branch(camera_item, cameras.get(index, {}))
             self._add_detection_branch(
                 camera_item,
                 detection["cameras"].get(index, {}) if detection_by_camera else detection,
@@ -319,9 +318,7 @@ class MachineModelsPage(QWidget):
     def _leaf(parent: QTreeWidgetItem, label: str, value: object) -> None:
         parent.addChild(QTreeWidgetItem([label, str(value)]))
 
-    def _add_camera_branch(
-        self, camera_item: QTreeWidgetItem, cam: dict, position: dict | None
-    ) -> None:
+    def _add_camera_branch(self, camera_item: QTreeWidgetItem, cam: dict) -> None:
         branch = QTreeWidgetItem(["Camera Settings", ""])
         camera_item.addChild(branch)
         if not cam:
@@ -339,12 +336,6 @@ class MachineModelsPage(QWidget):
             self._leaf(branch, "Light Brightness", cam.get("brightness", "—"))
             self._leaf(branch, "Resolution", f"{cam.get('width', '—')}x{cam.get('height', '—')}")
             self._leaf(branch, "Trigger Mode", cam.get("trigger_mode", "—"))
-        if position:
-            pos_branch = QTreeWidgetItem(["Capture Position", ""])
-            camera_item.addChild(pos_branch)
-            self._leaf(pos_branch, "X", position.get("x", 0))
-            self._leaf(pos_branch, "Y", position.get("y", 0))
-            self._leaf(pos_branch, "Z", position.get("z", 0))
 
     def _add_detection_branch(self, camera_item: QTreeWidgetItem, detection: dict) -> None:
         branch = QTreeWidgetItem(["Detection", ""])
