@@ -27,10 +27,15 @@ Three conventions worth knowing:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta
+from datetime import date, datetime, time, timedelta
 from typing import Any, Iterable
 
 from core.utilities.exceptions import ConfigurationError
+
+#: The rota only ever cares about time of day, but ``shift_at`` takes a
+#: datetime (it is the same call the live pipeline makes). Analysis helpers
+#: pair a clock time with this arbitrary date to reuse it unchanged.
+_ANY_DATE = date(2000, 1, 1)
 
 #: Shipped rota -- the ordinary 8-hour three-shift day. ``config/defaults/``
 #: mirrors this, and it is also what a config carrying no ``shifts`` block
@@ -142,6 +147,31 @@ class Shift:
             "start": format_clock(self.start),
             "end": format_clock(self.end),
         }
+
+
+@dataclass(frozen=True)
+class OverlapWindow:
+    """A stretch of the day claimed by more than one shift.
+
+    ``shifts`` is in configured order, so ``shifts[0]`` is the one that
+    actually wins those minutes and the rest are shadowed there.
+    """
+
+    shifts: tuple[Shift, ...]
+    start: time
+    end: time
+
+    @property
+    def winner(self) -> Shift:
+        return self.shifts[0]
+
+    @property
+    def shadowed(self) -> tuple[Shift, ...]:
+        return self.shifts[1:]
+
+    @property
+    def window_text(self) -> str:
+        return f"{format_clock(self.start)}-{format_clock(self.end)}"
 
 
 @dataclass(frozen=True)
@@ -273,3 +303,52 @@ class ShiftSchedule:
             # An uncovered run that reaches the end of the day closes at midnight.
             gaps.append((run_start, time(0, 0)))
         return gaps
+
+    def overlaps(self) -> list["OverlapWindow"]:
+        """Windows two or more shifts both claim, and which one actually wins.
+
+        An overlap is legal (a plant may run a deliberate handover overlap) and
+        is resolved by configured order, so this is not an error -- it exists
+        so the Settings page can *say* that an hour is double-claimed rather
+        than letting it pass unremarked. That silence was the real trap: a gap
+        announces itself, an overlap does not.
+
+        Same minute sweep as :meth:`coverage_gaps`, and with the same
+        convention -- a run touching the end of the day closes at midnight
+        rather than being merged with one starting at 00:00, so the windows
+        reported are always within a single day.
+        """
+        windows: list[OverlapWindow] = []
+        run_start: time | None = None
+        run_owners: tuple[Shift, ...] = ()
+        for minute in range(24 * 60):
+            clock = time(hour=minute // 60, minute=minute % 60)
+            owners = tuple(shift for shift in self.shifts if shift.contains(clock))
+            contested = owners if len(owners) > 1 else ()
+            if contested != run_owners:
+                if run_owners and run_start is not None:
+                    windows.append(OverlapWindow(run_owners, run_start, clock))
+                run_start = clock if contested else None
+                run_owners = contested
+        if run_owners and run_start is not None:
+            windows.append(OverlapWindow(run_owners, run_start, time(0, 0)))
+        return windows
+
+    def unreachable(self) -> list[Shift]:
+        """Shifts that never win a single minute of the day.
+
+        A shift fully masked by one listed before it is still configured, still
+        shown on the Settings page and still looks reasonable -- but it can
+        never be stamped on an inspection. That is the failure mode of setting
+        a start later than an end by mistake: the shift becomes a 22-hour
+        window that swallows the two after it, and nothing else in the rota
+        looks wrong. Reported separately from :meth:`overlaps` because the
+        operator needs to be told the shift is *dead*, not merely contested.
+        """
+        winners = {
+            shift.id
+            for minute in range(24 * 60)
+            for shift in (self.shift_at(datetime.combine(_ANY_DATE, time(minute // 60, minute % 60))),)
+            if shift is not None
+        }
+        return [shift for shift in self.shifts if shift.id not in winners]

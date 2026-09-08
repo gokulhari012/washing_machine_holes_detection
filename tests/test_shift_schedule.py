@@ -300,3 +300,78 @@ def test_a_raising_observer_does_not_break_the_poll() -> None:
     service.subscribe(calls.append)
     assert service.poll() is not None
     assert len(calls) == 1
+
+
+# ------------------------------------------------- overlaps / unreachable
+def test_a_clean_rota_reports_neither_overlap_nor_masked_shift() -> None:
+    schedule = ShiftSchedule.defaults()
+    assert schedule.overlaps() == []
+    assert schedule.unreachable() == []
+
+
+def test_overlap_names_the_window_and_the_winner() -> None:
+    """Evening starting before Morning ends: 13:00-14:00 is double-claimed,
+    and Morning takes it because it is listed first."""
+    schedule = ShiftSchedule.from_shifts(
+        [
+            Shift("morning", "Morning", time(6, 0), time(14, 0)),
+            Shift("evening", "Evening", time(13, 0), time(22, 0)),
+            Shift("night", "Night", time(22, 0), time(6, 0)),
+        ]
+    )
+    overlaps = schedule.overlaps()
+    assert len(overlaps) == 1
+    window = overlaps[0]
+    assert (window.start, window.end) == (time(13, 0), time(14, 0))
+    assert window.winner.name == "Morning"
+    assert [shift.name for shift in window.shadowed] == ["Evening"]
+    # an overlap fills the day rather than leaving a hole
+    assert schedule.coverage_gaps() == []
+    assert schedule.unreachable() == []
+
+
+def test_start_after_end_becomes_a_long_wrapping_shift_that_masks_the_others() -> None:
+    """08:00 -> 06:00 is not an error, it is a legal 22-hour window — and
+    being listed first it swallows both shifts after it."""
+    schedule = ShiftSchedule.from_shifts(
+        [
+            Shift("morning", "Morning", time(8, 0), time(6, 0)),
+            Shift("evening", "Evening", time(14, 0), time(22, 0)),
+            Shift("night", "Night", time(22, 0), time(6, 0)),
+        ]
+    )
+    morning = schedule.get("morning")
+    assert morning is not None and morning.wraps_midnight
+    assert morning.duration.total_seconds() == 22 * 3600
+
+    assert [shift.name for shift in schedule.unreachable()] == ["Evening", "Night"]
+    # only the two hours before it starts are left over
+    assert schedule.coverage_gaps() == [(time(6, 0), time(8, 0))]
+    assert schedule.name_at(at(3)) == "Morning"
+    assert schedule.name_at(at(20)) == "Morning"
+    assert schedule.name_at(at(7)) == ""
+
+
+def test_unreachable_is_empty_when_an_overlap_still_leaves_each_shift_a_turn() -> None:
+    """Being shadowed for part of the day is not the same as being dead."""
+    schedule = ShiftSchedule.from_shifts(
+        [
+            Shift("a", "A", time(6, 0), time(15, 0)),
+            Shift("b", "B", time(14, 0), time(22, 0)),
+        ]
+    )
+    assert schedule.overlaps()[0].winner.name == "A"
+    assert schedule.unreachable() == []  # B still owns 15:00-22:00
+
+
+def test_overlap_windows_stay_within_one_day() -> None:
+    """Same convention as coverage_gaps: a run reaching the end of the day
+    closes at midnight rather than merging with one starting at 00:00."""
+    schedule = ShiftSchedule.from_shifts(
+        [
+            Shift("wide", "Wide", time(20, 0), time(4, 0)),
+            Shift("night", "Night", time(22, 0), time(2, 0)),
+        ]
+    )
+    windows = [(w.start, w.end) for w in schedule.overlaps()]
+    assert windows == [(time(0, 0), time(2, 0)), (time(22, 0), time(0, 0))]

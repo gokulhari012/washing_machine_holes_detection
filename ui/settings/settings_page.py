@@ -16,10 +16,24 @@ before the rota existed. Either way the value reaches the rest of the
 application through ``ShiftService`` and ``AppState``, never by a page reading
 ``application.shift`` for itself.
 
-Editing the rota is validated *before* it is saved: an unparsable time or a
-zero-length shift is refused outright, while a rota that leaves part of the
-day uncovered is only warned about (some plants genuinely stop overnight —
-production in an uncovered hour falls back to the manual shift name).
+Editing the rota is validated *before* it is saved. Only two things are
+refused outright: an unparsable time and a zero-length shift (start equal to
+end, which could mean "never" or "all day" and so cannot be guessed at).
+
+Everything else is legal but is annotated, because these are the ways a rota
+can read correctly and still not do what was meant — each shift row shows its
+own span ("8 h", or "22 h · wraps midnight" for one typed with its start after
+its end), and ``_rota_notes`` reports, worst first:
+
+* a shift **fully masked** by one listed above it, which can never be selected
+  — the usual symptom of an inverted start/end;
+* an **overlap**, naming the window and which shift wins it (the one listed
+  first). This used to pass with no comment at all, which made it the most
+  dangerous of the three;
+* a **gap**, whose hours fall back to the manually selected shift.
+
+The notes appear live under the group as you type and again in the Save
+confirmation, which asks rather than blocks.
 """
 
 from __future__ import annotations
@@ -49,6 +63,7 @@ from core.utilities.shift_schedule import Shift, ShiftSchedule, format_clock
 from services.auth_service import AuthService
 from services.backup_service import BackupService
 from services.shift_service import ShiftService
+from ui.theme import COLOR_WARN
 
 
 def _to_qtime(value) -> QTime:
@@ -83,6 +98,14 @@ class ShiftRow:
             "First minute of the *next* shift (exclusive) — an end earlier "
             "than the start means the shift runs through midnight."
         )
+        # Live read-out of what the two times actually add up to. This is the
+        # only thing that makes an inverted start/end visible at a glance: a
+        # shift typed as 08:00-06:00 is not an error, it is a legal 22 h
+        # window, and "22 h · wraps midnight" says so where the times alone
+        # look unremarkable.
+        self.summary = QLabel()
+        self.summary.setProperty("class", "dim")
+        self.summary.setMinimumWidth(132)
 
     def widget(self) -> QWidget:
         """The three editors on one horizontal strip."""
@@ -94,7 +117,19 @@ class ShiftRow:
         layout.addWidget(self.start)
         layout.addWidget(QLabel("to"))
         layout.addWidget(self.end)
+        layout.addWidget(self.summary)
         return row
+
+    def describe(self, shift: Shift | None) -> None:
+        """Show this row's span, or nothing while the row is mid-edit."""
+        if shift is None:
+            self.summary.setText("")
+            return
+        hours = shift.duration.total_seconds() / 3600.0
+        text = f"{hours:g} h"
+        if shift.wraps_midnight:
+            text += "  ·  wraps midnight"
+        self.summary.setText(text)
 
     def set_shift(self, shift: Shift) -> None:
         self.shift_id = shift.id
@@ -271,15 +306,70 @@ class SettingsPage(QWidget):
         layout.addWidget(self._note(
             "Each shift runs from its start time up to (but not including) its "
             "end time, so consecutive shifts share a boundary without "
-            "overlapping. An end time earlier than the start means the shift "
-            "runs through midnight — the usual night shift."
+            "overlapping — an inspection at exactly 14:00 belongs to the shift "
+            "starting then.\n"
+            "• End earlier than start = the shift runs through midnight (the "
+            "usual night shift, 22:00 to 06:00).\n"
+            "• Two shifts covering the same hour is allowed — the one listed "
+            "higher up wins it.\n"
+            "• An hour no shift covers is allowed too — it falls back to the "
+            "Shift selected in General, above."
         ))
 
         self._shift_preview = QLabel()
         self._shift_preview.setProperty("class", "dim")
         self._shift_preview.setWordWrap(True)
         layout.addWidget(self._shift_preview)
+
+        # Gap / overlap / masked-shift notes. Separated from the preview and
+        # given the warning colour because these are the three ways a rota can
+        # be legal yet not do what the operator meant — an overlap in
+        # particular used to pass completely unremarked.
+        self._shift_warnings = QLabel()
+        self._shift_warnings.setWordWrap(True)
+        self._shift_warnings.setStyleSheet(f"color: {COLOR_WARN};")
+        layout.addWidget(self._shift_warnings)
         return self._shift_box
+
+    def _rota_notes(self, schedule: ShiftSchedule) -> list[str]:
+        """The three ways a valid rota can still surprise you.
+
+        Shared by the live label and the Save confirmation so the two can
+        never disagree about what is wrong. Ordered worst first: a shift that
+        can never be selected is a mistake, an overlap usually is, a gap is
+        often deliberate.
+        """
+        notes: list[str] = []
+        masked = schedule.unreachable()
+        masked_ids = {shift.id for shift in masked}
+        if masked:
+            names = ", ".join(shift.name for shift in masked)
+            notes.append(
+                f"Never used: {names} — an earlier shift already covers that "
+                f"whole window, so this shift can never be selected. Check for "
+                f"a start time later than its end time."
+            )
+        for overlap in schedule.overlaps():
+            # A shift that is already reported as never used overlaps the one
+            # masking it at every minute it has, so listing those windows adds
+            # nothing but noise on top of the note that actually diagnoses the
+            # problem. One inverted start/end turned into four warnings that
+            # buried it; only overlaps involving a still-usable shift survive.
+            if all(shift.id in masked_ids for shift in overlap.shadowed):
+                continue
+            shadowed = ", ".join(shift.name for shift in overlap.shadowed)
+            notes.append(
+                f"Overlap {overlap.window_text}: {overlap.winner.name} and "
+                f"{shadowed} both cover it — {overlap.winner.name} wins, "
+                f"because it is listed first."
+            )
+        for start, end in schedule.coverage_gaps():
+            notes.append(
+                f"Uncovered {format_clock(start)}-{format_clock(end)}: "
+                f"inspections then are stamped with the Shift selected in "
+                f"General, above."
+            )
+        return notes
 
     def _form_schedule(self) -> ShiftSchedule:
         """The rota as currently typed, validated.
@@ -306,9 +396,18 @@ class SettingsPage(QWidget):
             schedule = self._form_schedule()
         except ConfigurationError as exc:
             self._shift_preview.setText(str(exc))
+            self._shift_warnings.setText("")
+            for row in self._shift_rows:
+                row.describe(None)
             return
         self._sync_shift_choices(schedule)
         self._shift_preview.setText(self._preview_text(schedule))
+        by_id = {shift.id: shift for shift in schedule.shifts}
+        for row in self._shift_rows:
+            row.describe(by_id.get(row.shift_id))
+        notes = self._rota_notes(schedule)
+        self._shift_warnings.setText("\n".join(f"⚠  {note}" for note in notes))
+        self._shift_warnings.setVisible(bool(notes))
 
     def _sync_shift_choices(self, schedule: ShiftSchedule) -> None:
         """Refill the manual dropdown from the rota, keeping the selection.
@@ -344,16 +443,15 @@ class SettingsPage(QWidget):
         following = schedule.next_change_after(now)
         if following is not None:
             upcoming = schedule.shift_at(following)
-            head += f", changes to {upcoming.name} at {format_clock(following.time())}" if upcoming else ""
-        gaps = schedule.coverage_gaps()
-        if gaps:
-            windows = ", ".join(
-                f"{format_clock(start)}-{format_clock(end)}" for start, end in gaps
-            )
-            head += (
-                f".\nUncovered: {windows} — inspections there are stamped with "
-                f"the manually selected shift."
-            )
+            # Only announce a handover that actually hands over. In a rota
+            # where one shift masks the next, the boundary still exists but the
+            # same shift wins both sides of it, and "changes to Morning" while
+            # already in Morning reads as a bug in the page rather than as the
+            # symptom of a misconfigured rota that it is.
+            if upcoming is not None and (current is None or upcoming.id != current.id):
+                head += f", changes to {upcoming.name} at {format_clock(following.time())}"
+        # Gaps, overlaps and masked shifts are reported by _rota_notes into the
+        # warnings label below, rather than repeated here.
         return head
 
     def _on_auto_shift_toggled(self, checked: bool) -> None:
@@ -430,7 +528,7 @@ class SettingsPage(QWidget):
         except ConfigurationError as exc:
             QMessageBox.warning(self, "Shift Schedule", str(exc))
             return
-        if schedule.automatic and not self._confirm_coverage(schedule):
+        if schedule.automatic and not self._confirm_rota(schedule):
             return
 
         cfg = self._config.load("app_config")
@@ -465,26 +563,27 @@ class SettingsPage(QWidget):
         self._on_shift_edited()
         QMessageBox.information(self, "Save Settings", "Settings saved.")
 
-    def _confirm_coverage(self, schedule: ShiftSchedule) -> bool:
-        """Warn — but do not refuse — when the rota leaves part of the day open.
+    def _confirm_rota(self, schedule: ShiftSchedule) -> bool:
+        """Warn — but do not refuse — about a rota that is legal yet suspect.
 
-        A plant that genuinely stops overnight has a legitimate gap, so this
-        is a question rather than an error; cycles produced in an uncovered
-        window are stamped with the manually selected shift.
+        All three cases are configurations the code accepts and resolves
+        deterministically, so none of them is an error: a plant that stops
+        overnight has a legitimate gap, a handover overlap is a real practice,
+        and a shift wrapping midnight is how the night shift is expressed. What
+        they share is that the *typed times look fine* while the outcome may
+        not be what was meant, so they are surfaced here rather than silently
+        accepted. The same notes are already on the page as you type — this is
+        the last chance to reconsider, not the first mention.
         """
-        gaps = schedule.coverage_gaps()
-        if not gaps:
+        notes = self._rota_notes(schedule)
+        if not notes:
             return True
-        windows = ", ".join(
-            f"{format_clock(start)}-{format_clock(end)}" for start, end in gaps
-        )
         answer = QMessageBox.question(
             self,
             "Shift Schedule",
-            f"The rota leaves {windows} uncovered.\n\n"
-            f"Inspections in that window will be stamped with the manually "
-            f"selected shift ({self._shift.currentText() or 'none'}).\n\n"
-            f"Save anyway?",
+            "This rota will be saved and used, but check it first:\n\n"
+            + "\n\n".join(f"•  {note}" for note in notes)
+            + "\n\nSave anyway?",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )

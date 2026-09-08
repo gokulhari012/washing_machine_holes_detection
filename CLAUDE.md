@@ -658,8 +658,10 @@ keeps loading.
   allowed too** — `shift_at` returns `None` there and `ShiftService.current_name`
   falls back to `application.shift`, the manual name, because an uncovered hour
   still produced parts and a blank shift column is worse for reporting than a
-  slightly wrong one. The Settings page warns about a gap on save but does not
-  refuse it.
+  slightly wrong one.
+- **Three legal-but-suspect rotas are annotated, not refused** — see
+  [Rota notes](#rota-notes) below. `start == end` is the *only* thing rejected
+  outright.
 - **`automatic: false`** keeps the rota parsed and displayed but makes
   `application.shift` (the General group's dropdown) the source of truth again
   — the station's pre-rota behaviour. That dropdown's items come from the
@@ -671,6 +673,37 @@ keeps loading.
   *display* ("changes to Evening at 14:00"), not for arming a timer.
 - **A malformed block degrades, it does not raise at startup.** `ShiftService`
   falls back to the default rota and warns once per fault, not once per tick.
+
+### Rota notes
+
+Three configurations parse fine, resolve deterministically, and are still
+probably not what the operator meant. `ShiftSchedule` exposes one query for
+each; `SettingsPage._rota_notes` turns them into the amber warnings shown live
+under the group **and** in the Save confirmation (same text, one source, so the
+two can never disagree). None of them blocks the save.
+
+| Query | Case | What the operator is told |
+|---|---|---|
+| `unreachable()` | a shift fully masked by one listed above it — the symptom of a start typed later than its end, which silently becomes a 22 h window | "Never used: Evening, Night… Check for a start time later than its end time." |
+| `overlaps()` | two shifts claim the same window | "Overlap 13:00-14:00: Morning and Evening both cover it — Morning wins, because it is listed first." |
+| `coverage_gaps()` | no shift claims a window | "Uncovered 17:00-18:00: inspections then are stamped with the Shift selected in General." |
+
+Both new queries use the same **minute sweep** as `coverage_gaps` — shifts may
+overlap *and* wrap midnight, and interval arithmetic over that needs a pile of
+special cases. All three share the convention that a run touching the end of the
+day closes at midnight rather than merging with one starting at 00:00, so every
+window reported sits inside a single day.
+
+Two deliberate suppressions in `_rota_notes`, both about signal-to-noise:
+- an overlap whose shadowed shifts are **all** already reported as unreachable is
+  skipped — one inverted start/end otherwise produced four warnings that buried
+  the one note actually diagnosing it;
+- `_preview_text` omits "changes to X at HH:MM" when X is the shift already
+  running, which happens when one shift masks the next.
+
+Per-row, `ShiftRow.describe` shows the computed span (`8 h`, or
+`22 h · wraps midnight`). That is the only thing making an inverted start/end
+visible at a glance, since the two times on their own look unremarkable.
 
 ### Where the shift is read
 

@@ -161,10 +161,22 @@ pytest
    consecutive shifts share a boundary without overlapping (an inspection at
    exactly 14:00 belongs to the shift starting then). An end time earlier than
    the start means the shift runs through midnight — the usual night shift,
-   `22:00 → 06:00`. The page shows which shift is current and when it next
-   changes as you edit, refuses a shift with no name or a zero-length window,
-   and warns — without blocking — if the three shifts leave part of the day
-   uncovered.
+   `22:00 → 06:00`.
+
+   The page checks the rota as you type. Each row shows what its two times add
+   up to (`8 h`, or `22 h · wraps midnight`), and three situations raise an
+   amber note under the group — repeated in the Save confirmation, which asks
+   rather than blocks:
+
+   | Situation | Example | What happens |
+   |---|---|---|
+   | **Gap** — no shift covers an hour | morning ends 17:00, evening starts 18:00 | 17:00–18:00 is stamped with the **Shift** selected in General, above |
+   | **Overlap** — two shifts cover it | morning ends 14:00, evening starts 13:00 | 13:00–14:00 goes to whichever is **listed first** |
+   | **Start after end** — becomes a midnight wrap | morning `08:00 → 06:00` | a 22-hour shift that can swallow the shifts below it, which are then flagged "never used" |
+
+   None of these is refused, because each is a real configuration some plant
+   runs — you are told what it will do, and decide. The only things rejected
+   outright are a shift with no name and one whose start equals its end.
 
    Untick automatic and the **Shift** dropdown in the General group is the
    source of truth again, changed by hand at handover. That dropdown is also
