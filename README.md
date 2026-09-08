@@ -25,8 +25,21 @@ raises a trigger every few seconds — you immediately see live inspection
 cycles on the dashboard. The **Simulate Trigger** toolbar button runs a
 manual cycle at any time.
 
-Default settings login: `admin` / `admin` — **change it in Settings before
-production use**.
+### Logins
+
+Two accounts, and the logged-out view is a third tier. The **Log in** button in
+the toolbar is the only login surface; the account's role decides which pages
+appear in the nav rail.
+
+| Signed in as | Pages in the nav rail |
+|---|---|
+| *nobody* (operator view) | Dashboard, Database, Logs |
+| `admin` | the above **+** Cameras, PLC, Detection, Settings |
+| `developer` | the above **+** Calibration, Machine Models — every page |
+
+Default passwords are the usernames (`admin`/`admin`, `developer`/`developer`)
+— **change both in Settings before production use** (log in as each and use
+Change Password; the page changes the password of whoever is logged in).
 
 Smoke test (starts hidden, runs 8 s, saves `logs/selftest.png`, exits):
 
@@ -149,7 +162,7 @@ pytest
    (and generally should) carry its own gates for the optics it actually looks
    through.
 
-5. **Shift rota** — on the Settings page (admin only), the **Shift Schedule**
+5. **Shift rota** — on the Settings page (admin or developer login), the **Shift Schedule**
    group sets the three shifts' names and hours. With *"Set the shift
    automatically from the time of day"* ticked — the shipped setting — the
    shift changes on its own as the clock crosses a boundary: it is stamped on

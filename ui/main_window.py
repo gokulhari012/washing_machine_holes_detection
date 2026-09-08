@@ -29,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from core.logging import get_logger
-from core.utilities.enums import LogSource
+from core.utilities.enums import LogSource, UserRole
 from models.app_state import AppState
 from services.auth_service import AuthService
 from ui.widgets import AlarmBanner, LabeledLed, LoginDialog, install_wheel_guard
@@ -58,7 +58,8 @@ class MainWindow(QMainWindow):
         self._on_simulate_trigger = on_simulate_trigger
         self._on_shutdown = on_shutdown
         self._shutdown_done = False
-        self._pages: list[tuple[QListWidgetItem, bool]] = []  # (nav item, admin_only)
+        # (nav item, minimum role that may see it — None = everyone)
+        self._pages: list[tuple[QListWidgetItem, UserRole | None]] = []
 
         self.setWindowTitle("Washing Machine Bottom Hole Detection System")
         self.resize(1440, 900)
@@ -111,8 +112,9 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._space(8))
         self._login_button = QPushButton()
         self._login_button.setToolTip(
-            "Administrator login — unlocks Cameras, PLC, Detection, "
-            "Calibration and Settings in the nav rail"
+            "Log in to unlock engineering pages in the nav rail — "
+            "admin adds Cameras, PLC, Detection and Settings; "
+            "developer adds Calibration and Machine Models on top"
         )
         self._login_button.clicked.connect(self._on_login_clicked)
         toolbar.addWidget(self._login_button)
@@ -192,13 +194,21 @@ class MainWindow(QMainWindow):
 
     # ---------------------------------------------------------------- pages
     def add_page(
-        self, title: str, icon_glyph: str, page: QWidget, admin_only: bool = False
+        self,
+        title: str,
+        icon_glyph: str,
+        page: QWidget,
+        min_role: UserRole | None = None,
     ) -> None:
         """Register a page in the nav rail (order of calls = nav order).
 
-        ``admin_only`` pages stay in the stack (so the composition root can
-        wire signals normally) but are hidden from the nav rail until an
-        administrator logs in — see :meth:`_refresh_nav_visibility`.
+        ``min_role`` is the *least* privileged role that may see the page;
+        ``None`` (the default) means everyone, logged out included. Restricted
+        pages stay in the stack (so the composition root can wire signals
+        normally) but are hidden from the nav rail until somebody whose role
+        covers ``min_role`` logs in — see :meth:`_refresh_nav_visibility`.
+        Because roles nest (:class:`~core.utilities.enums.UserRole`), a
+        ``min_role=ADMIN`` page is visible to developers too.
 
         The page is wrapped in a borderless, resizable :class:`QScrollArea`:
         several pages (PLC register map, Calibration's homography grid) are
@@ -225,7 +235,7 @@ class MainWindow(QMainWindow):
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
         scroll.setWidget(page)
         self._stack.addWidget(scroll)
-        self._pages.append((item, admin_only))
+        self._pages.append((item, min_role))
         if self._nav.count() == 1:
             self._nav.setCurrentRow(0)
         self._refresh_nav_visibility()
@@ -242,16 +252,17 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ auth
     def _refresh_nav_visibility(self) -> None:
-        """Show/hide admin-only nav entries for the current session.
+        """Show/hide role-gated nav entries for the current session.
 
         Called after every ``add_page`` and every login/logout. If the
         currently selected row just became hidden (an admin logged out while
-        looking at an admin-only page), falls back to the first visible row
-        — Dashboard is always visible, so this always finds one.
+        looking at a restricted page, or a developer's session was replaced by
+        an admin one), falls back to the first visible row — Dashboard has no
+        ``min_role``, so this always finds one.
         """
         first_visible = None
-        for row, (item, admin_only) in enumerate(self._pages):
-            hidden = admin_only and not self._auth.is_admin
+        for row, (item, min_role) in enumerate(self._pages):
+            hidden = min_role is not None and not self._auth.has_role(min_role)
             item.setHidden(hidden)
             if not hidden and first_visible is None:
                 first_visible = row

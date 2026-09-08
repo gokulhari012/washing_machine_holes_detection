@@ -503,7 +503,9 @@ class PlcPage(QWidget):
     def _on_manual_write(self) -> None:
         if not self._auth.is_admin:
             QMessageBox.warning(
-                self, "Manual Write", "Administrator login required (toolbar Login button)."
+                self,
+                "Manual Write",
+                "Administrator or developer login required (toolbar Login button).",
             )
             return
         try:
@@ -514,7 +516,9 @@ class PlcPage(QWidget):
     def _on_manual_coil_write(self, value: bool) -> None:
         if not self._auth.is_admin:
             QMessageBox.warning(
-                self, "Manual Coil Write", "Administrator login required (toolbar Login button)."
+                self,
+                "Manual Coil Write",
+                "Administrator or developer login required (toolbar Login button).",
             )
             return
         try:

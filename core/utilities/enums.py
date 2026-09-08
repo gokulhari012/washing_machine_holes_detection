@@ -89,7 +89,40 @@ class LogSource(StrEnum):
 
 
 class UserRole(StrEnum):
-    """Access level for password-protected areas (Settings, PLC writes)."""
+    """Access level for password-protected areas and nav-rail pages.
 
-    ADMIN = "admin"
+    Declared least- to most-privileged, and *ordered*: the roles nest rather
+    than sit side by side, so a developer can do everything an admin can and
+    an admin everything an operator can. Gates therefore ask "does this role
+    cover the one I need" (:meth:`covers`) rather than comparing for
+    equality — an ``== ADMIN`` test would lock a developer out of the very
+    pages their role is meant to be a superset of.
+
+    - ``operator``  — the default, logged-out view: Dashboard, Database, Logs
+    - ``admin``     — adds the day-to-day engineering consoles (Cameras, PLC,
+      Detection, Settings)
+    - ``developer`` — adds the commissioning consoles (Calibration,
+      Machine Models); every page in the app
+    """
+
     OPERATOR = "operator"
+    ADMIN = "admin"
+    DEVELOPER = "developer"
+
+    @property
+    def rank(self) -> int:
+        """Privilege level; higher covers lower. Not persisted — the string
+        value is what reaches the database, so re-ranking a role never
+        invalidates existing rows."""
+        return _ROLE_RANKS[self]
+
+    def covers(self, required: UserRole) -> bool:
+        """True when this role grants everything *required* grants."""
+        return self.rank >= required.rank
+
+
+_ROLE_RANKS: dict[UserRole, int] = {
+    UserRole.OPERATOR: 0,
+    UserRole.ADMIN: 1,
+    UserRole.DEVELOPER: 2,
+}

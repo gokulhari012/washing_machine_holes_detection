@@ -1,10 +1,14 @@
-"""Modal admin login prompt, opened from the main window's toolbar.
+"""Modal login prompt, opened from the main window's toolbar.
 
-The single login surface for the whole app — engineering pages (Cameras,
-PLC, Detection, Calibration, Settings) are hidden from the nav rail until an
-administrator logs in here (see ``MainWindow``), so this dialog has to be
-reachable regardless of role, unlike a login form embedded in one of the
-pages it gates.
+The single login surface for the whole app — the role-gated pages are hidden
+from the nav rail until somebody with the right role logs in here (see
+``MainWindow.add_page``), so this dialog has to be reachable regardless of
+role, unlike a login form embedded in one of the pages it gates.
+
+The account's role decides what unlocks; the dialog itself asks for no role
+and offers no choice of one, because the answer is a property of the account,
+not of the person typing. ``admin`` unlocks Cameras, PLC, Detection and
+Settings; ``developer`` unlocks those *plus* Calibration and Machine Models.
 """
 
 from __future__ import annotations
@@ -13,6 +17,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QLabel,
     QLineEdit,
     QMessageBox,
     QVBoxLayout,
@@ -28,7 +33,7 @@ class LoginDialog(QDialog):
 
     def __init__(self, auth_service: AuthService, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Administrator Login")
+        self.setWindowTitle("Login")
         self.setModal(True)
         self._auth = auth_service
         self.user: User | None = None
@@ -42,6 +47,13 @@ class LoginDialog(QDialog):
         form.addRow("Username", self._username)
         form.addRow("Password", self._password)
         layout.addLayout(form)
+
+        hint = QLabel(
+            "admin — Cameras, PLC, Detection, Settings\n"
+            "developer — the above plus Calibration and Machine Models"
+        )
+        hint.setProperty("class", "dim")
+        layout.addWidget(hint)
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel

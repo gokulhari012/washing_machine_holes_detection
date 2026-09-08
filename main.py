@@ -38,7 +38,7 @@ from core.database import DatabaseEngine
 from core.logging import LogManager, get_logger
 from core.plc import PlcManager, RegisterMap, create_plc_client
 from core.utilities import ConfigManager
-from core.utilities.enums import LogSource
+from core.utilities.enums import LogSource, UserRole
 from core.utilities.exceptions import VisionSystemError
 from core.vision import VisionEngine, migrate_legacy_detection_config
 from models import AppState
@@ -148,7 +148,7 @@ class Application:
         self.export_service = ExportService()
         self.backup_service = BackupService(self.db, self.database, self.config)
         self.auth_service = AuthService(self.database)
-        self.auth_service.ensure_default_admin()
+        self.auth_service.ensure_default_accounts()
 
         # -------------------------------------------------------- workers
         self.inspection_worker = InspectionWorker(self.inspection)
@@ -168,11 +168,15 @@ class Application:
             on_simulate_trigger=self._simulate_trigger,
             on_shutdown=self.shutdown,
         )
-        # Dashboard/Database/Logs are what an operator needs day to day and
-        # stay visible always; the engineering consoles below (hardware
-        # tuning, PLC register map, detection algorithm parameters,
-        # calibration) are hidden from the nav rail until an administrator
-        # logs in via the toolbar — see MainWindow._refresh_nav_visibility.
+        # Three tiers, gated by min_role — see MainWindow.add_page and
+        # UserRole. Dashboard/Database/Logs carry no min_role and stay visible
+        # always: that is the logged-out operator view. UserRole.ADMIN adds the
+        # day-to-day engineering consoles (hardware tuning, PLC register map,
+        # detection parameters, settings). UserRole.DEVELOPER adds the
+        # commissioning consoles on top — calibration and machine-model
+        # profiles change the coordinate frame and the whole per-model tuning
+        # snapshot, so they are re-done at commissioning, not on a shift.
+        # Roles nest, so a developer sees every page here.
         self.window.add_page(
             "Dashboard",
             "▦",
@@ -187,23 +191,25 @@ class Application:
         self.window.add_page(
             "Cameras", "◉",
             CameraPage(self.app_state, self.camera_service),
-            admin_only=True,
+            min_role=UserRole.ADMIN,
         )
         self.window.add_page(
-            "PLC", "⇄", PlcPage(self.app_state, self.plc_service, self.auth_service), admin_only=True
+            "PLC", "⇄",
+            PlcPage(self.app_state, self.plc_service, self.auth_service),
+            min_role=UserRole.ADMIN,
         )
         self.window.add_page(
             "Detection", "◎", DetectionPage(self.config, self.vision, self.camera_service),
-            admin_only=True,
+            min_role=UserRole.ADMIN,
         )
         self.window.add_page(
             "Calibration", "⌖", CalibrationPage(self.camera_service, self.calibration, self.vision),
-            admin_only=True,
+            min_role=UserRole.DEVELOPER,
         )
         self.window.add_page(
             "Machine Models", "▣",
             MachineModelsPage(self.machine_models, self.auth_service, self.app_state),
-            admin_only=True,
+            min_role=UserRole.DEVELOPER,
         )
         self.window.add_page(
             "Database", "▤",
@@ -215,7 +221,7 @@ class Application:
             SettingsPage(
                 self.config, self.auth_service, self.backup_service, self.shift_service
             ),
-            admin_only=True,
+            min_role=UserRole.ADMIN,
         )
 
         # -------------------------------------------------- cross-cutting

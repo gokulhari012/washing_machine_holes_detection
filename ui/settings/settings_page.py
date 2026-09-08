@@ -1,11 +1,13 @@
 """Settings page: general options, shift rota, storage/backup, change password.
 
-Reachable only after an administrator logs in via the toolbar (this page is
-``admin_only`` in the nav rail — see ``MainWindow``), so unlike the PLC/
-Cameras pages it does not need its own "not logged in" gate for the general
-and backup groups. When ``security.settings_password_protected`` is
-disabled, editing is allowed without that admin session too. First run ships
-a default ``admin``/``admin`` account — change it here.
+Reachable only after an administrator (or a developer, whose role covers
+admin) logs in via the toolbar — the page is registered with
+``min_role=UserRole.ADMIN`` in the nav rail, see ``MainWindow.add_page`` — so
+unlike the PLC/Cameras pages it does not need its own "not logged in" gate
+for the general and backup groups. When
+``security.settings_password_protected`` is disabled, editing is allowed
+without that session too. First run ships default ``admin``/``admin`` and
+``developer``/``developer`` accounts — change them here.
 
 The Shift Schedule group configures the three-shift rota. With "set the shift
 automatically" ticked — the shipped setting — the shift stamped on every

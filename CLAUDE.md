@@ -122,9 +122,10 @@ failure*; returning an empty `holes` list means *no hole present* (a legitimate 
 
 ### Add a UI page
 Construct it in `Application.__init__` and call
-`self.window.add_page(title, glyph, page, admin_only=...)`. `admin_only=True` hides it
-from the nav rail until an admin logs in (page stays in the stack — see
-`MainWindow._refresh_nav_visibility`).
+`self.window.add_page(title, glyph, page, min_role=...)`. `min_role` is the least
+privileged `UserRole` that may see the page; omit it (`None`) for a page everyone
+sees. A restricted page stays in the stack — only its nav entry is hidden until a
+covering role logs in (see `MainWindow._refresh_nav_visibility` and [§12](#12-roles--access)).
 
 ---
 
@@ -757,3 +758,50 @@ visible at a glance, since the two times on their own look unremarkable.
 Adding a fourth shift needs no code: add an entry to both `config/app_config.json`
 and `config/defaults/app_config.json`. The Settings page builds one row per
 configured shift, so it picks the new one up on next start.
+
+---
+
+## 12. Roles & access
+
+Three tiers, but only **two accounts** — logged out is the third tier, not an
+account you sign into. `UserRole` ([core/utilities/enums.py](core/utilities/enums.py)) is **ordered**:
+`operator(0) < admin(1) < developer(2)`, and `role.covers(required)` is the only
+comparison any gate should make. Never test `role == UserRole.ADMIN` — that locks a
+developer out of the pages their role is a superset of.
+
+| Tier | Account | Nav rail |
+|---|---|---|
+| operator | *none — the logged-out default* | Dashboard, Database, Logs |
+| admin | `admin` / `admin` | **+** Cameras, PLC, Detection, Settings |
+| developer | `developer` / `developer` | **+** Calibration, Machine Models (everything) |
+
+Calibration and Machine Models are the developer-only pair because both rewrite
+the *coordinate frame and the per-model tuning snapshot* — commissioning work, not
+shift work. Every other engineering console is admin.
+
+```
+UserRole.covers()  ←  AuthService.has_role(role)  ←  MainWindow.add_page(min_role=…)
+                          │                              → _refresh_nav_visibility()
+                          ├─ is_admin      = has_role(ADMIN)      # admin OR developer
+                          └─ is_developer  = has_role(DEVELOPER)
+```
+
+- **`AuthService.is_admin` means "admin or above"**, so the manual PLC register/coil
+  writes and the Settings edit gate that already used it admit developers with no
+  change at those call sites. `require_admin()` (account creation) follows it.
+- **An unknown role string in the users table degrades to `operator`**, logged once
+  — `AuthService.current_role` fails closed rather than raising, because a typo must
+  never unlock a page.
+- **`ensure_default_accounts()` is per account, not "is the table empty"** — that is
+  what lets a station commissioned before the developer role existed pick the new
+  login up on its next start. An account that already exists is left alone, so a
+  changed password is never reset.
+- **The login dialog asks for no role.** The role is a property of the account; the
+  same dialog and the same toolbar button serve both. Which pages appear is decided
+  entirely by `_refresh_nav_visibility` after the login returns.
+- Logging *out* of a developer session while on Calibration, or logging in as admin
+  over one, falls back to the first visible row — Dashboard has no `min_role`, so a
+  visible row always exists.
+- There is **no account-management UI**: accounts are the two defaults, and Settings
+  → Change Password only ever changes the password of whoever is logged in.
+  `AuthService.create_user` exists and is admin-gated, but nothing calls it.
