@@ -2,7 +2,7 @@
   "cameras": [
     {
       "index": 1,
-      "name": "Camera 1 - Front Left",
+      "name": "Camera 1 - Top Left",
       "driver": "simulated",
       "connection_id": "0",
       "enabled": true,
@@ -20,7 +20,7 @@
     },
     {
       "index": 2,
-      "name": "Camera 2 - Front Right",
+      "name": "Camera 2 - Top Right",
       "driver": "simulated",
       "connection_id": "1",
       "enabled": true,
@@ -38,7 +38,7 @@
     },
     {
       "index": 3,
-      "name": "Camera 3 - Rear Left",
+      "name": "Camera 3 - Bottom Left",
       "driver": "simulated",
       "connection_id": "2",
       "enabled": true,
@@ -56,7 +56,7 @@
     },
     {
       "index": 4,
-      "name": "Camera 4 - Rear Right",
+      "name": "Camera 4 - Bottom Right",
       "driver": "simulated",
       "connection_id": "3",
       "enabled": true,
