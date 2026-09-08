@@ -98,14 +98,27 @@ def _camera_pair_field(block: str, camera: int, axis: str, name: str, tooltip: s
     )
 
 
-def _camera_scalar_field(block: str, camera: int, name: str, tooltip: str) -> _RegisterField:
+def _camera_scalar_field(
+    block: str, camera: int, name: str, tooltip: str, optional: bool = False
+) -> _RegisterField:
+    """One camera's entry in a ``registers.<block>`` mapping.
+
+    *optional* makes 0 display as "Not used" and drop that camera out of the
+    block on save, so the feature can be left unwired for a camera the same
+    way ``model_select`` can be left unwired entirely.
+    """
     idx = str(camera)
     return _RegisterField(
-        name, tooltip, False,
+        name, tooltip, optional,
         get=lambda cfg, block=block, idx=idx: int(cfg["registers"].get(block, {}).get(idx, 0)),
         set=lambda cfg, v, block=block, idx=idx: (
             cfg["registers"].setdefault(block, {}).__setitem__(idx, v)
         ),
+        clear=(
+            lambda cfg, block=block, idx=idx: cfg["registers"].get(block, {}).pop(idx, None)
+        )
+        if optional
+        else None,
     )
 
 
@@ -260,6 +273,18 @@ def _build_fields() -> list[_RegisterField]:
                 "camera_brightness", camera, f"Camera {camera} Brightness",
                 "PC → PLC: this camera's light-brightness level (0-255), pushed on every "
                 "Camera page Apply/Save — drives an external light, not the camera itself",
+            ),
+            _camera_scalar_field(
+                "gantry_status", camera, f"Camera {camera} Gantry Status", (
+                    "PLC → PC: 1 = this camera's gantry is in position, so the camera "
+                    "takes part in the cycle. Anything else skips it — no capture, no "
+                    "detection, and its position/result registers are left holding "
+                    "whatever the last cycle that really inspected it wrote. Read at "
+                    "the start of every cycle, global and per-camera alike. \"Not used\" "
+                    "means this camera is always inspected, as before this register "
+                    "existed."
+                ),
+                optional=True,
             ),
             _jog_axis_field(
                 camera, "x", f"Camera {camera} Jog X",

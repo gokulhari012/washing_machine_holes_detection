@@ -1,6 +1,7 @@
 """The inspection pipeline — the single place the production workflow lives.
 
-    trigger (machine number) ──► capture + detect per camera
+    trigger (machine number) ──► read each camera's gantry status
+                                 ──► capture + detect per *active* camera
                                  (sequential, one camera at a time, or
                                   all four in parallel — see capture_mode)
                                  ──► calibrate px→mm + judge per camera
@@ -30,6 +31,24 @@ comes from ``ShiftService`` -- resolved from the configured rota against the
 cycle's own ``started_at``, so a cycle that straddles a handover is filed
 under the shift it *began* in, and a cycle replayed from a queue would be
 filed correctly too.
+
+Gantry gating
+-------------
+Every cycle — the global one and a single-camera one alike — starts by reading
+each camera's ``gantry_status`` register. A camera whose gantry the PLC reports
+inactive is **skipped**: not captured, not detected, and none of its PLC
+registers written, so the last cycle that really inspected it still owns them.
+It is still recorded, as ``InspectionResult.SKIPPED``, and shown on its
+dashboard panel, so a part inspected by two of four cameras is visibly that
+rather than silently short. A skipped camera takes no part in the overall
+verdict; a cycle in which *every* camera was skipped has nothing to judge and
+reports ERROR, the same as a cycle with no enabled cameras at all.
+
+A camera with no gantry-status register configured is always active, so a
+station that has not wired the register up behaves exactly as before. A failed
+read is also treated as active, deliberately: a comms glitch that silently
+stopped inspecting a camera would ship an un-inspected part, which is worse
+than capturing one whose gantry happens to be parked.
 
 Fault policy (a production line must keep moving):
 - one dead camera            → that camera reports ERROR, others proceed
@@ -118,28 +137,48 @@ class InspectionService:
             if camera.settings.enabled
         )
 
+        # 0. gantry gating — only the cameras the PLC says are in position
+        active, skipped = self._resolve_gantries(enabled)
+
         # 1.+2. capture and detect, one camera at a time or all at once
         inspection_cfg = app_cfg.get("inspection", {})
         if str(inspection_cfg.get("capture_mode", SEQUENTIAL_MODE)).lower() == SEQUENTIAL_MODE:
-            camera_results, detection_ms = self._run_sequential(enabled, inspection_cfg)
+            camera_results, detection_ms = self._run_sequential(active, inspection_cfg)
         else:
-            camera_results, detection_ms = self._run_parallel(enabled)
+            camera_results, detection_ms = self._run_parallel(active)
 
-        # 3. overall judgement
+        # the skipped cameras are recorded and shown, but judged by nobody
+        for index in skipped:
+            data = self._skipped_data(index)
+            camera_results[index] = data
+            self._app_state.publish_camera_result(index, data)
+        camera_results = {index: camera_results[index] for index in sorted(camera_results)}
+
+        # 3. overall judgement (skipped cameras take no part in it)
         overall = self._overall_result(camera_results)
 
         # 4. PLC output — positions for found holes, sentinel otherwise, plus
-        # each camera's own GOOD/NG/ERROR verdict alongside its position
+        # each camera's own GOOD/NG/ERROR verdict alongside its position. A
+        # skipped camera contributes neither: its registers are left holding
+        # whatever the last cycle that really inspected it wrote.
         positions = {
             index: (data.x_mm, data.y_mm) if data.hole_found else None
             for index, data in camera_results.items()
+            if index not in skipped
         }
         plc_camera_results = {
-            index: _RESULT_TO_PLC[data.result] for index, data in camera_results.items()
+            index: _RESULT_TO_PLC[data.result]
+            for index, data in camera_results.items()
+            if index not in skipped
         }
         plc_write_ok = True
         try:
-            self._plc.write_inspection_output(positions, plc_camera_results, _RESULT_TO_PLC[overall])
+            self._plc.write_inspection_output(
+                positions,
+                plc_camera_results,
+                _RESULT_TO_PLC[overall],
+                skipped=skipped,
+            )
         except PlcError as exc:
             plc_write_ok = False
             logger.error("PLC output write failed: %s", exc)
@@ -193,6 +232,12 @@ class InspectionService:
         it is stored and shown like any other inspection but does not count
         towards the product counters — one camera is not a finished product.
 
+        The gantry gate applies here too: if the PLC reports this camera's
+        gantry inactive, nothing is captured, judged or written to its
+        position/result registers, but the handshake is still answered (its
+        trigger released, its vision_complete raised) so the PLC that raised
+        the trigger never dead-waits. The cycle is recorded as SKIPPED.
+
         Never raises — faults degrade the result, exactly as in the full cycle.
         """
         cycle_started = time.perf_counter()
@@ -207,6 +252,13 @@ class InspectionService:
             camera_index,
             machine_number,
         )
+
+        _active, skipped = self._resolve_gantries([camera_index])
+        if skipped:
+            return self._skipped_camera_cycle(
+                camera_index, machine_number, started_at, cycle_started, application
+            )
+
         self._app_state.post_status(f"Capturing {camera.name} (single)")
 
         try:
@@ -260,6 +312,115 @@ class InspectionService:
             camera_index,
             data.result.value,
             cycle.plc_cycle_time_ms,
+        )
+        return cycle
+
+    # -------------------------------------------------------- gantry gating
+    def _resolve_gantries(self, enabled: list[int]) -> tuple[list[int], set[int]]:
+        """Split *enabled* into the cameras to inspect and the ones to skip.
+
+        Reads each camera's ``gantry_status`` register on this (inspection)
+        thread, the same way servo homes and the serial number are read — the
+        PLC may park a gantry between cycles, so the value is never cached.
+
+        A camera with no gantry-status register configured is active, and so
+        is one whose read fails: losing a register read must not silently stop
+        inspecting a camera, because that ships an un-inspected part. The read
+        failure is logged and raised as an alarm; the link being down is
+        already visible elsewhere, and the cycle's own PLC write will fail
+        loudly a moment later anyway.
+        """
+        active: list[int] = []
+        skipped: set[int] = set()
+        for index in enabled:
+            try:
+                gantry_ok = self._plc.read_gantry_status(index)
+            except PlcError as exc:
+                logger.warning(
+                    "Gantry status read failed for camera %d, inspecting it anyway: %s",
+                    index,
+                    exc,
+                )
+                gantry_ok = True
+            if gantry_ok:
+                active.append(index)
+            else:
+                skipped.add(index)
+        if skipped:
+            logger.info(
+                "Cameras skipped this cycle (gantry inactive): %s",
+                ", ".join(str(index) for index in sorted(skipped)),
+            )
+        return active, skipped
+
+    def _skipped_data(self, camera_index: int) -> CameraInspectionData:
+        """The recorded outcome of a camera the PLC's gantry status ruled out.
+
+        Carries no frame, no coordinates and no confidence — nothing was
+        measured. ``error`` holds the reason rather than a fault message: the
+        Database Viewer's detail column is the only place an operator can find
+        out *why* a camera has no numbers for a given part.
+        """
+        return CameraInspectionData(
+            camera_index=camera_index,
+            camera_name=self._cameras.get(camera_index).name,
+            result=InspectionResult.SKIPPED,
+            error="gantry inactive",
+        )
+
+    def _skipped_camera_cycle(
+        self,
+        camera_index: int,
+        machine_number: int,
+        started_at: datetime,
+        cycle_started: float,
+        application_cfg: dict,
+    ) -> InspectionCycleData:
+        """Answer a per-camera trigger for a camera whose gantry is inactive.
+
+        Completes the PLC handshake (trigger released, vision_complete raised)
+        without writing a position or a result, then records and publishes the
+        cycle as SKIPPED so the skip is auditable rather than invisible.
+        """
+        data = self._skipped_data(camera_index)
+        self._app_state.publish_camera_result(camera_index, data)
+        self._app_state.post_status(
+            f"{data.camera_name} skipped — gantry inactive"
+        )
+
+        plc_write_ok = True
+        try:
+            self._plc.write_camera_skipped_output(camera_index)
+        except PlcError as exc:
+            plc_write_ok = False
+            logger.error(
+                "PLC handshake failed for skipped camera %d: %s", camera_index, exc
+            )
+            self._app_state.raise_alarm("error", f"PLC write failed: {exc}")
+
+        cycle = InspectionCycleData(
+            machine_number=machine_number,
+            serial_number=self._serial_number(application_cfg, machine_number),
+            started_at=started_at,
+            overall_result=InspectionResult.SKIPPED,
+            cameras={camera_index: data},
+            plc_cycle_time_ms=(time.perf_counter() - cycle_started) * 1000.0,
+            detection_time_ms=0.0,
+            operator=str(application_cfg.get("operator_name", "")),
+            shift=self._shifts.current_name(started_at),
+            plc_write_ok=plc_write_ok,
+            partial=True,
+        )
+        try:
+            self._database.save_inspection(cycle)
+        except DatabaseError as exc:
+            logger.error("Inspection persistence failed: %s", exc)
+            self._app_state.raise_alarm("error", f"Database write failed: {exc}")
+
+        self._app_state.publish_inspection(cycle)
+        logger.info(
+            "Single-camera inspection skipped (camera %d): gantry inactive",
+            camera_index,
         )
         return cycle
 
@@ -428,9 +589,21 @@ class InspectionService:
     def _overall_result(
         camera_results: dict[int, CameraInspectionData]
     ) -> InspectionResult:
-        if not camera_results:
+        """Worst verdict wins: ERROR > NG > GOOD.
+
+        A SKIPPED camera never inspected the part, so it cannot vote — it is
+        neither a pass nor a failure. If that leaves nothing to judge (every
+        camera's gantry was inactive, or no camera is enabled) the cycle is an
+        ERROR: the PLC asked for a machine to be inspected and none of it was,
+        which is a station problem, not a good part.
+        """
+        results = {
+            data.result
+            for data in camera_results.values()
+            if data.result is not InspectionResult.SKIPPED
+        }
+        if not results:
             return InspectionResult.ERROR
-        results = {data.result for data in camera_results.values()}
         if InspectionResult.ERROR in results:
             return InspectionResult.ERROR
         if InspectionResult.NG in results:

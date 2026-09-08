@@ -24,6 +24,8 @@ QLabel[class="dim"]       { color: #8b95a3; }
 QLabel[result="GOOD"]  { color: #3fb950; font-weight: 700; }
 QLabel[result="NG"]    { color: #f85149; font-weight: 700; }
 QLabel[result="ERROR"] { color: #d29922; font-weight: 700; }
+/* not a verdict: the camera never inspected this part (gantry inactive) */
+QLabel[result="SKIPPED"] { color: #8b95a3; font-weight: 700; }
 
 /* ----------------------------------------------------------- nav rail */
 QListWidget#navRail {

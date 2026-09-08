@@ -145,6 +145,12 @@ class CameraPanel(QFrame):
             self._conf_value.setText("—")
 
         result = data.result
+        if result is InspectionResult.SKIPPED:
+            # Nothing was captured for this camera (its gantry was inactive),
+            # so there is no frame to hold. Blank the view rather than leaving
+            # the previous part's picture sitting under a SKIPPED badge, which
+            # reads as "this is what was skipped".
+            self._view.clear_frame()
         self._result.setText(
             result.value if result is not InspectionResult.ERROR else "ERROR"
         )

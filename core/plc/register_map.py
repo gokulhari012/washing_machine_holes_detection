@@ -24,6 +24,14 @@ from zero, which is what makes the sentinel safe.
 A camera with no servo-home registers configured falls back to a home of 0,
 i.e. plain ``mm * position_scale``, and can then only express positions on the
 positive side of centre.
+
+Gantry gating
+-------------
+``gantry_status`` is the other PLC→PC per-camera input. The PLC publishes 1
+there while a camera's gantry is in position; the PC inspects only those
+cameras and leaves every other camera's position/result registers exactly as
+the last real cycle left them. A camera with no gantry-status register is
+always inspected, so an existing plc.json keeps behaving as before.
 """
 
 from __future__ import annotations
@@ -47,6 +55,13 @@ class RegisterMap:
     # direction for a PLC deciding whether to run the station.
     CAMERA_AVAILABLE = 1
     CAMERA_UNAVAILABLE = 0
+
+    # Values read from a gantry_status register. 1 means that camera's gantry
+    # is in position and the camera takes part in this cycle; anything else
+    # means it does not and the camera is skipped. Only 1 counts as active, so
+    # a garbled or half-written value fails towards "don't inspect" rather
+    # than towards inspecting a part the gantry is not presenting.
+    GANTRY_ACTIVE = 1
 
     trigger: int
     machine_number: int
@@ -85,6 +100,15 @@ class RegisterMap:
     # so a PLC-driven light source (not the camera's own ISP) tracks it.
     # Optional per camera, like every other block here.
     camera_brightness: dict[int, int] = field(default_factory=dict)
+    # Per-camera gantry-status register — camera index -> address. A PLC→PC
+    # *input*, like servo_home_positions: the PLC publishes whether that
+    # camera's gantry is active, and the PC inspects only the cameras whose
+    # gantry reads GANTRY_ACTIVE. Read live at the start of every cycle (both
+    # the global one and a single-camera one), never cached — the PLC may park
+    # a gantry between cycles. Optional per camera: a camera absent here is
+    # always inspected, which is exactly what every station did before this
+    # register existed.
+    gantry_status: dict[int, int] = field(default_factory=dict)
     position_scale: int = 10
     # Machine-model select register: which part/model is mounted, written by
     # the PLC. Optional — None means the feature is inert (no address wired
@@ -159,6 +183,10 @@ class RegisterMap:
                 int(index): int(address)
                 for index, address in registers.get("camera_brightness", {}).items()
             }
+            gantry_status = {
+                int(index): int(address)
+                for index, address in registers.get("gantry_status", {}).items()
+            }
             model_select = registers.get("model_select")
             serial_number = registers.get("serial_number")
 
@@ -192,6 +220,7 @@ class RegisterMap:
                 camera_vision_complete=camera_vision_complete,
                 camera_status=camera_status,
                 camera_brightness=camera_brightness,
+                gantry_status=gantry_status,
                 position_scale=int(scaling.get("position_scale", 10)),
                 model_select=int(model_select) if model_select is not None else None,
                 serial_number=int(serial_number) if serial_number is not None else None,

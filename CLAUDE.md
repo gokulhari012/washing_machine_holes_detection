@@ -139,6 +139,7 @@ PlcPollWorker sees trigger 0→1  (≤50 ms)
   → emits trigger_detected  ──queued──►  InspectionWorker.on_trigger
                                           │
      InspectionService.run_inspection:    │
+       0.   read each camera's gantry_status; skip the parked ones
        1/2. capture + detect per camera   │  sequential (default) or parallel
        3.   overall result                │  ERROR > NG > GOOD (worst wins)
        4.   write PLC: positions, per-cam results, overall, then vision_complete=1
@@ -165,6 +166,24 @@ are themselves per-camera (`VisionEngine.expected_hole_count(camera_index)` etc.
 - `best is None` **or** `len(holes) < expected_hole_count` → `NG`, `hole_found=False`
 - deviation > `position_tolerance_mm` (and tolerance > 0 and camera calibrated) → `NG`
 - else `GOOD`
+
+**Gantry gating** (`_resolve_gantries`, both cycle kinds): before anything is
+captured, each camera's `gantry_status` register is read live on the inspection
+thread. A camera the PLC reports parked is **skipped** — not captured, not
+detected, and **none of its PLC registers written**, so the last cycle that
+really inspected it still owns them. It is still recorded and shown as
+`InspectionResult.SKIPPED` (a fourth enum value, not a verdict), which takes no
+part in the overall result. Consequences worth knowing:
+- a camera with no `gantry_status` register, **or one whose read fails**, is
+  active — a comms glitch must never silently ship an un-inspected part;
+- only raw `1` (`RegisterMap.GANTRY_ACTIVE`) counts as active, so a garbled
+  value skips rather than inspects;
+- a cycle in which *every* camera was skipped has nothing to judge and reports
+  `ERROR`, same as a cycle with no enabled cameras;
+- a per-camera trigger raised for a parked gantry still gets its **handshake**
+  (`PlcManager.write_camera_skipped_output`: trigger released, then
+  `camera_vision_complete` raised) so the PLC never dead-waits — but no position
+  and no result is invented for it.
 
 **Single-camera cycles** (`run_camera_inspection`): triggered by PLC register 132+N or
 the dashboard panel's ▶ button. Captures and judges one camera, writes only that
@@ -238,6 +257,7 @@ centre — `PlcManager.read_servo_home` returns `(0, 0)` rather than failing.
 | 144–151 | PLC→PC | **`servo_home_positions`** — servo 1–4 home X/Y, the datum for 110–117 |
 | 152–155 | PC→PLC | **`camera_jog`**'s Z axis — one register per camera, in the separate top-level `camera_jog` block, not `registers` |
 | 156–158, 6056 | PC→PLC | **`camera_brightness`** — camera 1–4 light-brightness level (0-255), pushed whenever that camera's settings are applied/saved (see [§8](#8-config-system)) |
+| 159–161, 6058 | PLC→PC | **`gantry_status`** — 1 = camera N's gantry is in position and that camera is inspected; anything else skips it entirely (see below) |
 
 Bolded rows are **newer than [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, which documents only 100–119.
 
@@ -274,6 +294,18 @@ on the inspection thread, immediately before the position write; it is deliberat
 never cached, because the PLC may move the axis between cycles. Optional per camera
 (absent → home `0`), so an older `plc.json` keeps loading.
 
+**`gantry_status` (159–161, 6058)** is the other PLC→PC per-camera *input*, and
+the only register that decides whether a camera is inspected at all. Read live
+at the start of every cycle (global and per-camera alike) on the inspection
+thread, never cached — the PLC may park a gantry between cycles. Optional per
+camera: absent (or "Not used" on the PLC page) means that camera is always
+inspected, which is what every station did before the register existed. The
+addresses are **placeholders following this station's numbering** (camera 3 in
+the 6000s on the live file), exactly like `camera_brightness` — **confirm the
+real PLC's memory map has them free.** Note that `SimulatedPlc` seeds every
+configured gantry register to 1 on construction: 0 means parked, so an unseeded
+simulator would skip all four cameras and inspect nothing.
+
 Do not confuse `servo_home_positions` (144–151, PLC→PC, the *datum* a reported hole
 position is measured from) with `camera_jog_home` (a pair of *values* in
 `config/plc.json`'s `camera_jog` block that the Home button writes to the jog
@@ -286,7 +318,11 @@ completely different things.
 
 Write order in `write_inspection_output` matters: positions → per-camera results →
 overall result → `vision_complete=1` last, because the PLC may read the moment
-`vision_complete` goes high. Contiguous X/Y pairs are written in one transaction.
+`vision_complete` goes high. Cameras named in its `skipped` argument are stepped
+over in both loops — deliberately unlike a camera merely *absent* from
+`camera_results`, which still gets ERROR: a gantry-skip is not a fault, and
+overwriting a stale-but-valid position with the no-hole sentinel would tell the
+PLC something the vision system never measured. Contiguous X/Y pairs are written in one transaction.
 Each position write is preceded by a servo-home *read* on the same thread.
 
 ### Fault policy
@@ -540,9 +576,17 @@ file, same as every other per-camera group) — **confirm the real PLC's memory 
 actually has these free before relying on them**, the same coordination any new
 register addition needs with whoever maintains the PLC program.
 
+**A skipped camera writes *nothing*, and that is the point.** `gantry_status`
+is the one register that can make a whole camera drop out of a cycle. It is easy
+to "fix" the resulting blank panel or absent PLC write by falling back to the
+no-hole sentinel + ERROR — don't: that reports a measurement the station never
+took. `InspectionResult.SKIPPED` exists precisely so the skip is recorded and
+auditable instead of invisible; it is excluded from the overall verdict and from
+`_RESULT_TO_PLC`, and has no PLC result code of its own.
+
 **The PLC DB audit mirror is incomplete.** `PlcService._mirror_to_database` and the
 `plc_configurations` table cover only the original 100–119 registers — `model_select`,
-`camera_results` and `camera_jog` are **not** mirrored. JSON remains the source of
+`camera_results`, `camera_jog` and `gantry_status` are **not** mirrored. JSON remains the source of
 truth; the table is audit-only, so this is cosmetic unless you start reading from it.
 
 **Duplicate lab scripts.** `scripts/dark_contour_lab.py` and

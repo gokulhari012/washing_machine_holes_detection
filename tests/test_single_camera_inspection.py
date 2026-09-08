@@ -266,17 +266,29 @@ class FakeConfig:
 class RecordingPlc:
     def __init__(self, serial_number: int | None = None) -> None:
         self.camera_writes: list[tuple] = []
-        self.full_writes = 0
+        self.full_writes: list[tuple] = []
+        self.skipped_writes: list[int] = []
         self.serial_number = serial_number
+        #: camera index -> gantry active; anything absent is active, which is
+        #: what an unconfigured gantry_status register reports
+        self.gantries: dict[int, bool] = {}
 
     def read_serial_number(self) -> int | None:
         return self.serial_number
 
+    def read_gantry_status(self, camera_index: int) -> bool:
+        return self.gantries.get(camera_index, True)
+
     def write_camera_inspection_output(self, camera_index, position, result) -> None:
         self.camera_writes.append((camera_index, position, result))
 
-    def write_inspection_output(self, positions, camera_results, result) -> None:
-        self.full_writes += 1
+    def write_camera_skipped_output(self, camera_index) -> None:
+        self.skipped_writes.append(camera_index)
+
+    def write_inspection_output(
+        self, positions, camera_results, result, skipped=None
+    ) -> None:
+        self.full_writes.append((positions, camera_results, result, set(skipped or ())))
 
 
 class FakeShifts:
@@ -327,7 +339,7 @@ def test_only_that_cameras_registers_are_written(service) -> None:
     svc, _cameras, _app_state, plc = service
     svc.run_camera_inspection(camera_index=3, machine_number=7)
 
-    assert plc.full_writes == 0  # never the whole-cycle write
+    assert plc.full_writes == []  # never the whole-cycle write
     assert len(plc.camera_writes) == 1
     camera_index, position, result = plc.camera_writes[0]
     assert camera_index == 3
@@ -353,7 +365,7 @@ def test_full_cycle_still_counts(service) -> None:
 
     assert cycle.partial is False
     assert app_state.counters == (11, 9, 2)
-    assert plc.full_writes == 1
+    assert len(plc.full_writes) == 1
     assert plc.camera_writes == []
 
 

@@ -296,6 +296,31 @@ class PlcManager:
             return values[0], values[1]
         return self._read(x_address, 1)[0], self._read(y_address, 1)[0]
 
+    def read_gantry_status(self, camera_index: int) -> bool:
+        """Whether camera *camera_index*'s gantry is active this cycle.
+
+        The PLC owns this value; the PC reads it live at the start of every
+        cycle (global or single-camera) and inspects only the cameras it
+        reports active — see :mod:`core.plc.register_map`. Only
+        :attr:`RegisterMap.GANTRY_ACTIVE` counts as active, so a garbled value
+        skips the camera rather than inspecting a part its gantry is not
+        presenting.
+
+        Returns True (no I/O) when the camera has no gantry-status register
+        configured: the gate is then simply inert and that camera is always
+        inspected, exactly as before this register existed.
+
+        Raises:
+            PlcError: communication failure.
+        """
+        address = self._map.gantry_status.get(camera_index)
+        if address is None:
+            return True
+        return self._read(address, 1)[0] == RegisterMap.GANTRY_ACTIVE
+
+    def gantry_status_configured(self, camera_index: int) -> bool:
+        return camera_index in self._map.gantry_status
+
     def _write_position(
         self, camera_index: int, position: tuple[float, float] | None
     ) -> None:
@@ -330,6 +355,7 @@ class PlcManager:
         positions: PositionMap,
         camera_results: dict[int, PlcResultCode],
         result: PlcResultCode,
+        skipped: "set[int] | frozenset[int] | None" = None,
     ) -> None:
         """Publish one complete inspection to the PLC.
 
@@ -339,11 +365,25 @@ class PlcManager:
         camera — not inspected this cycle), then the overall result code,
         then raises vision_complete — order matters: the PLC may read results
         the moment vision_complete goes high.
+
+        *skipped* names the cameras whose gantry the PLC reported inactive
+        (see :meth:`read_gantry_status`). Their position **and** result
+        registers are left completely untouched, so whatever the last cycle
+        that really inspected them wrote still stands. That is deliberately
+        unlike a camera merely missing from *camera_results*, which gets the
+        ERROR code: not-inspected-because-the-PLC-said-so is not a fault, and
+        writing the no-hole sentinel or ERROR over a stale-but-valid position
+        would tell the PLC something the vision system never measured.
         """
+        skipped = frozenset(skipped or ())
         for camera_index in sorted(self._map.camera_positions):
+            if camera_index in skipped:
+                continue
             self._write_position(camera_index, positions.get(camera_index))
 
         for camera_index, result_address in sorted(self._map.camera_results.items()):
+            if camera_index in skipped:
+                continue
             camera_result = camera_results.get(camera_index, PlcResultCode.ERROR)
             self._write(result_address, [int(camera_result)])
 
@@ -394,6 +434,28 @@ class PlcManager:
             "Camera %d inspection output written to PLC (result=%s)",
             camera_index,
             result.name,
+        )
+
+    def write_camera_skipped_output(self, camera_index: int) -> None:
+        """Answer a per-camera trigger raised for a camera whose gantry is
+        inactive, **without** claiming any measurement.
+
+        Releases that camera's trigger and raises its vision_complete in the
+        same order :meth:`write_camera_inspection_output` uses, so the PLC's
+        handshake completes and it never dead-waits on a trigger it should
+        not have raised — but no position and no result register is written,
+        because nothing was captured or judged. The camera's last real values
+        therefore still stand, matching how a skipped camera is treated in
+        :meth:`write_inspection_output`.
+        """
+        self.clear_camera_trigger(camera_index)
+
+        complete_address = self._map.camera_vision_complete.get(camera_index)
+        if complete_address is not None:
+            self._write(complete_address, [1])
+        logger.info(
+            "Camera %d skipped (gantry inactive) — handshake answered, no result written",
+            camera_index,
         )
 
     def write_camera_status(self, camera_index: int, available: bool) -> bool:

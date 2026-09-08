@@ -101,8 +101,9 @@ def service_parts():
         has=lambda index: True, evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0)
     )
     plc = SimpleNamespace(
-        write_inspection_output=lambda positions, camera_results, result: None,
+        write_inspection_output=lambda positions, camera_results, result, skipped=None: None,
         read_serial_number=lambda: None,  # register not configured
+        read_gantry_status=lambda index: True,  # register not configured
     )
     database = SimpleNamespace(save_inspection=lambda cycle: 1)
     return cameras, app_state, calibration, plc, database
@@ -273,6 +274,7 @@ def test_single_camera_cycle_is_stamped_the_same_way(service_parts) -> None:
     plc = SimpleNamespace(
         write_camera_inspection_output=lambda index, position, result: None,
         read_serial_number=lambda: None,
+        read_gantry_status=lambda index: True,
     )
     shifts = FakeShifts("Evening")
     service = InspectionService(

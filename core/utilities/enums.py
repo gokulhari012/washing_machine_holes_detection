@@ -20,11 +20,20 @@ class ConnectionState(StrEnum):
 
 
 class InspectionResult(StrEnum):
-    """Outcome of a single camera detection or of a whole inspection cycle."""
+    """Outcome of a single camera detection or of a whole inspection cycle.
+
+    ``SKIPPED`` is not a judgement — it records that a camera was deliberately
+    *not* inspected because the PLC reported its gantry inactive (see
+    ``gantry_status`` in :mod:`core.plc.register_map`). It is stored and shown
+    like any other per-camera outcome, but is excluded from the cycle's overall
+    verdict and never written to a PLC result register: nothing was measured,
+    so that camera's registers keep whatever the last real cycle left in them.
+    """
 
     GOOD = "GOOD"
     NG = "NG"
     ERROR = "ERROR"
+    SKIPPED = "SKIPPED"
 
 
 class PlcResultCode(IntEnum):

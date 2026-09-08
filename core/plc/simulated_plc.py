@@ -12,6 +12,13 @@ it emulates the production handshake on a background thread:
     every N s: machine_number += 1, trigger := 1
     → waits for the PC to set vision_complete = 1 (or times out)
     → clears trigger and vision_complete, cycle complete
+
+Registers otherwise start at 0, with one exception: every configured
+``gantry_status`` register is seeded to ``RegisterMap.GANTRY_ACTIVE``, because
+0 there means "this camera's gantry is parked, skip it". Left at the default
+the simulator would model a station with all four gantries away and inspect
+nothing at all, which is not what "run the app with no hardware attached"
+means. Write 0 to one to simulate a parked gantry.
 """
 
 from __future__ import annotations
@@ -53,6 +60,11 @@ class SimulatedPlc(PlcClientBase):
         self._machine_number = initial_machine_number
         self._registers: dict[int, int] = defaultdict(int)
         self._coils: dict[int, bool] = defaultdict(bool)
+        # A parked gantry is 0, so an unseeded simulator would skip every
+        # camera and never inspect anything (see the module docstring).
+        if register_map is not None:
+            for address in register_map.gantry_status.values():
+                self._registers[address] = RegisterMap.GANTRY_ACTIVE
         self._lock = threading.Lock()
         self._connected = False
         self._stop = threading.Event()

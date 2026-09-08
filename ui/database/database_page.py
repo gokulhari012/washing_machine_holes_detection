@@ -43,7 +43,13 @@ from ui.theme import COLOR_DIM, COLOR_GOOD, COLOR_NG, COLOR_WARN
 PAGE_SIZE = 50
 EXPORT_CAP = 5000
 
-_RESULT_COLORS = {"GOOD": COLOR_GOOD, "NG": COLOR_NG, "ERROR": COLOR_WARN}
+_RESULT_COLORS = {
+    "GOOD": COLOR_GOOD,
+    "NG": COLOR_NG,
+    "ERROR": COLOR_WARN,
+    # SKIPPED is not a verdict — dimmed so it reads as "no judgement"
+    "SKIPPED": COLOR_DIM,
+}
 
 COLUMNS = [
     "ID", "Date", "Time", "Machine", "Serial",
@@ -92,7 +98,7 @@ class DatabasePage(QWidget):
         self._machine.setPlaceholderText("Machine No")
         self._machine.setFixedWidth(100)
         self._result = QComboBox()
-        self._result.addItems(["All", "GOOD", "NG", "ERROR"])
+        self._result.addItems(["All", "GOOD", "NG", "ERROR", "SKIPPED"])
         self._shift = QComboBox()
         self._shift.addItems(["All shifts", *self._shifts.schedule().names])
         self._shift.setToolTip("Filter by the shift an inspection was produced in")
