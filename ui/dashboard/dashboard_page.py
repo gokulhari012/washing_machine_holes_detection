@@ -1,8 +1,9 @@
-"""Dashboard: manual trigger bar, stat tiles, 2×2 camera grid, recent history.
+"""Dashboard: manual trigger bar, 2×2 camera grid, summary column.
 
 Entirely event-driven off :class:`AppState` signals — the page performs no
-polling and touches no hardware. Initial values (counters, history) come from
-the database once at construction.
+polling, touches no hardware and reads no database; the counters it starts
+from come from :class:`AppState`'s snapshot. Inspection history lives on the
+Database page.
 
 The trigger bar drives the manual cycle: "Simulate Trigger" runs one complete
 inspection, and the delay spin box sets how long the pipeline waits between
@@ -13,47 +14,33 @@ application — uses it.
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
+from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
-    QHeaderView,
     QLabel,
     QPushButton,
     QSpinBox,
-    QTableWidget,
-    QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
 from core.logging import get_logger
 from core.utilities import ConfigManager
-from core.utilities.enums import InspectionResult, LogSource
+from core.utilities.enums import LogSource
 from core.utilities.exceptions import ConfigurationError, VisionSystemError
 from models.app_state import AppState
 from models.dto import CameraInspectionData, InspectionCycleData
 from services.auth_service import AuthService
-from services.database_service import DatabaseService
 from services.inspection_service import DEFAULT_CAMERA_DELAY_MS, SEQUENTIAL_MODE
 from services.machine_model_service import MachineModelService
 from services.plc_service import PlcService
 from ui.dashboard.camera_panel import CameraPanel
-from ui.theme import COLOR_ACCENT, COLOR_DIM, COLOR_GOOD, COLOR_NG, COLOR_WARN
-from ui.widgets import StatTile
+from ui.dashboard.summary_panels import CameraCoordinatesPanel, CycleSummaryPanel
 
 logger = get_logger(LogSource.UI)
 
-HISTORY_LIMIT = 50
 MAX_CAMERA_DELAY_MS = 60000
-
-_RESULT_COLORS = {
-    InspectionResult.GOOD.value: COLOR_GOOD,
-    InspectionResult.NG.value: COLOR_NG,
-    InspectionResult.ERROR.value: COLOR_WARN,
-}
-
 
 class DashboardPage(QWidget):
     """The operator's main screen."""
@@ -61,7 +48,6 @@ class DashboardPage(QWidget):
     def __init__(
         self,
         app_state: AppState,
-        database_service: DatabaseService,
         camera_configs: list[dict],
         plc_service: PlcService,
         auth_service: AuthService,
@@ -73,7 +59,6 @@ class DashboardPage(QWidget):
     ) -> None:
         super().__init__(parent)
         self._app_state = app_state
-        self._database = database_service
         self._plc = plc_service
         self._auth = auth_service
         self._machine_models = machine_model_service
@@ -95,75 +80,42 @@ class DashboardPage(QWidget):
         header.addWidget(self._build_trigger_controls())
         root.addLayout(header)
 
-        # ------------------------------------------------------- stat tiles
-        tiles = QHBoxLayout()
-        tiles.setSpacing(10)
-        self._tile_serial = StatTile("Serial Number")
-        self._tile_status = StatTile("Status", "IDLE", accent=COLOR_DIM)
-        self._tile_total = StatTile("Product Count", "0")
-        self._tile_good = StatTile("Good", "0", accent=COLOR_GOOD)
-        self._tile_ng = StatTile("NG", "0", accent=COLOR_NG)
-        self._tile_trigger = StatTile("Last Trigger")
-        model_name, model_code = app_state.active_machine_model
-        self._tile_model = StatTile(
-            "Machine Model", f"{model_name} ({model_code})" if model_name else "—"
-        )
-        for tile in (
-            self._tile_serial,
-            self._tile_status,
-            self._tile_total,
-            self._tile_good,
-            self._tile_ng,
-            self._tile_trigger,
-            self._tile_model,
-        ):
-            tiles.addWidget(tile)
-        root.addLayout(tiles)
-
-        # ---------------------------- 2×2 camera grid + history side panel
+        # --------------------- 2×2 camera grid + summary cards on the right
         content = QHBoxLayout()
         content.setSpacing(10)
 
         grid = QGridLayout()
         grid.setSpacing(10)
         self._panels: dict[int, CameraPanel] = {}
+        camera_names: list[tuple[int, str]] = []
         enabled = [cfg for cfg in camera_configs if cfg.get("enabled", True)][:4]
         for position, cfg in enumerate(sorted(enabled, key=lambda c: int(c["index"]))):
             index = int(cfg["index"])
-            panel = CameraPanel(index, str(cfg.get("name", f"Camera {cfg['index']}")))
+            name = str(cfg.get("name", f"Camera {cfg['index']}"))
+            camera_names.append((index, name))
+            panel = CameraPanel(index, name)
             panel.set_home_enabled(self._plc.jog_configured(index))
             panel.set_trigger_enabled(on_camera_trigger is not None)
             panel.home_requested.connect(self._on_home_requested)
             panel.trigger_requested.connect(self._on_camera_trigger_clicked)
             self._panels[index] = panel
             grid.addWidget(panel, position // 2, position % 2)
-        content.addLayout(grid, stretch=3)
+        content.addLayout(grid, stretch=4)
 
-        # ------------------------------------------------------ history table
-        history_col = QVBoxLayout()
-        history_col.setSpacing(6)
-        history_label = QLabel("Recent Inspections")
-        history_label.setProperty("class", "dim")
-        history_col.addWidget(history_label)
-
-        self._table = QTableWidget(0, 5)
-        self._table.setHorizontalHeaderLabels(
-            ["S.No", "Time", "Machine", "Result", "Cycle (ms)"]
-        )
-        self._table.verticalHeader().setVisible(False)
-        self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self._table.setAlternatingRowColors(True)
-        header = self._table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        # The last column (numeric, narrow) gets its own width instead of
-        # stretching: with 50 rows the table grows its own vertical
-        # scrollbar, and an all-Stretch header sizes columns against the
-        # viewport width from *before* that scrollbar appears, clipping
-        # whatever is stretched into the space the scrollbar then claims.
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
-        history_col.addWidget(self._table, stretch=1)
-        content.addLayout(history_col, stretch=1)
+        # The right-hand column: cycle summary on top, the cameras' hole
+        # coordinates below, both fed from AppState signals.
+        side = QVBoxLayout()
+        side.setSpacing(10)
+        self._summary = CycleSummaryPanel()
+        self._coordinates = CameraCoordinatesPanel(camera_names)
+        model_name, model_code = app_state.active_machine_model
+        if model_name:
+            self._summary.set_model(f"{model_name} ({model_code})")
+        self._summary.set_shift(self._stored_shift())
+        side.addWidget(self._summary)
+        side.addWidget(self._coordinates)
+        side.addStretch()
+        content.addLayout(side, stretch=1)
 
         root.addLayout(content, stretch=1)
 
@@ -273,14 +225,6 @@ class DashboardPage(QWidget):
     def _load_initial(self) -> None:
         total, good, ng = self._app_state.counters
         self._on_counters(total, good, ng)
-        for row in reversed(self._database.inspections.get_recent(HISTORY_LIMIT)):
-            self._insert_history_row(
-                row.id,
-                row.created_at.strftime("%H:%M:%S"),
-                row.serial_number or str(row.machine_number),
-                row.overall_result,
-                f"{row.plc_cycle_time_ms:.0f}",
-            )
 
     # ----------------------------------------------------------------- slots
     def _on_preview(self, camera_index: int, frame) -> None:
@@ -299,6 +243,7 @@ class DashboardPage(QWidget):
         panel = self._panels.get(camera_index)
         if panel is not None:
             panel.show_result(data)
+        self._show_coordinates(camera_index, data)
 
     def _on_camera_state(self, camera_index: int, state: str) -> None:
         panel = self._panels.get(camera_index)
@@ -306,34 +251,29 @@ class DashboardPage(QWidget):
             panel.set_camera_state(state)
 
     def _on_trigger(self, machine_number: int) -> None:
-        self._tile_status.set_value("RUNNING")
-        self._tile_status.set_accent(COLOR_ACCENT)
-        self._tile_serial.set_value(str(machine_number))
+        self._summary.set_serial(str(machine_number))
+        # Last cycle's coordinates are about to be replaced camera by
+        # camera; blanking them keeps a stale reading from being read as
+        # this machine's.
+        self._coordinates.clear()
         self._set_triggers_enabled(False)  # one cycle at a time
 
     def _on_inspection(self, cycle: InspectionCycleData) -> None:
         self._set_triggers_enabled(True)
-        result = cycle.overall_result.value
-        self._tile_status.set_value(result)
-        self._tile_status.set_accent(_RESULT_COLORS.get(result, COLOR_DIM))
-        self._tile_serial.set_value(cycle.serial_number)
-        self._tile_trigger.set_value(cycle.started_at.strftime("%H:%M:%S"))
+        self._summary.set_serial(cycle.serial_number)
+        self._summary.set_last_trigger(cycle.started_at.strftime("%H:%M:%S"))
+        self._summary.push_cycle_time(cycle.plc_cycle_time_ms)
+        if cycle.shift:
+            self._summary.set_shift(cycle.shift)
 
         for camera_index, data in cycle.cameras.items():
             panel = self._panels.get(camera_index)
             if panel is not None:
                 panel.show_result(data)
-
-        self._insert_history_row(
-            cycle.inspection_id if cycle.inspection_id is not None else "—",
-            cycle.started_at.strftime("%H:%M:%S"),
-            cycle.serial_number,
-            result,
-            f"{cycle.plc_cycle_time_ms:.0f}",
-        )
+            self._show_coordinates(camera_index, data)
 
     def _on_machine_model_changed(self, name: str, code: int) -> None:
-        self._tile_model.set_value(f"{name} ({code})")
+        self._summary.set_model(f"{name} ({code})")
 
     def _on_home_requested(self, camera_index: int) -> None:
         """Home button on a camera panel — moves the camera to the *active*
@@ -365,22 +305,26 @@ class DashboardPage(QWidget):
             self._app_state.raise_alarm("warning", f"Camera {camera_index} move failed: {exc}")
 
     def _on_counters(self, total: int, good: int, ng: int) -> None:
-        self._tile_total.set_value(total)
-        self._tile_good.set_value(good)
-        self._tile_ng.set_value(ng)
+        """Only the total is shown; good/ng still arrive on the signal and
+        remain available in history and reports."""
+        self._summary.set_product_count(total)
 
     # ------------------------------------------------------------- internal
-    def _insert_history_row(
-        self, serial_no, time_text: str, machine: str, result: str, cycle_ms: str
-    ) -> None:
-        self._table.insertRow(0)
-        for column, value in enumerate(
-            (str(serial_no), time_text, machine, result, cycle_ms)
-        ):
-            item = QTableWidgetItem(value)
-            item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
-            if column == 3:
-                item.setForeground(QColor(_RESULT_COLORS.get(result, COLOR_DIM)))
-            self._table.setItem(0, column, item)
-        while self._table.rowCount() > HISTORY_LIMIT:
-            self._table.removeRow(self._table.rowCount() - 1)
+    def _show_coordinates(self, camera_index: int, data: CameraInspectionData) -> None:
+        """A camera with no hole has no coordinate to show — its registers
+        carry the no-hole sentinel, not a position."""
+        if data.hole_found:
+            self._coordinates.set_position(camera_index, data.x_mm, data.y_mm)
+        else:
+            self._coordinates.clear_position(camera_index)
+
+    def _stored_shift(self) -> str:
+        """Shift as configured on the Settings page (what the pipeline
+        stamps on each cycle); a completed cycle overwrites it."""
+        if self._config is None:
+            return ""
+        try:
+            return str(self._config.get_value("app_config", "application.shift", ""))
+        except (ConfigurationError, TypeError, ValueError):
+            return ""
+

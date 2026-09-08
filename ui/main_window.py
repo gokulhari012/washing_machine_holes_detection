@@ -80,6 +80,13 @@ class MainWindow(QMainWindow):
         toolbar.setIconSize(QSize(18, 18))
         self.addToolBar(Qt.ToolBarArea.TopToolBarArea, toolbar)
 
+        self._nav_button = QPushButton("Menu")
+        self._nav_button.setCheckable(True)
+        self._nav_button.setToolTip("Show/hide the navigation rail")
+        self._nav_button.toggled.connect(self._set_nav_visible)
+        toolbar.addWidget(self._space(6))
+        toolbar.addWidget(self._nav_button)
+
         brand = QLabel("  ◉ WM Hole Detection")
         brand.setStyleSheet("font-size: 15px; font-weight: 700; color: #e8ecf2;")
         toolbar.addWidget(brand)
@@ -122,6 +129,12 @@ class MainWindow(QMainWindow):
         self._nav.setObjectName("navRail")
         self._nav.setFixedWidth(NAV_WIDTH)
         self._nav.currentRowChanged.connect(self._on_nav_changed)
+        # Hidden on startup: the operator lives on the Dashboard, and the
+        # extra width belongs to the camera pictures. The toolbar's Menu
+        # button
+        # brings it back. Hiding the widget (rather than removing it) keeps
+        # row selection, page order and admin visibility working untouched.
+        self._nav.setVisible(False)
         outer.addWidget(self._nav)
 
         right = QVBoxLayout()
@@ -208,6 +221,9 @@ class MainWindow(QMainWindow):
         if self._nav.count() == 1:
             self._nav.setCurrentRow(0)
         self._refresh_nav_visibility()
+
+    def _set_nav_visible(self, visible: bool) -> None:
+        self._nav.setVisible(visible)
 
     def show_page(self, index: int) -> None:
         self._nav.setCurrentRow(index)

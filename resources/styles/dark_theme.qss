@@ -275,6 +275,19 @@ QLabel#tileTitle {
 }
 QLabel#tileValue { font-size: 26px; font-weight: 700; color: #e8ecf2; }
 
+/* Dashboard summary cards (cycle summary, camera coordinates): a denser
+   label/value pair than a stat tile, several to a card. */
+QLabel#cellTitle {
+    color: #8b95a3; font-size: 12px; font-weight: 600; letter-spacing: 1px;
+}
+QLabel#cellValue { font-size: 17px; font-weight: 600; color: #e8ecf2; }
+QLabel#cellValueLarge { font-size: 27px; font-weight: 700; color: #e8ecf2; }
+/* Camera names read as captions, not values — same grey as the X/Y titles. */
+QLabel#cellHeading {
+    color: #8b95a3; font-size: 14px; font-weight: 700;
+    border-top: 1px solid #2e3642; padding-top: 6px;
+}
+
 QFrame#alarmBanner { border-radius: 6px; }
 QFrame#alarmBanner[severity="error"]   { background-color: #3d1418; border: 1px solid #f85149; }
 QFrame#alarmBanner[severity="warning"] { background-color: #3a2d10; border: 1px solid #d29922; }

@@ -172,7 +172,6 @@ class Application:
             "▦",
             DashboardPage(
                 self.app_state,
-                self.database,
                 self.camera_configs,
                 self.plc_service,
                 self.auth_service,
