@@ -36,8 +36,13 @@ def test_evaluate_with_image_dims_rebases_to_image_center() -> None:
     x_mm, y_mm, _ = manager.evaluate(1, 500.0, 400.0, image_width=1000, image_height=800)
     assert (x_mm, y_mm) == pytest.approx((0.0, 0.0))
 
-    # a hole 100px right / 80px below that centre pixel -> +10mm / +8mm from centre
+    # a hole 100px right / 80px below that centre pixel -> +10mm / -8mm from centre
+    # (Y is flipped on re-basing: below centre is negative, up is positive)
     x_mm, y_mm, _ = manager.evaluate(1, 600.0, 480.0, image_width=1000, image_height=800)
+    assert (x_mm, y_mm) == pytest.approx((10.0, -8.0))
+
+    # ...and a hole above the centre reports positive y
+    x_mm, y_mm, _ = manager.evaluate(1, 600.0, 320.0, image_width=1000, image_height=800)
     assert (x_mm, y_mm) == pytest.approx((10.0, 8.0))
 
 
@@ -57,6 +62,10 @@ def test_evaluate_uncalibrated_camera_falls_back_to_identity_rebased_to_center()
     x_mm, y_mm, deviation = manager.evaluate(9, 500.0, 400.0, image_width=1000, image_height=800)
     assert (x_mm, y_mm) == pytest.approx((0.0, 0.0))
     assert deviation is None
+
+    # identity fallback flips Y the same way: below centre reads negative
+    x_mm, y_mm, _ = manager.evaluate(9, 600.0, 480.0, image_width=1000, image_height=800)
+    assert (x_mm, y_mm) == pytest.approx((100.0, -80.0))
 
     x_mm, y_mm, deviation = manager.evaluate(9, 500.0, 400.0)
     assert (x_mm, y_mm) == (500.0, 400.0)

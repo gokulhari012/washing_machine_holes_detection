@@ -12,7 +12,8 @@
 
 The x_mm/y_mm reported to the PLC, dashboard and database are relative to
 the analysed (ROI-cropped) image's own centre — a hole exactly centred in
-frame always reports (0, 0) — see ``CalibrationManager.evaluate``.
+frame always reports (0, 0) — and Y points *up*, so a hole below the centre
+reports a negative y_mm. See ``CalibrationManager.evaluate``.
 
 Capture modes (``app_config.inspection``):
 

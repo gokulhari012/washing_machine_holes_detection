@@ -178,8 +178,11 @@ right hole when several real holes are in frame.
 **Coordinate convention (important):** the `x_mm`/`y_mm` reported to PLC, dashboard
 and DB are relative to the **analysed image's own centre** — a hole exactly centred
 in frame always reports `(0, 0)`, regardless of the calibration's coordinate frame.
-The tolerance judgement (`deviation_mm`) is computed *before* re-basing, so re-basing
-never shifts the GOOD/NG verdict. See `CalibrationManager.evaluate`.
+**Y points up**: re-basing also flips the Y sign, because pixel rows grow downward
+while the machine/servo convention has up positive — a hole *below* the image centre
+reports a negative `y_mm`. X needs no flip (right is positive either way).
+The tolerance judgement (`deviation_mm`) is computed *before* re-basing (and before
+the flip), so neither shifts the GOOD/NG verdict. See `CalibrationManager.evaluate`.
 
 **Uncalibrated fallback:** identity mapping, 1 px = 1 mm, `deviation_mm=None`,
 tolerance check disabled. The system runs out of the box.

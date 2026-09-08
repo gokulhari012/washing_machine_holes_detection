@@ -97,9 +97,16 @@ class CalibrationManager:
         as ``(0, 0)`` — the convention the PLC output, dashboard and database
         use, so a hole sitting exactly at the centre of frame always reports
         ``(0, 0)`` regardless of the camera's calibrated coordinate frame.
+
+        Re-basing also **flips the Y sign**: pixel rows grow downward, but the
+        reported coordinate follows the machine/servo convention where up is
+        positive, so a hole below the image centre reports a *negative* y_mm.
+        X is untouched (rightward is positive in both conventions).
+
         The tolerance judgement (``deviation_mm``) is computed *before* that
         re-basing, against the reference point in the calibration's own
-        (uncentred) frame, so re-basing never shifts the GOOD/NG verdict.
+        (uncentred, image-oriented) frame, so re-basing never shifts the
+        GOOD/NG verdict.
 
         Returns:
             ``(x_mm, y_mm, deviation_mm)`` — ``deviation_mm`` is ``None`` when
@@ -111,12 +118,12 @@ class CalibrationManager:
             x_mm, y_mm = float(x_px), float(y_px)
             if image_width and image_height:
                 x_mm -= image_width / 2
-                y_mm -= image_height / 2
+                y_mm = image_height / 2 - y_mm
             return x_mm, y_mm, None
         x_mm, y_mm = calibration.pixel_to_mm(x_px, y_px)
         deviation = calibration.deviation_mm(x_mm, y_mm)
         if image_width and image_height:
             center_x_mm, center_y_mm = calibration.pixel_to_mm(image_width / 2, image_height / 2)
             x_mm -= center_x_mm
-            y_mm -= center_y_mm
+            y_mm = center_y_mm - y_mm
         return x_mm, y_mm, deviation
