@@ -74,8 +74,20 @@ class SettingsPage(QWidget):
         self._storage_box = QGroupBox("Storage && Backup")
         storage = QFormLayout(self._storage_box)
         self._save_images = QCheckBox("Save inspection images")
+        self._save_images.setToolTip(
+            "Write the annotated picture of every camera to images/<date>/."
+        )
         self._ng_only = QCheckBox("Save NG images only")
+        self._ng_only.setToolTip(
+            "Skip pictures of cameras that judged GOOD; NG and ERROR are still saved."
+        )
+        # "NG only" filters the saving loop, so it means nothing while saving
+        # is off entirely — grey it out rather than let it read as active.
+        self._save_images.toggled.connect(self._ng_only.setEnabled)
         self._auto_backup = QCheckBox("Automatic daily backup")
+        self._auto_backup.setToolTip(
+            "Checked every 30 minutes; takes at most one backup per calendar day."
+        )
         self._retention = QSpinBox()
         self._retention.setRange(0, 3650)
         self._retention.setSuffix(" days")
@@ -85,7 +97,17 @@ class SettingsPage(QWidget):
         storage.addRow("", self._save_images)
         storage.addRow("", self._ng_only)
         storage.addRow("", self._auto_backup)
+        storage.addRow("", self._note(
+            "Copies the whole inspection database (results, measurements and "
+            "settings history) to backups/inspection_<date>_<time>.db. The "
+            "newest 30 backup files are kept. Saved images are not included."
+        ))
         storage.addRow("Retention", self._retention)
+        storage.addRow("", self._note(
+            "Permanently deletes inspection records and log entries older than "
+            "this from the database. Saved image files are never deleted — "
+            "clear images/ by hand. 0 keeps everything forever."
+        ))
         storage.addRow(backup_now)
         left.addWidget(self._storage_box)
 
@@ -125,6 +147,14 @@ class SettingsPage(QWidget):
         self._load()
         self._apply_protection()
 
+    @staticmethod
+    def _note(text: str) -> QLabel:
+        """Small wrapped caption explaining what a storage option actually does."""
+        label = QLabel(text)
+        label.setProperty("class", "dim")
+        label.setWordWrap(True)
+        return label
+
     def showEvent(self, event) -> None:  # noqa: N802
         """Login now happens in the toolbar, outside this page — re-sync
         session state and the enabled/disabled boxes every time an admin
@@ -144,6 +174,7 @@ class SettingsPage(QWidget):
         self._serial_prefix.setText(application.get("serial_prefix", ""))
         self._save_images.setChecked(bool(storage.get("save_images", True)))
         self._ng_only.setChecked(bool(storage.get("save_ng_only", False)))
+        self._ng_only.setEnabled(self._save_images.isChecked())
         self._auto_backup.setChecked(bool(database.get("auto_backup", True)))
         self._retention.setValue(int(database.get("retention_days", 90)))
 
