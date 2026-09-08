@@ -44,7 +44,37 @@ class CameraService:
 
     # -------------------------------------------------------------- queries
     def get_configs(self) -> list[dict]:
+        """The persisted camera.json entries — the manually maintained baseline."""
         return self._config.load("camera").get("cameras", [])
+
+    def get_effective_configs(self) -> list[dict]:
+        """camera.json entries with any *live* overrides merged over them.
+
+        What the cameras are actually running right now, which is not the
+        same document as camera.json: :meth:`apply_live` — used by the Camera
+        page's "Apply Live" and by every machine-model switch
+        (``MachineModelService.apply_profile``) — deliberately never
+        persists. A UI that reads :meth:`get_configs` therefore shows the
+        pre-switch baseline after a model change; anything displaying what
+        the station is *doing* must read this instead.
+
+        A camera present in the file but not in the manager (it failed to
+        construct) falls back to its file entry, so the list never loses a
+        row just because a device is missing.
+        """
+        live = self._manager.cameras
+        effective: list[dict] = []
+        for cfg in self.get_configs():
+            camera = live.get(int(cfg.get("index", -1)))
+            effective.append(camera.settings.to_config() if camera is not None else cfg)
+        return effective
+
+    def effective_config(self, index: int) -> dict | None:
+        """One camera's live-effective entry, or None if it isn't configured."""
+        for cfg in self.get_effective_configs():
+            if int(cfg.get("index", -1)) == index:
+                return cfg
+        return None
 
     def camera_fps(self, index: int) -> float:
         """Configured frame rate for camera ``index``, as set on the Camera page.

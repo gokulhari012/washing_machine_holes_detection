@@ -21,7 +21,7 @@ over Ethernet; every cycle is stored in SQLite with an annotated PNG.
 ```bash
 python main.py                # normal start
 python main.py --selftest 8   # start hidden, run 8 s, save logs/selftest.png, exit 0
-pytest                        # 317 tests, ~3 s, all passing as of 2026-09-08
+pytest                        # 325 tests, ~7 s, all passing as of 2026-09-08
 python tools/hole_debug.py path/to/images/   # detector tuner; --camera N applies that camera's ROI
 python scripts/build_exe.py   # PyInstaller onedir -> dist/WMHoleDetection/
 ```
@@ -488,6 +488,29 @@ calibration a camera rejects → warning, skipped); detection is **all-or-nothin
 A camera with no calibration entry in the profile is simply left alone — the map is
 sparse by convention, never padded with blanks.
 
+### Applying a profile is invisible to the config files — so the UI reads live state
+
+Because applying persists nothing, **every engineering page reads the running
+objects, not the JSON/DB**, or it renders the outgoing model:
+
+| Page | Reads | Not |
+|---|---|---|
+| Camera | `CameraService.get_effective_configs()` / `.effective_config(i)` — camera.json with the live `CameraManager` settings merged over it (`CameraSettings.to_config()`) | `get_configs()`, which is the persisted baseline |
+| Detection | `VisionEngine.camera_config(i)` — the raw block that camera's detector was built from | `detection.json` |
+| Calibration | `CalibrationManager.get(i)` — already the live cache `apply_live` writes | the calibration table |
+
+`AppState.active_machine_model_changed` is the notice they reload on. It is
+emitted **after** `apply_profile` returns, by both callers
+(`Application._on_machine_model_changed` and the Machine Models page's "Apply
+Now"); emit it before and the pages repaint from the outgoing model. The
+Dashboard tile and the Machine Models page listen to the same signal for the
+model *name*.
+
+Consequence on the Camera page: **Save writes back what is on screen**, so
+saving after a model switch bakes that model's ROI/exposure into camera.json.
+That is WYSIWYG and intended — the alternative (form showing one thing, Save
+writing another) is worse.
+
 ---
 
 ## 9. Gotchas & traps
@@ -579,6 +602,16 @@ no-hole sentinel + ERROR — don't: that reports a measurement the station never
 took. `InspectionResult.SKIPPED` exists precisely so the skip is recorded and
 auditable instead of invisible; it is excluded from the overall verdict and from
 `_RESULT_TO_PLC`, and has no PLC result code of its own.
+
+**A page that reads a config file shows the previous machine model.** This is
+the trap the whole “preview, don't persist” design sets: `apply_profile`
+changes the running cameras, detectors and calibrations while camera.json,
+detection.json and the calibration table keep the manually maintained
+baseline. Any new UI that renders one of those files is therefore correct on a
+station that never switches model and silently wrong on one that does — read
+the live accessors listed in [§8](#8-config-system) and reload on
+`AppState.active_machine_model_changed` instead. `tests/test_live_settings_readback.py`
+and `tests/test_machine_model_page_refresh.py` pin both halves.
 
 **The PLC DB audit mirror is incomplete.** `PlcService._mirror_to_database` and the
 `plc_configurations` table cover only the original 100–119 registers — `model_select`,

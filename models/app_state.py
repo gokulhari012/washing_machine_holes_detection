@@ -26,7 +26,9 @@ class AppState(QObject):
     # connection / hardware
     plc_state_changed = Signal(str)            # ConnectionState value
     camera_state_changed = Signal(int, str)    # camera index, ConnectionState value
-    active_machine_model_changed = Signal(str, int)  # profile name, PLC code
+    # profile name, PLC code - also the "your settings just changed" notice
+    # the engineering pages reload on (see set_active_machine_model)
+    active_machine_model_changed = Signal(str, int)
     current_shift_changed = Signal(str)        # shift name, from the configured rota
 
     # inspection flow
@@ -69,6 +71,18 @@ class AppState(QObject):
         self.camera_state_changed.emit(camera_index, state.value)
 
     def set_active_machine_model(self, name: str, plc_code: int) -> None:
+        """Publish the model whose profile has just been applied.
+
+        Emitted *after* ``MachineModelService.apply_profile`` returns, by
+        both callers - the PLC's model_select handler in the composition root
+        and the Machine Models page's "Apply Now". Because applying is
+        deliberately "preview, don't persist" (camera.json, detection.json
+        and the calibration database are all left alone), this signal is the
+        only notice the engineering pages get that the settings underneath
+        their forms just changed; the Camera, Detection and Calibration pages
+        re-read their live state on it. Keep the emit after the apply, or
+        they will repaint from the outgoing model.
+        """
         with self._lock:
             self._active_machine_model = name
             self._active_machine_model_code = plc_code

@@ -5,8 +5,15 @@ strategy, that strategy's parameters, and its own common judgement
 thresholds (confidence, expected hole count, position tolerance). The
 "Camera" selector at the top chooses which camera's block is being edited
 *and* which camera "Test on Camera" captures from — switching it reloads the
-form from that camera's saved block and discards any unsaved edits on the
+form from that camera's *live* block and discards any unsaved edits on the
 form, without touching the other cameras' live detectors.
+
+The form always mirrors what the engine is running, never detection.json:
+a machine-model switch (``MachineModelService.apply_profile``) hot-swaps
+every camera's strategy without persisting, so the file holds the previous
+model's parameters while the detectors run the new ones. The page reloads
+itself on ``AppState.active_machine_model_changed`` for the same reason -
+nothing else would tell it the parameters underneath it just changed.
 
 "Save & Apply" hot-swaps only the selected camera's running detector
 (``VisionEngine.apply_camera_config``) and persists only that camera's block
@@ -67,6 +74,7 @@ from core.vision import (
     draw_debug_overlay,
     draw_detection_overlay,
 )
+from models.app_state import AppState
 from services.camera_service import CameraService
 from ui.widgets import RoiEditor
 
@@ -211,6 +219,7 @@ class DetectionPage(QWidget):
         config_manager: ConfigManager,
         vision_engine: VisionEngine,
         camera_service: CameraService,
+        app_state: AppState,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -234,9 +243,10 @@ class DetectionPage(QWidget):
         camera_row = QHBoxLayout()
         camera_row.addWidget(QLabel("Camera"))
         self._camera = QComboBox()
-        for cfg in self._cameras.get_configs():
+        for cfg in self._cameras.get_effective_configs():
             self._camera.addItem(f"{cfg['index']}: {cfg.get('name', '')}", cfg["index"])
         self._camera.currentIndexChanged.connect(self._on_camera_changed)
+        app_state.active_machine_model_changed.connect(self._on_machine_model_applied)
         camera_row.addWidget(self._camera, stretch=1)
         left.addLayout(camera_row)
 
@@ -535,11 +545,23 @@ class DetectionPage(QWidget):
         return int(data) if data is not None else None
 
     def _load(self) -> None:
+        """Fill the form from the block that camera's detector is *running*.
+
+        Not from detection.json: ``VisionEngine.apply_config`` /
+        ``apply_camera_config`` are "preview, don't persist" entry points, so
+        after a machine-model switch (``MachineModelService.apply_profile``)
+        the file still holds the previous model's parameters while the engine
+        runs the new ones. Showing the file there would describe a detector
+        nothing is using. Falls back to detection.json for a camera the
+        engine has no strategy for.
+        """
         camera_index = self._camera_index()
         if camera_index is None:
             return
-        document = self._config.load("detection")
-        cfg = document.get("cameras", {}).get(str(camera_index), {})
+        cfg = self._engine.camera_config(camera_index)
+        if cfg is None:
+            document = self._config.load("detection")
+            cfg = document.get("cameras", {}).get(str(camera_index), {})
         common = cfg.get("common", {})
         self._confidence.setValue(float(common.get("confidence_threshold", 0.6)))
         self._expected.setValue(int(common.get("expected_hole_count", 1)))
@@ -710,14 +732,50 @@ class DetectionPage(QWidget):
         else:
             self._view.set_frame(draw_detection_overlay(self._last_frame, self._last_result))
 
+    def _on_machine_model_applied(self, name: str, plc_code: int) -> None:
+        """A machine-model profile was pushed live — re-read the engine.
+
+        ``apply_profile`` hot-swaps every camera's strategy and parameters
+        without writing detection.json, so without this the form keeps
+        showing the previous model's block. The camera list is rebuilt too,
+        since the profile may have renamed the cameras it applied to.
+        """
+        self._reload_cameras()
+        self._load()
+        self._update_sweep_availability(self._strategy.currentText())
+        self._clear_test_results()
+
+    def _reload_cameras(self) -> None:
+        """Refill the camera selector, keeping the current camera selected."""
+        selected = self._camera_index()
+        blocked = self._camera.blockSignals(True)
+        try:
+            self._camera.clear()
+            for cfg in self._cameras.get_effective_configs():
+                self._camera.addItem(f"{cfg['index']}: {cfg.get('name', '')}", cfg["index"])
+            position = self._camera.findData(selected)
+            self._camera.setCurrentIndex(position if position >= 0 else 0)
+        finally:
+            self._camera.blockSignals(blocked)
+
     def _on_camera_changed(self) -> None:
-        """Reload the form for the newly selected camera; any unsaved edits on
-        the previous camera's form are discarded (matches the Calibration
-        page's camera switch), and any Test/Debug/Auto-Sweep result from the
-        previous camera is cleared since it no longer matches what's on screen.
+        """Reload the form for the newly selected camera; edits on the previous
+        camera's form that were never applied to its detector are discarded
+        (matches the Calibration page's camera switch), and any
+        Test/Debug/Auto-Sweep result from the previous camera is cleared since
+        it no longer matches what's on screen.
         """
         self._load()
         self._update_sweep_availability(self._strategy.currentText())
+        self._clear_test_results()
+
+    def _clear_test_results(self) -> None:
+        """Drop the last Test/Debug frame and Auto-Sweep table.
+
+        Called whenever the parameters on screen stop describing the run that
+        produced them — a camera switch, or a machine-model switch that
+        re-tuned the detector underneath the page.
+        """
         self._last_frame = None
         self._last_result = None
         self._last_camera_index = None

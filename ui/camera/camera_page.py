@@ -323,6 +323,7 @@ class CameraPage(QWidget):
 
         app_state.preview_frame.connect(self._on_preview_frame)
         app_state.camera_state_changed.connect(self._on_camera_state)
+        app_state.active_machine_model_changed.connect(self._on_machine_model_applied)
         self._on_driver_changed(self._driver.currentText())
         self.reload()
 
@@ -332,7 +333,7 @@ class CameraPage(QWidget):
         selected = self._current_index()
         self._list.clear()
         self._row_indexes = []
-        for cfg in self._svc.get_configs():
+        for cfg in self._svc.get_effective_configs():
             self._row_indexes.append(int(cfg["index"]))
             self._list.addItem(f"{cfg['index']}: {cfg.get('name', '')}")
         if self._row_indexes:
@@ -344,14 +345,37 @@ class CameraPage(QWidget):
         return self._row_indexes[row] if 0 <= row < len(self._row_indexes) else None
 
     def _current_config(self) -> dict | None:
+        """The selected camera as it is *running*, not as camera.json has it.
+
+        Reads the live-effective entry (see
+        ``CameraService.get_effective_configs``) so the form shows the values
+        a machine-model switch or an "Apply Live" actually pushed to the
+        device — neither of which persists. Save therefore writes back what
+        is on screen, which is what the operator is looking at.
+        """
         index = self._current_index()
-        for cfg in self._svc.get_configs():
+        for cfg in self._svc.get_effective_configs():
             if int(cfg["index"]) == index:
                 return cfg
         return None
 
     def _on_select(self, row: int) -> None:
         self._continuous_btn.setChecked(False)  # stop streaming the camera we're leaving
+        self._populate_form()
+
+    def _on_machine_model_applied(self, name: str, plc_code: int) -> None:
+        """A machine-model profile was pushed live — re-read the cameras.
+
+        ``MachineModelService.apply_profile`` changes ROI/exposure/gain/... on
+        the running cameras without writing camera.json, so nothing else
+        would tell this page its form is now describing the previous model.
+        Continuous Capture is deliberately left running: the camera it is
+        streaming has not changed, only its settings.
+        """
+        self.reload()
+        self._populate_form()
+
+    def _populate_form(self) -> None:
         cfg = self._current_config()
         if cfg is None:
             return

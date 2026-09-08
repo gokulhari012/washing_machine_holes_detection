@@ -157,6 +157,47 @@ class CameraSettings:
         except (KeyError, ValueError, TypeError) as exc:
             raise ConfigurationError(f"Invalid camera configuration: {exc}") from exc
 
+    def to_config(self) -> dict:
+        """Serialise back into one ``cameras[]`` entry of camera.json.
+
+        The inverse of :meth:`from_config`, and the only way the UI can read
+        back settings that were pushed *live* without being persisted — a
+        machine-model switch (``MachineModelService.apply_profile``) and
+        "Apply Live" both change the running camera without touching
+        camera.json, so a page that reads only the file shows stale values.
+
+        Starts from ``extra`` — the whole raw entry this was built from — so
+        driver-specific blocks (``basler``, ``simulation``, ``image_source``)
+        survive the round trip, then overwrites every field the dataclass
+        owns, which is exactly the set an override can have changed.
+        """
+        cfg = dict(self.extra)
+        cfg.update(
+            {
+                "index": self.index,
+                "name": self.name,
+                "driver": self.driver.value,
+                "connection_id": self.connection_id,
+                "enabled": self.enabled,
+                "exposure_us": self.exposure_us,
+                "gain_db": self.gain_db,
+                "gamma": self.gamma,
+                "brightness": self.brightness,
+                "fps": self.fps,
+                "rotation": self.rotation,
+                "width": self.width,
+                "height": self.height,
+                "trigger_mode": self.trigger_mode.value,
+                "roi": {
+                    "x": self.roi[0],
+                    "y": self.roi[1],
+                    "width": self.roi[2],
+                    "height": self.roi[3],
+                },
+            }
+        )
+        return cfg
+
 
 class CameraBase(ABC):
     """Contract + shared behaviour for every camera driver."""

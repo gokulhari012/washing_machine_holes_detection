@@ -67,6 +67,12 @@ class _CameraDetector:
     detector: HoleDetector
     common: dict[str, Any]
     detect_lock: threading.Lock | None  # only set when the strategy is not thread-safe
+    # The raw per-camera block this was built from, kept verbatim so the
+    # Detection page can render what the engine is *running* rather than what
+    # detection.json says: a machine-model switch hot-swaps strategies
+    # without persisting (see MachineModelService.apply_profile), so the file
+    # and the live engine legitimately disagree after one.
+    config: dict[str, Any]
 
 
 class VisionEngine:
@@ -129,7 +135,12 @@ class VisionEngine:
         detector = _REGISTRY[detector_type](params)
         common = dict(camera_config.get("common", {}))
         detect_lock = None if detector.thread_safe else threading.Lock()
-        return _CameraDetector(detector=detector, common=common, detect_lock=detect_lock)
+        return _CameraDetector(
+            detector=detector,
+            common=common,
+            detect_lock=detect_lock,
+            config=copy.deepcopy(camera_config),
+        )
 
     def _camera(self, camera_index: int) -> _CameraDetector:
         with self._swap_lock:
@@ -139,6 +150,20 @@ class VisionEngine:
         return camera
 
     # ------------------------------------------------------------ properties
+    def camera_config(self, camera_index: int) -> dict[str, Any] | None:
+        """The per-camera detection block currently live for *camera_index*.
+
+        A deep copy, so a caller editing it cannot reach into the running
+        strategy. Returns None for a camera the engine has no strategy for.
+        Read this — not detection.json — anywhere the UI shows what the
+        engine is actually using: ``apply_config``/``apply_camera_config``
+        are "preview, don't persist" entry points, so after a machine-model
+        switch or a Detection-page "Test" the file is the older document.
+        """
+        with self._swap_lock:
+            camera = self._cameras.get(camera_index)
+        return copy.deepcopy(camera.config) if camera is not None else None
+
     def active_detector_name(self, camera_index: int) -> str:
         return self._camera(camera_index).detector.name
 

@@ -1,11 +1,11 @@
 {
   "cameras": {
     "1": {
-      "active_detector": "opencv",
+      "active_detector": "dark_hole",
       "common": {
-        "confidence_threshold": 0.4,
-        "expected_hole_count": 1,
-        "position_tolerance_mm": 2.5
+        "confidence_threshold": 0.1,
+        "expected_hole_count": 11,
+        "position_tolerance_mm": 1.0
       },
       "opencv": {
         "detection_threshold": 20,
@@ -29,12 +29,12 @@
       },
       "dark_hole": {
         "channel": "auto",
-        "blur_kernel_size": 3,
-        "min_contrast": 5,
+        "blur_kernel_size": 1,
+        "min_contrast": 1,
         "use_otsu": true,
         "morphology_kernel_size": 5,
         "min_hole_diameter_px": 50,
-        "max_hole_diameter_px": 58,
+        "max_hole_diameter_px": 1,
         "min_fill_ratio": 0.2,
         "max_fit_error": 0.4
       },

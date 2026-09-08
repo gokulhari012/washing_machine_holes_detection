@@ -66,6 +66,7 @@ from core.calibration import CalibrationManager, CameraCalibration, Checkerboard
 from core.camera import frame_interval_ms
 from core.utilities.exceptions import VisionSystemError
 from core.vision import VisionEngine, draw_detection_overlay
+from models.app_state import AppState
 from services.camera_service import CameraService
 from ui.widgets import PointPicker
 from workers import CheckerboardScanWorker
@@ -103,6 +104,7 @@ class CalibrationPage(QWidget):
         camera_service: CameraService,
         calibration_manager: CalibrationManager,
         vision_engine: VisionEngine,
+        app_state: AppState,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -136,9 +138,10 @@ class CalibrationPage(QWidget):
         camera_row = QHBoxLayout()
         camera_row.addWidget(QLabel("Camera"))
         self._camera = QComboBox()
-        for cfg in self._cameras.get_configs():
+        for cfg in self._cameras.get_effective_configs():
             self._camera.addItem(f"{cfg['index']}: {cfg.get('name', '')}", cfg["index"])
         self._camera.currentIndexChanged.connect(self._load_existing)
+        app_state.active_machine_model_changed.connect(self._on_machine_model_applied)
         capture_btn = QPushButton("Capture Frame")
         capture_btn.clicked.connect(self._on_capture)
         camera_row.addWidget(self._camera, stretch=1)
@@ -313,6 +316,36 @@ class CalibrationPage(QWidget):
     def _camera_index(self) -> int | None:
         data = self._camera.currentData()
         return int(data) if data is not None else None
+
+    def _on_machine_model_applied(self, name: str, plc_code: int) -> None:
+        """A machine-model profile was pushed live - re-read the calibrations.
+
+        ``MachineModelService.apply_profile`` pushes each camera's stored
+        calibration through ``CalibrationManager.apply_live``, which updates
+        the live cache without writing the calibration database. The form
+        would otherwise keep showing the previous model's scale and reference
+        point while the pipeline measures with the new one. An Auto Calibrate
+        session in progress is abandoned: the views already captured were
+        taken under the old model's ROI/exposure, so fitting them against the
+        new one would produce a calibration for neither.
+        """
+        if self._auto_session_active:
+            self._cancel_auto_calibrate_session(f"machine model changed to {name}")
+        self._reload_cameras()
+        self._load_existing()
+
+    def _reload_cameras(self) -> None:
+        """Refill the camera selector, keeping the current camera selected."""
+        selected = self._camera_index()
+        blocked = self._camera.blockSignals(True)
+        try:
+            self._camera.clear()
+            for cfg in self._cameras.get_effective_configs():
+                self._camera.addItem(f"{cfg['index']}: {cfg.get('name', '')}", cfg["index"])
+            position = self._camera.findData(selected)
+            self._camera.setCurrentIndex(position if position >= 0 else 0)
+        finally:
+            self._camera.blockSignals(blocked)
 
     def _load_existing(self) -> None:
         index = self._camera_index()

@@ -199,11 +199,15 @@ class Application:
             min_role=UserRole.ADMIN,
         )
         self.window.add_page(
-            "Detection", "◎", DetectionPage(self.config, self.vision, self.camera_service),
+            "Detection", "◎",
+            DetectionPage(self.config, self.vision, self.camera_service, self.app_state),
             min_role=UserRole.ADMIN,
         )
         self.window.add_page(
-            "Calibration", "⌖", CalibrationPage(self.camera_service, self.calibration, self.vision),
+            "Calibration", "⌖",
+            CalibrationPage(
+                self.camera_service, self.calibration, self.vision, self.app_state
+            ),
             min_role=UserRole.DEVELOPER,
         )
         self.window.add_page(
