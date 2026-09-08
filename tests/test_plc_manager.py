@@ -119,6 +119,25 @@ def test_trigger_and_machine_number(stack) -> None:
     assert manager.read_machine_number() == 4711
 
 
+def test_serial_number_register_is_read_when_configured() -> None:
+    config = make_config()
+    config["registers"]["serial_number"] = 104
+    rmap = RegisterMap.from_config(config)
+    client = SimulatedPlc(register_map=rmap)
+    manager = PlcManager(client, rmap)
+    manager.connect()
+
+    client.set_register(104, 4711)
+    assert manager.read_serial_number() == 4711
+
+
+def test_serial_number_is_inert_when_not_configured(stack) -> None:
+    """No address, no I/O — the caller falls back to the machine number."""
+    _client, manager, rmap = stack
+    assert rmap.serial_number is None
+    assert manager.read_serial_number() is None
+
+
 def test_heartbeat_toggles(stack) -> None:
     client, manager, rmap = stack
     manager.toggle_heartbeat()

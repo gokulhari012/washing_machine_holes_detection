@@ -88,7 +88,8 @@ def service_parts():
         has=lambda index: True, evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0)
     )
     plc = SimpleNamespace(
-        write_inspection_output=lambda positions, camera_results, result: None
+        write_inspection_output=lambda positions, camera_results, result: None,
+        read_serial_number=lambda: None,  # register not configured
     )
     database = SimpleNamespace(save_inspection=lambda cycle: 1)
     return cameras, app_state, calibration, plc, database

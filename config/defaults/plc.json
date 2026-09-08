@@ -19,6 +19,7 @@
   "registers": {
     "trigger": 100,
     "machine_number": 101,
+    "serial_number": 104,
     "heartbeat": 102,
     "model_select": 103,
     "camera_positions": {

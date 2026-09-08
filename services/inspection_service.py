@@ -428,10 +428,25 @@ class InspectionService:
             return InspectionResult.NG
         return InspectionResult.GOOD
 
-    @staticmethod
-    def _serial_number(application_cfg: dict, machine_number: int) -> str:
+    def _serial_number(self, application_cfg: dict, machine_number: int) -> str:
+        """``serial_prefix`` + the serial the PLC published for this machine.
+
+        The number comes from the PLC's serial-number register, read on this
+        (inspection) thread the same way servo homes are. The prefix stays a
+        PC-side setting — the PLC publishes a number, never the text. When
+        the register is not configured, or the read fails, the machine number
+        stands in for it, which is exactly what the serial was before the
+        register existed; a cycle is never failed over a serial.
+        """
         prefix = str(application_cfg.get("serial_prefix", ""))
-        return f"{prefix}{machine_number:06d}"
+        number: int | None = None
+        try:
+            number = self._plc.read_serial_number()
+        except PlcError as exc:
+            logger.warning("Serial number read failed, using the machine number: %s", exc)
+        if number is None:
+            number = machine_number
+        return f"{prefix}{number:06d}"
 
     def _save_images(self, cycle: InspectionCycleData, storage_cfg: dict) -> None:
         if not storage_cfg.get("save_images", True):

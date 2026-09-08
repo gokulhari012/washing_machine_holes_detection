@@ -247,6 +247,14 @@ class PlcManager:
             return None
         return self._read(self._map.model_select, 1)[0]
 
+    def read_serial_number(self) -> int | None:
+        """Serial number of the machine on the station, or ``None`` when the
+        register is not configured (no I/O in that case — the caller then
+        falls back to the machine number)."""
+        if self._map.serial_number is None:
+            return None
+        return self._read(self._map.serial_number, 1)[0]
+
     # ----------------------------------------------------- workflow writes
     def toggle_heartbeat(self) -> None:
         """Flip the heartbeat register (0↔1) so the PLC can watchdog the PC."""

@@ -183,6 +183,20 @@ def _model_select_field() -> _RegisterField:
     )
 
 
+def _serial_number_field() -> _RegisterField:
+    return _RegisterField(
+        "Serial Number",
+        "PLC → PC: serial number of the machine being inspected, read at the "
+        "start of each cycle. The Serial Prefix from the Settings page is "
+        "added in front of it on the PC. \"Not used\" falls back to the "
+        "machine number, as before this register existed.",
+        True,
+        get=lambda cfg: int(cfg["registers"].get("serial_number") or 0),
+        set=lambda cfg, v: cfg["registers"].__setitem__("serial_number", v),
+        clear=lambda cfg: cfg["registers"].__setitem__("serial_number", None),
+    )
+
+
 def _build_fields() -> list[_RegisterField]:
     fields = [
         _core_field(
@@ -193,6 +207,7 @@ def _build_fields() -> list[_RegisterField]:
             "machine_number", "Machine Number",
             "PLC → PC: identifies the machine being inspected this cycle",
         ),
+        _serial_number_field(),
         _core_field(
             "heartbeat", "Heartbeat",
             "PC → PLC: toggles every heartbeat_interval_ms so the PLC can watchdog the PC",

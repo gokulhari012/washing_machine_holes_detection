@@ -222,6 +222,7 @@ centre — `PlcManager.read_servo_home` returns `(0, 0)` rather than failing.
 | 101 | PLC→PC | Machine number |
 | 102 | PC→PLC | Heartbeat (toggles every 500 ms — PLC watchdogs the PC) |
 | 103 | PLC→PC | **`model_select`** — machine-model code, polled every 1000 ms |
+| 104 | PLC→PC | **`serial_number`** — this machine's serial, read once per cycle; `app_config.application.serial_prefix` is prepended on the PC |
 | 110–117 | PC→PLC | Camera 1–4 hole X/Y as a servo target (encoded as above) |
 | 118 | PC→PLC | Overall result: 1=GOOD, 2=NG, 3=ERROR |
 | 119 | PC→PLC | Vision complete (PC sets 1; PLC reads, resets 119 + trigger) |
@@ -235,6 +236,17 @@ centre — `PlcManager.read_servo_home` returns `(0, 0)` rather than failing.
 | 156–158, 6056 | PC→PLC | **`camera_brightness`** — camera 1–4 light-brightness level (0-255), pushed whenever that camera's settings are applied/saved (see [§8](#8-config-system)) |
 
 Bolded rows are **newer than [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, which documents only 100–119.
+
+**`serial_number` (104)** is optional, like `model_select`: absent from
+`plc.json` (or cleared to "Not used" on the PLC page) it is never read and the
+serial falls back to `prefix + machine_number`, which is what it was before the
+register existed. It is read by `InspectionService` on the *inspection* thread
+at the point the cycle's DTO is built (never cached — the PLC owns it), and a
+read failure degrades to the machine number rather than failing the cycle. The
+prefix is a PC-side setting (Settings page): the PLC publishes a number, never
+text, so the 16-bit range caps the serial at 65535. The address 104 is a
+placeholder following this station's numbering — **confirm the real PLC's
+memory map has it free**, same as `camera_brightness`.
 
 **Camera status (140–143)** is pushed by `PlcPollWorker._publish_camera_status`, not by
 the camera state callbacks — that keeps all PLC I/O on the PLC thread, and a change

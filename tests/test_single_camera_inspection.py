@@ -264,9 +264,13 @@ class FakeConfig:
 
 
 class RecordingPlc:
-    def __init__(self) -> None:
+    def __init__(self, serial_number: int | None = None) -> None:
         self.camera_writes: list[tuple] = []
         self.full_writes = 0
+        self.serial_number = serial_number
+
+    def read_serial_number(self) -> int | None:
+        return self.serial_number
 
     def write_camera_inspection_output(self, camera_index, position, result) -> None:
         self.camera_writes.append((camera_index, position, result))
@@ -353,3 +357,46 @@ def test_camera_fault_degrades_to_error_and_still_answers_the_plc(service) -> No
     assert cycle.overall_result is InspectionResult.ERROR
     # the PLC is still told, with the no-hole sentinel, so it never dead-waits
     assert plc.camera_writes == [(1, None, PlcResultCode.ERROR)]
+
+
+# --------------------------------------------------------------- serial number
+def _service_with(plc: RecordingPlc) -> InspectionService:
+    calibration = SimpleNamespace(
+        has=lambda index: True,
+        evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0),
+    )
+    return InspectionService(
+        FakeCameraManager(),
+        FakeVision(),
+        calibration,
+        plc,
+        SimpleNamespace(save_inspection=lambda cycle: 1),
+        AppState(),
+        FakeConfig(),
+    )
+
+
+def test_serial_number_comes_from_the_plc_register_behind_the_prefix() -> None:
+    plc = RecordingPlc(serial_number=4711)
+    cycle = _service_with(plc).run_inspection(machine_number=7)
+    assert cycle.serial_number == "WM-004711"
+
+
+def test_serial_number_falls_back_to_the_machine_number_when_unconfigured() -> None:
+    plc = RecordingPlc(serial_number=None)
+    cycle = _service_with(plc).run_inspection(machine_number=7)
+    assert cycle.serial_number == "WM-000007"
+
+
+def test_a_failed_serial_read_does_not_fail_the_cycle() -> None:
+    plc = RecordingPlc()
+
+    def boom() -> int:
+        from core.utilities.exceptions import PlcReadError
+
+        raise PlcReadError("link down")
+
+    plc.read_serial_number = boom
+    cycle = _service_with(plc).run_inspection(machine_number=7)
+    assert cycle.serial_number == "WM-000007"
+    assert cycle.overall_result is InspectionResult.GOOD

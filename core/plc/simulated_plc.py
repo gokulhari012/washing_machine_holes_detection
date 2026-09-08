@@ -138,6 +138,11 @@ class SimulatedPlc(PlcClientBase):
                 self._machine_number += 1
                 machine_number = self._machine_number
             self._registers[self._map.machine_number] = machine_number & UINT16_MAX
+            # A real PLC publishes the machine's serial alongside its number;
+            # the simulator uses the same value so the serial the dashboard
+            # shows is not stuck at 0.
+            if self._map.serial_number is not None:
+                self._registers[self._map.serial_number] = machine_number & UINT16_MAX
             self._registers[self._map.trigger] = 1
 
     # -------------------------------------------------------------- internal

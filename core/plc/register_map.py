@@ -90,6 +90,13 @@ class RegisterMap:
     # the PLC. Optional — None means the feature is inert (no address wired
     # up yet), never a config error, so existing plc.json files keep working.
     model_select: int | None = None
+    # Serial-number register: the serial of the machine on the station this
+    # cycle, written by the PLC. Optional — None means the feature is inert
+    # and the serial falls back to the machine number, so an existing
+    # plc.json keeps working. Like every register here it is 16-bit, so the
+    # PLC can publish 0-65535; the configured serial prefix is added on the
+    # PC side and is never read from or written to the PLC.
+    serial_number: int | None = None
     # Physical camera-position jog control — unrelated to camera_positions
     # above (that's the *detected hole* coordinate the app writes out as an
     # inspection result; this is the camera *mount's* position, driven by
@@ -153,6 +160,7 @@ class RegisterMap:
                 for index, address in registers.get("camera_brightness", {}).items()
             }
             model_select = registers.get("model_select")
+            serial_number = registers.get("serial_number")
 
             jog_cfg = plc_config.get("camera_jog", {})
             jog_registers = jog_cfg.get("registers", {})
@@ -186,6 +194,7 @@ class RegisterMap:
                 camera_brightness=camera_brightness,
                 position_scale=int(scaling.get("position_scale", 10)),
                 model_select=int(model_select) if model_select is not None else None,
+                serial_number=int(serial_number) if serial_number is not None else None,
                 camera_jog=camera_jog,
                 camera_jog_z=camera_jog_z,
                 camera_jog_busy=camera_jog_busy,

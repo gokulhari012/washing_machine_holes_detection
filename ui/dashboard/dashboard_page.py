@@ -251,10 +251,11 @@ class DashboardPage(QWidget):
             panel.set_camera_state(state)
 
     def _on_trigger(self, machine_number: int) -> None:
-        self._summary.set_serial(str(machine_number))
-        # Last cycle's coordinates are about to be replaced camera by
-        # camera; blanking them keeps a stale reading from being read as
-        # this machine's.
+        # The serial belongs to the PLC (register + configured prefix) and
+        # arrives with the finished cycle, not with the trigger; blanking it
+        # and the coordinates keeps last machine's readings from being read
+        # as this one's.
+        self._summary.set_serial("")
         self._coordinates.clear()
         self._set_triggers_enabled(False)  # one cycle at a time
 
