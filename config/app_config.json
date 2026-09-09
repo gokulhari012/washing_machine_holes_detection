@@ -4,33 +4,10 @@
     "version": "1.0.0",
     "factory_name": "Factory 1",
     "operator_name": "Operator",
-    "shift": "Evening",
+    "shift": "A",
     "serial_prefix": "WM-",
     "language": "en",
     "theme": "dark"
-  },
-  "shifts": {
-    "automatic": true,
-    "schedule": [
-      {
-        "id": "morning",
-        "name": "Morning",
-        "start": "06:00",
-        "end": "15:00"
-      },
-      {
-        "id": "evening",
-        "name": "Evening",
-        "start": "15:00",
-        "end": "22:00"
-      },
-      {
-        "id": "night",
-        "name": "Night",
-        "start": "22:00",
-        "end": "06:00"
-      }
-    ]
   },
   "database": {
     "path": "data/inspection.db",
@@ -46,8 +23,8 @@
     "export_directory": "exports"
   },
   "inspection": {
-    "capture_mode": "sequential",
-    "camera_delay_ms": 0
+    "capture_mode": "parellel",
+    "camera_delay_ms": 5000
   },
   "security": {
     "settings_password_protected": true,

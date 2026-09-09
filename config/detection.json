@@ -1,24 +1,24 @@
 {
   "cameras": {
     "1": {
-      "active_detector": "dark_hole",
+      "active_detector": "opencv",
       "common": {
-        "confidence_threshold": 0.1,
-        "expected_hole_count": 11,
-        "position_tolerance_mm": 1.0,
-        "normalize_image": false
+        "confidence_threshold": 0.4,
+        "expected_hole_count": 1,
+        "position_tolerance_mm": 50.0,
+        "normalize_image": true
       },
       "opencv": {
-        "detection_threshold": 20,
+        "detection_threshold": 45,
         "adaptive_threshold": false,
         "blur_kernel_size": 1,
         "edge_threshold_low": 50,
         "edge_threshold_high": 150,
         "morphology_operation": "open",
-        "morphology_kernel_size": 5,
+        "morphology_kernel_size": 3,
         "morphology_iterations": 2,
-        "min_hole_diameter_px": 184,
-        "max_hole_diameter_px": 566,
+        "min_hole_diameter_px": 90,
+        "max_hole_diameter_px": 230,
         "min_circularity": 0.3,
         "min_aspect_ratio": 0.15,
         "contour_retrieval_mode": "external"
@@ -30,12 +30,12 @@
       },
       "dark_hole": {
         "channel": "auto",
-        "blur_kernel_size": 1,
-        "min_contrast": 1,
+        "blur_kernel_size": 3,
+        "min_contrast": 5,
         "use_otsu": true,
         "morphology_kernel_size": 5,
         "min_hole_diameter_px": 50,
-        "max_hole_diameter_px": 1,
+        "max_hole_diameter_px": 58,
         "min_fill_ratio": 0.2,
         "max_fit_error": 0.4
       },
@@ -47,25 +47,26 @@
       }
     },
     "2": {
-      "active_detector": "dark_hole",
+      "active_detector": "opencv",
       "common": {
         "confidence_threshold": 0.4,
         "expected_hole_count": 1,
-        "position_tolerance_mm": 2.5
+        "position_tolerance_mm": 50.0,
+        "normalize_image": true
       },
       "opencv": {
-        "detection_threshold": 21,
+        "detection_threshold": 45,
         "adaptive_threshold": false,
-        "blur_kernel_size": 7,
+        "blur_kernel_size": 1,
         "edge_threshold_low": 50,
         "edge_threshold_high": 150,
-        "morphology_operation": "close",
+        "morphology_operation": "open",
         "morphology_kernel_size": 5,
-        "morphology_iterations": 4,
-        "min_hole_diameter_px": 20,
-        "max_hole_diameter_px": 200,
-        "min_circularity": 0.65,
-        "min_aspect_ratio": 0.35,
+        "morphology_iterations": 2,
+        "min_hole_diameter_px": 78,
+        "max_hole_diameter_px": 236,
+        "min_circularity": 0.3,
+        "min_aspect_ratio": 0.15,
         "contour_retrieval_mode": "external"
       },
       "template_matching": {
@@ -96,19 +97,20 @@
       "common": {
         "confidence_threshold": 0.4,
         "expected_hole_count": 1,
-        "position_tolerance_mm": 25.0
+        "position_tolerance_mm": 50.0,
+        "normalize_image": true
       },
       "opencv": {
-        "detection_threshold": 20,
+        "detection_threshold": 120,
         "adaptive_threshold": false,
-        "blur_kernel_size": 7,
+        "blur_kernel_size": 5,
         "edge_threshold_low": 50,
         "edge_threshold_high": 150,
-        "morphology_operation": "close",
+        "morphology_operation": "open",
         "morphology_kernel_size": 5,
         "morphology_iterations": 2,
-        "min_hole_diameter_px": 170,
-        "max_hole_diameter_px": 512,
+        "min_hole_diameter_px": 200,
+        "max_hole_diameter_px": 282,
         "min_circularity": 0.3,
         "min_aspect_ratio": 0.15,
         "contour_retrieval_mode": "external"
@@ -137,25 +139,26 @@
       }
     },
     "4": {
-      "active_detector": "dark_hole",
+      "active_detector": "opencv",
       "common": {
         "confidence_threshold": 0.4,
         "expected_hole_count": 1,
-        "position_tolerance_mm": 2.5
+        "position_tolerance_mm": 50.0,
+        "normalize_image": true
       },
       "opencv": {
-        "detection_threshold": 21,
+        "detection_threshold": 50,
         "adaptive_threshold": false,
-        "blur_kernel_size": 7,
+        "blur_kernel_size": 1,
         "edge_threshold_low": 50,
         "edge_threshold_high": 150,
-        "morphology_operation": "close",
+        "morphology_operation": "open",
         "morphology_kernel_size": 5,
-        "morphology_iterations": 4,
-        "min_hole_diameter_px": 20,
-        "max_hole_diameter_px": 200,
-        "min_circularity": 0.65,
-        "min_aspect_ratio": 0.35,
+        "morphology_iterations": 2,
+        "min_hole_diameter_px": 109,
+        "max_hole_diameter_px": 392,
+        "min_circularity": 0.3,
+        "min_aspect_ratio": 0.15,
         "contour_retrieval_mode": "external"
       },
       "template_matching": {

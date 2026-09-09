@@ -2,7 +2,7 @@
   "connection": {
     "ip": "192.168.3.100",
     "port": 7029,
-    "protocol": "simulated",
+    "protocol": "slmp",
     "auto_cycle_interval_s": 0.0,
     "unit_id": 1,
     "timeout_ms": 1000,
@@ -17,13 +17,12 @@
     ]
   },
   "registers": {
-    "trigger": 100,
+    "trigger": 6040,
     "machine_number": 101,
-    "serial_number": 104,
     "heartbeat": 102,
     "model_select": 103,
     "result": 118,
-    "vision_complete": 119,
+    "vision_complete": 6042,
     "camera_positions": {
       "1": {
         "x": 110,
@@ -67,10 +66,10 @@
       "4": 131
     },
     "camera_triggers": {
-      "1": 132,
-      "2": 133,
-      "3": 6040,
-      "4": 135
+      "1": 6520,
+      "2": 6500,
+      "3": 6540,
+      "4": 6560
     },
     "camera_vision_complete": {
       "1": 136,
@@ -90,14 +89,38 @@
       "3": 6056,
       "4": 158
     },
-    "gantry_status": {
-      "1": 159,
-      "2": 160,
-      "3": 6058,
-      "4": 161
-    }
+    "serial_number": 12
   },
   "scaling": {
     "position_scale": 100
+  },
+  "camera_jog": {
+    "step": 10,
+    "registers": {
+      "1": {
+        "x": 120,
+        "y": 121,
+        "z": 152,
+        "busy": 1
+      },
+      "2": {
+        "x": 122,
+        "y": 123,
+        "z": 153,
+        "busy": 2
+      },
+      "3": {
+        "x": 124,
+        "y": 125,
+        "z": 154,
+        "busy": 3
+      },
+      "4": {
+        "x": 126,
+        "y": 127,
+        "z": 155,
+        "busy": 4
+      }
+    }
   }
 }

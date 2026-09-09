@@ -5,7 +5,8 @@
       "common": {
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
-        "position_tolerance_mm": 2.5
+        "position_tolerance_mm": 2.5,
+        "normalize_image": false
       },
       "dark_hole": {
         "channel": "auto",
@@ -50,7 +51,8 @@
       "common": {
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
-        "position_tolerance_mm": 2.5
+        "position_tolerance_mm": 2.5,
+        "normalize_image": false
       },
       "dark_hole": {
         "channel": "auto",
@@ -95,7 +97,8 @@
       "common": {
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
-        "position_tolerance_mm": 2.5
+        "position_tolerance_mm": 2.5,
+        "normalize_image": false
       },
       "dark_hole": {
         "channel": "auto",
@@ -140,7 +143,8 @@
       "common": {
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
-        "position_tolerance_mm": 2.5
+        "position_tolerance_mm": 2.5,
+        "normalize_image": false
       },
       "dark_hole": {
         "channel": "auto",
