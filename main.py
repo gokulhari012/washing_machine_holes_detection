@@ -232,6 +232,16 @@ class Application:
         # -------------------------------------------------- cross-cutting
         self.config.subscribe("camera", self._on_camera_config_saved)
         self.config.subscribe("plc", self._on_plc_config_saved)
+        # Saving on an engineering page lands in the machine model the station
+        # is running straight away, rather than waiting for someone to press
+        # "Update Selected from Current" on the Machine Models page — see
+        # MachineModelService.sync_active_profile. The camera hook is
+        # registered *after* _on_camera_config_saved on purpose: subscribers
+        # run in registration order, and the snapshot must be taken from the
+        # rebuilt manager, not the one the save just replaced.
+        self.config.subscribe("camera", self._on_camera_settings_saved)
+        self.config.subscribe("detection", self._on_detection_settings_saved)
+        self.calibration.subscribe(self._on_calibration_saved)
         self._maintenance_timer = QTimer(self.window)
         self._maintenance_timer.timeout.connect(self._run_maintenance_async)
         # The rota's only clock. Polling (rather than a one-shot timer armed
@@ -329,6 +339,42 @@ class Application:
         )
         for worker in self.acquisition_workers:
             worker.start()
+
+    # ------------------------------------------------- machine-model sync
+    def _on_camera_settings_saved(self, _camera_cfg: dict) -> None:
+        self._sync_active_machine_model("cameras")
+
+    def _on_detection_settings_saved(self, _detection_cfg: dict) -> None:
+        self._sync_active_machine_model("detection")
+
+    def _on_calibration_saved(self, _calibration) -> None:
+        self._sync_active_machine_model("calibration")
+
+    def _sync_active_machine_model(self, domain: str) -> None:
+        """Fold a just-saved settings domain into the active machine model.
+
+        Best-effort by design: the operator's Save has already succeeded and
+        must not be reported as a failure because machine_models.json could
+        not be rewritten, so a fault is logged and alarmed here instead of
+        propagating back into the page. A no-op while no profile is live.
+        """
+        try:
+            profile = self.machine_models.sync_active_profile(
+                domain, updated_by=self._current_username()
+            )
+        except VisionSystemError as exc:
+            message = f"Machine model not updated from saved {domain} settings: {exc}"
+            self.logger.error(message)
+            self.app_state.raise_alarm("warning", message)
+            return
+        if profile is not None:
+            self.logger.info(
+                "Machine model %r updated from saved %s settings", profile["name"], domain
+            )
+
+    def _current_username(self) -> str:
+        user = self.auth_service.current_user
+        return user.username if user is not None else ""
 
     def _build_poll_worker(self, connection_cfg: dict) -> PlcPollWorker:
         """Construct + wire a poll worker against ``self.plc``. Shared by

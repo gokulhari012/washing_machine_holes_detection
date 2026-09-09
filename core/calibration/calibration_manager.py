@@ -10,11 +10,17 @@ a real calibration exists.
 ``evaluate`` reports position relative to the analysed image's own centre
 (pass ``image_width``/``image_height``) rather than the calibration's raw
 coordinate frame — see its docstring.
+
+``save`` also fans out to plain-callable observers (:meth:`subscribe`), the
+same Qt-free notification ``ConfigManager`` uses for a settings file, so the
+composition root can fold a freshly persisted calibration into the active
+machine-model profile without ``core/`` knowing that services exist.
 """
 
 from __future__ import annotations
 
 import threading
+from typing import Callable
 
 from core.calibration.calibration_model import CameraCalibration
 from core.database.repositories import CalibrationRepository
@@ -22,6 +28,8 @@ from core.logging import get_logger
 from core.utilities.enums import LogSource
 
 logger = get_logger(LogSource.VISION)
+
+CalibrationCallback = Callable[[CameraCalibration], None]
 
 
 class CalibrationManager:
@@ -33,6 +41,7 @@ class CalibrationManager:
         self._calibrations: dict[int, CameraCalibration] = {}
         self._screw_compensation_enabled = False
         self._screw_offsets: dict[int, tuple[float, float]] = {}
+        self._observers: list[CalibrationCallback] = []
 
     # -------------------------------------------------------------- loading
     def load_all(self) -> None:
@@ -65,6 +74,7 @@ class CalibrationManager:
             calibration.camera_index,
             calibration.rms_error,
         )
+        self._notify(calibration)
         return row_id
 
     def apply_live(self, calibration: CameraCalibration) -> None:
@@ -81,6 +91,40 @@ class CalibrationManager:
         logger.info(
             "Calibration applied live for camera %d (not persisted)", calibration.camera_index
         )
+
+    # ----------------------------------------------------------- observers
+    def subscribe(self, callback: CalibrationCallback) -> None:
+        """Register *callback*, invoked with each calibration :meth:`save`
+        persists.
+
+        Persisted saves only — :meth:`apply_live` deliberately does not
+        notify, because a machine-model switch pushing its own snapshot back
+        into the cache is not the operator calibrating anything, and folding
+        it into a profile would be circular.
+
+        Callbacks run on the saving thread (in practice the GUI thread, which
+        is where the Calibration page's Save button lives); keep them short.
+        An exception in one is logged and never reaches the saver.
+        """
+        with self._lock:
+            self._observers.append(callback)
+
+    def unsubscribe(self, callback: CalibrationCallback) -> None:
+        """Remove a previously registered callback (no-op if absent)."""
+        with self._lock:
+            try:
+                self._observers.remove(callback)
+            except ValueError:
+                pass
+
+    def _notify(self, calibration: CameraCalibration) -> None:
+        with self._lock:
+            observers = list(self._observers)
+        for callback in observers:
+            try:
+                callback(calibration)
+            except Exception:  # an observer must never break a save
+                logger.exception("Calibration observer failed")
 
     # ---------------------------------------------- screw driver compensation
     def apply_screw_compensation(

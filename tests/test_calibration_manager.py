@@ -90,3 +90,60 @@ def test_apply_live_overwrites_only_the_matching_camera() -> None:
     replacement = CameraCalibration(camera_index=1, pixels_per_mm_x=20.0, pixels_per_mm_y=20.0)
     manager.apply_live(replacement)
     assert manager.get(1) is replacement
+
+
+# ------------------------------------------------------------------ observers
+# save() fans out to plain callables so the composition root can fold a freshly
+# persisted calibration into the active machine-model profile; apply_live()
+# deliberately does not, since a model switch pushing its own snapshot back
+# into the cache is not the operator calibrating anything.
+
+
+def _saving_manager() -> CalibrationManager:
+    return CalibrationManager(
+        SimpleNamespace(get_all_active=lambda: {}, save=lambda row: 1)
+    )
+
+
+def test_save_notifies_observers_with_the_persisted_calibration() -> None:
+    manager = _saving_manager()
+    seen: list[CameraCalibration] = []
+    manager.subscribe(seen.append)
+
+    calibration = CameraCalibration(camera_index=2, pixels_per_mm_x=8.0)
+    manager.save(calibration)
+
+    assert seen == [calibration]
+
+
+def test_apply_live_does_not_notify_observers() -> None:
+    manager = _saving_manager()
+    seen: list[CameraCalibration] = []
+    manager.subscribe(seen.append)
+
+    manager.apply_live(CameraCalibration(camera_index=2, pixels_per_mm_x=8.0))
+
+    assert seen == []
+
+
+def test_failing_observer_never_breaks_the_save() -> None:
+    manager = _saving_manager()
+    reached: list[int] = []
+    manager.subscribe(lambda _c: (_ for _ in ()).throw(RuntimeError("boom")))
+    manager.subscribe(lambda c: reached.append(c.camera_index))
+
+    assert manager.save(CameraCalibration(camera_index=2, pixels_per_mm_x=8.0)) == 1
+    assert reached == [2]  # the later observer still ran
+    assert manager.get(2) is not None  # ...and the cache was updated
+
+
+def test_unsubscribe_stops_notifications_and_tolerates_an_unknown_callback() -> None:
+    manager = _saving_manager()
+    seen: list[CameraCalibration] = []
+
+    manager.unsubscribe(seen.append)  # never registered -> no-op, not an error
+    manager.subscribe(seen.append)
+    manager.unsubscribe(seen.append)
+    manager.save(CameraCalibration(camera_index=2, pixels_per_mm_x=8.0))
+
+    assert seen == []

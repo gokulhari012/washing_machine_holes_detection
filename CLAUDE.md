@@ -488,6 +488,57 @@ calibration a camera rejects → warning, skipped); detection is **all-or-nothin
 A camera with no calibration entry in the profile is simply left alone — the map is
 sparse by convention, never padded with blanks.
 
+**Everything a profile captures is read from the live objects, never from the
+files** — `CameraService.get_effective_configs()`, `VisionEngine.camera_config(i)`,
+`CalibrationManager.get(i)`, the same three accessors the engineering pages read
+(see the table below). Applying doesn't write `camera.json`/`detection.json`, so
+after a switch those files describe the *previous* model and snapshotting them
+would fold the outgoing model's values into the incoming one.
+
+### Saving on an engineering page syncs the applied profile — automatically
+
+`MachineModelService.sync_active_profile(domain)` is the traffic in the other
+direction: once a profile is live, **Save** on the Camera, Detection or
+Calibration page folds that one domain straight back into it, so the profile a
+station is running never drifts from the settings it is running and nobody has to
+remember to press "Update Selected from Current" afterwards.
+
+```
+Camera page Save    → ConfigManager.subscribe("camera")    ─┐
+Detection page Save → ConfigManager.subscribe("detection")  ├→ sync_active_profile(domain)
+Calibration Save    → CalibrationManager.subscribe()       ─┘   → machine_models.json
+                                                                → subscribe() fan-out
+                                                                  → Machine Models page repaints
+```
+
+Rules that are easy to break:
+- **One domain per call, snapshotted from live state.** Syncing all three on any
+  save would drag the untouched two back to whatever the files hold — the
+  previous model, after a switch.
+- **The sync target is the *applied* model** (`active_profile_id`, claimed by
+  `apply_profile` — the PLC's register 103 or "Apply Now"), which is what the
+  page's "Currently active" line names. `capture_current`/`update_from_current`
+  adopt it **only while nothing is claimed** (commissioning a fresh station with
+  "New from Current"): copying current settings into a second profile must never
+  redirect where the next Save lands, or the running model starts drifting again.
+  It is never the Machine Models page's *selected* row.
+- **`None` target ⇒ no-op**, and so is a snapshot identical to what the profile
+  already holds — an unchanged Save neither rewrites `machine_models.json` nor
+  bumps `updated_at`.
+- **Best-effort in the composition root** (`Application._sync_active_machine_model`):
+  the operator's Save has already succeeded, so a profile that can't be rewritten
+  is logged + alarmed, never raised back into the page.
+- The camera hook is registered **after** `_on_camera_config_saved`, because
+  subscribers run in registration order and the snapshot must come from the
+  rebuilt `CameraManager`, not the one the save replaced.
+- `CalibrationManager.subscribe` fires on **`save` only**, not `apply_live` — a
+  model switch pushing its own snapshot back into the cache is not the operator
+  calibrating anything, and folding it back in would be circular.
+
+Consequence worth stating plainly: with a model applied, a quick experiment on the
+Detection page that you **Save** is now a permanent edit to that model. Use "Test"
+(which applies without saving) for experiments, as before.
+
 ### Applying a profile is invisible to the config files — so the UI reads live state
 
 Because applying persists nothing, **every engineering page reads the running
@@ -612,6 +663,16 @@ station that never switches model and silently wrong on one that does — read
 the live accessors listed in [§8](#8-config-system) and reload on
 `AppState.active_machine_model_changed` instead. `tests/test_live_settings_readback.py`
 and `tests/test_machine_model_page_refresh.py` pin both halves.
+
+**Saving is not the read-only act it looks like.** With a model applied, Save on
+the Camera/Detection/Calibration page also rewrites that model's profile
+(`sync_active_profile`, [§8](#8-config-system)) — so a new settings page that
+persists a domain needs a sync hook too, or that domain silently stops tracking
+the model. Equally, a `ConfigManager.save` added inside a *non-operator* code
+path (a migration, a restore, a repair) will now be mistaken for an operator
+edit and folded into the live profile: prefer writing the file directly, or
+clear the target first. `tests/test_machine_model_autosync.py` drives the real
+pages' Save handlers through the wiring end to end.
 
 **The PLC DB audit mirror is incomplete.** `PlcService._mirror_to_database` and the
 `plc_configurations` table cover only the original 100–119 registers — `model_select`,

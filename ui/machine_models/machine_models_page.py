@@ -11,6 +11,14 @@ profile live without persisting camera.json/detection.json or writing a new
 calibration-history row (the same live-preview path the PLC-driven
 auto-switch in main.py's ``Application._on_machine_model_changed`` uses).
 
+Those two buttons are no longer the only way a profile gains new values:
+once a profile is live, Save on the Camera, Detection or Calibration page
+folds that domain straight back into it
+(``MachineModelService.sync_active_profile``, wired in the composition
+root). This page repaints on that service's ``subscribe`` fan-out, because
+an automatic sync is the one profile change no button here initiated —
+without it the tree would keep showing the pre-save snapshot.
+
 The right-hand panel is a tree, one top-level branch per camera, each with
 "Camera", "Detection" and "Calibration" sub-branches of individual
 property/value rows — deliberately structured rather than a hand-formatted
@@ -56,6 +64,13 @@ from services.auth_service import AuthService
 from services.machine_model_service import MachineModelService
 
 _SCREW_CAMERAS = (1, 2, 3, 4)
+
+# Settings-domain key -> the page whose Save produced it, for the status line.
+_DOMAIN_PAGES = {
+    "cameras": "Camera",
+    "detection": "Detection",
+    "calibration": "Calibration",
+}
 
 
 def _code_spin() -> QSpinBox:
@@ -127,7 +142,12 @@ class MachineModelsPage(QWidget):
         )
         new_btn.clicked.connect(self._on_new_from_current)
         update_btn = QPushButton("Update Selected from Current")
-        update_btn.setToolTip("Re-capture current settings into the selected profile")
+        update_btn.setToolTip(
+            "Re-capture current settings into the selected profile. Not "
+            "normally needed for the profile already applied: saving on the "
+            "Camera, Detection or Calibration page updates that one "
+            "automatically."
+        )
         update_btn.clicked.connect(self._on_update_from_current)
         rename_btn = QPushButton("Rename / Change Code")
         rename_btn.clicked.connect(self._on_rename)
@@ -207,6 +227,7 @@ class MachineModelsPage(QWidget):
 
         # ---------------------------------------------------------- wiring
         app_state.active_machine_model_changed.connect(self._on_active_model_changed)
+        machine_model_service.subscribe(self._on_profile_synced)
         self._reload()
 
     # -------------------------------------------------------------- loading
@@ -347,6 +368,21 @@ class MachineModelsPage(QWidget):
         self._status.setText(text)
 
     # --------------------------------------------------------------- state
+    def _on_profile_synced(self, profile: dict, domain: str) -> None:
+        """An engineering page's Save was folded into the applied profile.
+
+        Repaint from disk so the tree shows what the profile now holds rather
+        than the snapshot it was drawn from, and say so in the status line —
+        this is the one profile change the operator did not make from this
+        page, so it needs to be visible. Runs on the GUI thread (the saves
+        that trigger it all originate from page buttons).
+        """
+        self._reload()
+        page = _DOMAIN_PAGES.get(domain, domain)
+        self._status.setText(
+            f"{profile['name']!r} updated automatically from the {page} settings just saved."
+        )
+
     def _on_active_model_changed(self, name: str, code: int) -> None:
         self._active_label.setText(self._active_text(name, code))
 

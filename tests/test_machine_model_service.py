@@ -1,14 +1,18 @@
 """MachineModelService: profile capture/apply, JSON-only persistence.
 
 Camera application is exercised against a lightweight fake that mimics only
-the two CameraService methods the service actually calls (get_configs,
-apply_live), validated the same way the real one is, via
-CameraSettings.from_config, so a malformed merge would still be caught.
+the CameraService methods the service actually calls (get_configs,
+get_effective_configs, apply_live), validated the same way the real one is,
+via CameraSettings.from_config, so a malformed merge would still be caught.
+The fake keeps the persisted and live-effective views separate (see
+``apply_live_override``) so the "snapshot what is running, not what the file
+says" rule can be asserted rather than assumed.
 Calibration application is exercised against a fake CalibrationManager that
 mimics only get/apply_live, so an "applied live, not persisted" assertion can
 check the fake's own state instead of a real database.
 """
 
+import copy
 import json
 
 import pytest
@@ -56,14 +60,24 @@ DETECTION_DOC = {
 
 
 class FakeCameraService:
-    """Mimics the two CameraService methods MachineModelService calls."""
+    """Mimics the CameraService methods MachineModelService calls."""
 
     def __init__(self, configs: list[dict]) -> None:
         self._configs = configs
+        self._live: dict[int, dict] = {}  # index -> live-effective override
         self.applied: list[dict] = []
 
     def get_configs(self) -> list[dict]:
+        """camera.json's persisted baseline."""
         return [dict(c) for c in self._configs]
+
+    def get_effective_configs(self) -> list[dict]:
+        """What the cameras are running — baseline with live overrides on top."""
+        return [dict(c, **self._live.get(int(c["index"]), {})) for c in self._configs]
+
+    def apply_live_override(self, index: int, **fields) -> None:
+        """Stand in for a value pushed live but never written to camera.json."""
+        self._live.setdefault(index, {}).update(fields)
 
     def apply_live(self, camera_config: dict) -> None:
         CameraSettings.from_config(camera_config)  # raises ConfigurationError if malformed
@@ -118,8 +132,11 @@ def make_service(tmp_path):
     (config_dir / "machine_models.json").write_text(json.dumps({"profiles": []}))
 
     config = ConfigManager(config_dir)
-    cameras = FakeCameraService(CAMERA_DOC["cameras"])
-    engine = VisionEngine(DETECTION_DOC)
+    # Deep copies: tests that edit the fake's entries (standing in for a
+    # settings change) must not leak into the next test through the shared
+    # module-level documents.
+    cameras = FakeCameraService(copy.deepcopy(CAMERA_DOC["cameras"]))
+    engine = VisionEngine(copy.deepcopy(DETECTION_DOC))
     plc = FakePlcService()
     calibration = FakeCalibrationManager()
     return (
@@ -306,3 +323,178 @@ def test_apply_profile_warns_when_calibration_rejected(tmp_path) -> None:
     assert len(warnings) == 1
     assert "camera 1" in warnings[0]
     assert calibration.applied == []
+
+
+# ---------------------------------------------------- snapshot from live state
+# A profile captures what the station is *running*, never what camera.json /
+# detection.json say — applying a profile changes the former without writing
+# the latter, so snapshotting the files would fold the previous model's values
+# into the one now live.
+
+
+def test_capture_snapshots_live_camera_settings_not_the_file(tmp_path) -> None:
+    service, cameras, _engine, _plc, _calibration = make_service(tmp_path)
+    cameras.apply_live_override(1, exposure_us=44000)  # pushed live, never persisted
+
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    assert profile["cameras"]["1"]["exposure_us"] == 44000
+
+
+def test_capture_snapshots_live_detection_block_not_the_file(tmp_path) -> None:
+    service, _cameras, engine, _plc, _calibration = make_service(tmp_path)
+    live = dict(DETECTION_DOC["cameras"]["1"], active_detector="dark_hole")
+    engine.apply_camera_config(1, live)  # hot-swap without saving detection.json
+
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    assert profile["detection"]["cameras"]["1"]["active_detector"] == "dark_hole"
+    # ...while detection.json still holds the manually maintained baseline
+    assert service._config.load("detection")["cameras"]["1"]["active_detector"] == "opencv"
+
+
+# ------------------------------------------------------ automatic profile sync
+# Saving on the Camera / Detection / Calibration page folds that one domain
+# back into the applied profile, so nobody has to press "Update Selected from
+# Current" afterwards.
+
+
+def test_sync_is_a_no_op_while_no_profile_is_claimed(tmp_path) -> None:
+    service, cameras, _engine, _plc, _calibration = make_service(tmp_path)
+    service.capture_current("Model A", 3, created_by="admin")
+    service.delete(1)  # the only profile, and the claimed target, is gone
+
+    cameras.apply_live_override(1, exposure_us=44000)
+    assert service.active_profile_id is None
+    assert service.sync_active_profile("cameras") is None
+
+
+def test_apply_profile_makes_it_the_sync_target(tmp_path) -> None:
+    service, cameras, _engine, _plc, _calibration = make_service(tmp_path)
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    service.capture_current("Model B", 4, created_by="admin")
+    service.apply_profile(profile)
+    assert service.active_profile_id == profile["id"]
+
+    cameras.apply_live_override(1, exposure_us=44000)
+    synced = service.sync_active_profile("cameras", updated_by="admin2")
+
+    assert synced["id"] == profile["id"]
+    assert service.get_by_id(profile["id"])["cameras"]["1"]["exposure_us"] == 44000
+    assert service.get_by_id(profile["id"])["updated_by"] == "admin2"
+    # Model B, merely captured earlier, is untouched.
+    assert service.get_by_code(4)["cameras"]["1"]["exposure_us"] == 10000
+
+
+def test_first_capture_becomes_the_sync_target_on_a_fresh_station(tmp_path) -> None:
+    """Commissioning: "New from Current" before any model has been applied
+    claims the still-unclaimed target, so the first profile starts tracking
+    saves immediately."""
+    service, cameras, _engine, _plc, _calibration = make_service(tmp_path)
+    assert service.active_profile_id is None
+
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    assert service.active_profile_id == profile["id"]
+
+    cameras.apply_live_override(1, exposure_us=44000)
+    service.sync_active_profile("cameras")
+    assert service.get_by_id(profile["id"])["cameras"]["1"]["exposure_us"] == 44000
+
+
+def test_capturing_a_second_profile_does_not_steal_the_live_model(tmp_path) -> None:
+    """Copying the current settings into another profile must not redirect
+    where the next Save lands — that is how the applied model starts drifting
+    again, which is the bug the sync exists to stop."""
+    service, cameras, _engine, _plc, _calibration = make_service(tmp_path)
+    live = service.capture_current("Model A", 3, created_by="admin")
+    service.apply_profile(live)
+
+    other = service.capture_current("Model B", 4, created_by="admin")
+    service.update_from_current(other["id"], updated_by="admin")
+    assert service.active_profile_id == live["id"]
+
+    cameras.apply_live_override(1, exposure_us=44000)
+    service.sync_active_profile("cameras")
+
+    assert service.get_by_id(live["id"])["cameras"]["1"]["exposure_us"] == 44000
+    assert service.get_by_id(other["id"])["cameras"]["1"]["exposure_us"] == 10000
+
+
+def test_sync_of_one_domain_leaves_the_others_alone(tmp_path) -> None:
+    service, cameras, engine, _plc, _calibration = make_service(tmp_path)
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    service.apply_profile(profile)
+
+    # Both a camera and a detection change are live, but only detection was saved.
+    cameras.apply_live_override(1, exposure_us=44000)
+    engine.apply_camera_config(1, dict(DETECTION_DOC["cameras"]["1"], active_detector="dark_hole"))
+    service.sync_active_profile("detection")
+
+    stored = service.get_by_id(profile["id"])
+    assert stored["detection"]["cameras"]["1"]["active_detector"] == "dark_hole"
+    assert stored["cameras"]["1"]["exposure_us"] == 10000  # not dragged along
+
+
+def test_sync_persists_calibration_changes(tmp_path) -> None:
+    service, _cameras, _engine, _plc, calibration = make_service(tmp_path)
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    service.apply_profile(profile)
+    assert service.get_by_id(profile["id"])["calibration"] == {}
+
+    calibration.seed(CameraCalibration(camera_index=1, pixels_per_mm_x=7.5))
+    service.sync_active_profile("calibration")
+
+    assert service.get_by_id(profile["id"])["calibration"]["1"]["pixels_per_mm_x"] == 7.5
+
+
+def test_sync_that_changes_nothing_neither_rewrites_nor_notifies(tmp_path) -> None:
+    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    service.apply_profile(profile)
+    seen: list[tuple[dict, str]] = []
+    service.subscribe(lambda p, domain: seen.append((p, domain)))
+
+    assert service.sync_active_profile("cameras", updated_by="admin2") is None
+    stored = service.get_by_id(profile["id"])
+    assert stored["updated_at"] == profile["updated_at"]  # not bumped
+    assert "updated_by" not in stored
+    assert seen == []
+
+
+def test_sync_notifies_observers_with_profile_and_domain(tmp_path) -> None:
+    service, cameras, _engine, _plc, _calibration = make_service(tmp_path)
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    service.apply_profile(profile)
+    seen: list[tuple[str, str]] = []
+    service.subscribe(lambda p, domain: seen.append((p["name"], domain)))
+
+    cameras.apply_live_override(1, exposure_us=44000)
+    service.sync_active_profile("cameras")
+
+    assert seen == [("Model A", "cameras")]
+
+
+def test_failing_observer_never_breaks_the_sync(tmp_path) -> None:
+    service, cameras, _engine, _plc, _calibration = make_service(tmp_path)
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    service.apply_profile(profile)
+    service.subscribe(lambda p, d: (_ for _ in ()).throw(RuntimeError("boom")))
+
+    cameras.apply_live_override(1, exposure_us=44000)
+    assert service.sync_active_profile("cameras") is not None
+    assert service.get_by_id(profile["id"])["cameras"]["1"]["exposure_us"] == 44000
+
+
+def test_deleting_the_active_profile_stops_syncing_into_it(tmp_path) -> None:
+    service, cameras, _engine, _plc, _calibration = make_service(tmp_path)
+    profile = service.capture_current("Model A", 3, created_by="admin")
+    service.apply_profile(profile)
+    service.delete(profile["id"])
+
+    cameras.apply_live_override(1, exposure_us=44000)
+    assert service.active_profile_id is None
+    assert service.sync_active_profile("cameras") is None
+
+
+def test_sync_rejects_an_unknown_domain(tmp_path) -> None:
+    service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
+    with pytest.raises(ValueError):
+        service.sync_active_profile("screw_driver_compensation")

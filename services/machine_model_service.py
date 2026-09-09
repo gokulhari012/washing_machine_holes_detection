@@ -18,12 +18,25 @@ already use for their own live "Test"/"Apply Live" actions
 ``CalibrationManager.apply_live``), so the manually maintained baseline
 configuration — and the calibration history — is untouched by an automatic
 switch.
+
+The traffic in the other direction is :meth:`MachineModelService.sync_active_profile`:
+once a profile is live, saving on the Camera, Detection or Calibration page
+folds that one domain straight back into it, so the profile never drifts from
+the settings the station is actually running and nobody has to remember to
+press "Update Selected from Current" afterwards. The composition root wires
+the three save notifications to it; the Machine Models page repaints on the
+:meth:`subscribe` fan-out.
+
+Everything a profile captures is therefore read from the **live** objects,
+never from ``camera.json``/``detection.json``: applying a profile does not
+write those files, so after a model switch the files describe the *previous*
+model and snapshotting them would quietly undo the switch (CLAUDE.md §8).
 """
 
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, Callable
 
 from core.calibration import CalibrationManager, CameraCalibration
 from core.logging import get_logger
@@ -46,6 +59,14 @@ _TUNABLE_CAMERA_FIELDS = (
     "roi", "exposure_us", "gain_db", "gamma", "brightness",
     "width", "height", "trigger_mode",
 )
+
+
+# Profile keys :meth:`MachineModelService.sync_active_profile` can re-capture
+# on its own — one settings domain per engineering page, matching the three
+# blocks "Update Selected from Current" writes together.
+_SYNCABLE_DOMAINS = ("cameras", "detection", "calibration")
+
+ProfileCallback = Callable[[dict[str, Any], str], None]
 
 
 def _default_screw_compensation() -> dict[str, Any]:
@@ -74,6 +95,8 @@ class MachineModelService:
         self._engine = vision_engine
         self._plc = plc_service
         self._calibration = calibration_manager
+        self._active_profile_id: int | None = None
+        self._observers: list[ProfileCallback] = []
 
     # -------------------------------------------------------------- queries
     def list_profiles(self) -> list[dict[str, Any]]:
@@ -109,7 +132,7 @@ class MachineModelService:
             "name": name.strip(),
             "plc_code": plc_code,
             "cameras": self._snapshot_cameras(),
-            "detection": self._config.load("detection"),
+            "detection": self._snapshot_detection(),
             "calibration": self._snapshot_calibrations(),
             "screw_driver_compensation": _default_screw_compensation(),
             "created_by": created_by,
@@ -118,6 +141,7 @@ class MachineModelService:
         }
         profiles.append(profile)
         self._config.save("machine_models", document)
+        self._adopt_if_unclaimed(int(profile["id"]))
         logger.info("Machine model profile %r captured (code %d)", name, plc_code)
         return profile
 
@@ -133,11 +157,12 @@ class MachineModelService:
         profile = self._find(profiles, profile_id)
 
         profile["cameras"] = self._snapshot_cameras()
-        profile["detection"] = self._config.load("detection")
+        profile["detection"] = self._snapshot_detection()
         profile["calibration"] = self._snapshot_calibrations()
         profile["updated_at"] = datetime.now().isoformat(timespec="seconds")
         profile["updated_by"] = updated_by
         self._config.save("machine_models", document)
+        self._adopt_if_unclaimed(profile_id)
         logger.info("Machine model profile %r updated from current settings", profile["name"])
         return profile
 
@@ -201,6 +226,8 @@ class MachineModelService:
             raise ConfigurationError(f"No machine model profile with id {profile_id}")
         document["profiles"] = remaining
         self._config.save("machine_models", document)
+        if self._active_profile_id == profile_id:
+            self._active_profile_id = None  # nothing left to sync saves into
         logger.info("Machine model profile %d deleted", profile_id)
 
     # --------------------------------------------------------------- apply
@@ -209,6 +236,9 @@ class MachineModelService:
         detection, per-camera calibration and the profile's screw-driver
         compensation offsets, then echo the profile's PLC code back to the
         machine-model-select register.
+
+        Also claims *profile* as the target a later page Save syncs into —
+        see :attr:`active_profile_id`.
 
         Never persists camera.json/detection.json, and never writes a new row
         to the calibration database. Camera and calibration application are
@@ -282,24 +312,201 @@ class MachineModelService:
         except VisionSystemError as exc:
             warnings.append(f"model_select register not written: {exc}")
 
+        # This profile now describes the running settings, so it is where a
+        # subsequent page Save is folded back (see :attr:`active_profile_id`).
+        # An id-less profile — only a hand-built one in a test — releases the
+        # claim rather than leaving saves pointed at the outgoing model.
+        self._active_profile_id = int(profile["id"]) if "id" in profile else None
         return warnings
 
+    # ------------------------------------------------------ active profile
+    @property
+    def active_profile_id(self) -> int | None:
+        """Id of the profile the station's live settings belong to — the one
+        :meth:`sync_active_profile` writes a saved settings domain back into.
+
+        Claimed by :meth:`apply_profile`: a model that has been pushed live
+        (by the PLC's model_select register or by "Apply Now") *is* what the
+        running settings describe, and it is what the "Currently active"
+        line on the Machine Models page names.
+
+        ``None`` until that has happened, and again once the active profile
+        is deleted — which is what stops a station that has never selected a
+        model from quietly growing every settings edit into an arbitrary
+        profile. Only in that unclaimed state do
+        :meth:`capture_current`/:meth:`update_from_current` adopt the profile
+        they just wrote (see :meth:`_adopt_if_unclaimed`), so commissioning a
+        station with "New from Current" works before any model has been
+        applied.
+
+        Deliberately *not* the Machine Models page's selected row: browsing
+        profiles — or copying the current settings into a second profile with
+        "Update Selected from Current" — must not redirect where the next
+        Camera-page Save lands, or the model actually running would start
+        drifting again, which is the whole problem this exists to stop.
+        """
+        return self._active_profile_id
+
+    def _adopt_if_unclaimed(self, profile_id: int) -> None:
+        """Make *profile_id* the sync target only while no model is live.
+
+        See :attr:`active_profile_id` for why a claimed target is never
+        stolen by a capture.
+        """
+        if self._active_profile_id is None:
+            self._active_profile_id = profile_id
+
+    def sync_active_profile(
+        self, domain: str, *, updated_by: str = ""
+    ) -> dict[str, Any] | None:
+        """Re-capture one live settings domain into the active profile.
+
+        This is what makes a Camera / Detection / Calibration page's **Save**
+        show up in the machine model immediately, instead of waiting for
+        someone to return to the Machine Models page and press "Update
+        Selected from Current". A profile that has been applied describes the
+        station's running configuration; letting it drift from the settings
+        actually in force is how a model switch later silently reverts a
+        tuning session.
+
+        One domain per call, and each snapshot is read from the live objects
+        rather than the config files (see :meth:`_snapshot_cameras`): saving
+        on the Detection page must not drag the camera and calibration blocks
+        back to whatever ``camera.json`` and the calibration table hold, which
+        after a model switch is the *previous* model.
+
+        Returns the rewritten profile, or ``None`` when there is nothing to
+        do — no active profile, the active profile has since been deleted, or
+        the snapshot is identical to what the profile already holds. That last
+        case matters: a Save that changed nothing must not rewrite
+        machine_models.json or bump ``updated_at``.
+
+        Raises:
+            ValueError: *domain* is not one of ``cameras``/``detection``/
+                ``calibration`` (a programming error, so deliberately outside
+                the ``VisionSystemError`` tree).
+            ConfigurationError: machine_models.json could not be read/written.
+        """
+        if domain not in _SYNCABLE_DOMAINS:
+            raise ValueError(
+                f"Unknown machine-model domain {domain!r}; expected one of {_SYNCABLE_DOMAINS}"
+            )
+        profile_id = self._active_profile_id
+        if profile_id is None:
+            return None
+
+        document = self._config.load("machine_models")
+        profiles = document.setdefault("profiles", [])
+        try:
+            profile = self._find(profiles, profile_id)
+        except ConfigurationError:
+            # Deleted from under us by another page; stop trying to sync it.
+            self._active_profile_id = None
+            return None
+
+        snapshot = self._snapshot(domain)
+        if profile.get(domain) == snapshot:
+            return None
+
+        profile[domain] = snapshot
+        profile["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        if updated_by:
+            profile["updated_by"] = updated_by
+        self._config.save("machine_models", document)
+        logger.info(
+            "Machine model profile %r synced from saved %s settings", profile["name"], domain
+        )
+        self._notify(profile, domain)
+        return profile
+
+    # ----------------------------------------------------------- observers
+    def subscribe(self, callback: ProfileCallback) -> None:
+        """Register ``callback(profile, domain)``, invoked after
+        :meth:`sync_active_profile` actually rewrote a profile.
+
+        Plain callables rather than Qt signals, matching ``ConfigManager``:
+        this service stays Qt-free. The Machine Models page uses it to
+        repaint, since an automatic sync is the one profile change no button
+        on that page initiated. Callbacks run on the saving thread — in
+        practice the GUI thread, where the engineering pages' Save buttons
+        live — and an exception in one is logged, never propagated.
+        """
+        self._observers.append(callback)
+
+    def unsubscribe(self, callback: ProfileCallback) -> None:
+        """Remove a previously registered callback (no-op if absent)."""
+        try:
+            self._observers.remove(callback)
+        except ValueError:
+            pass
+
+    def _notify(self, profile: dict[str, Any], domain: str) -> None:
+        for callback in list(self._observers):
+            try:
+                callback(profile, domain)
+            except Exception:  # an observer must never break a save
+                logger.exception("Machine model observer failed")
+
     # -------------------------------------------------------------- internal
+    def _snapshot(self, domain: str) -> Any:
+        return {
+            "cameras": self._snapshot_cameras,
+            "detection": self._snapshot_detection,
+            "calibration": self._snapshot_calibrations,
+        }[domain]()
+
     def _snapshot_cameras(self) -> dict[str, dict[str, Any]]:
+        """Every camera's tunable fields as the station is *running* them.
+
+        Reads ``CameraService.get_effective_configs()`` — camera.json with the
+        live ``CameraManager`` settings merged over it — not the persisted
+        baseline. Applying a profile (and the Camera page's "Apply Live")
+        changes the running camera without writing camera.json, so the file is
+        the wrong answer to "what is current": snapshotting it would capture
+        the *previous* model's ROI/exposure into the one now live. Same rule
+        the Camera page itself follows (CLAUDE.md §8).
+        """
         snapshot: dict[str, dict[str, Any]] = {}
-        for cfg in self._cameras.get_configs():
+        for cfg in self._cameras.get_effective_configs():
             index = int(cfg["index"])
             snapshot[str(index)] = {key: cfg[key] for key in _TUNABLE_CAMERA_FIELDS if key in cfg}
         return snapshot
 
+    def _snapshot_detection(self) -> dict[str, Any]:
+        """Every camera's *live* detection block, in detection.json's shape.
+
+        ``VisionEngine.camera_config`` rather than ``detection.json``, for the
+        same reason :meth:`_snapshot_cameras` reads the effective camera
+        config: ``apply_config``/``apply_camera_config`` are "preview, don't
+        persist", so after a model switch (or a Detection-page "Test") the
+        file is the older document. A camera the engine has no strategy for
+        falls back to the file's block, so a profile never loses a camera
+        outright; if that leaves nothing at all, the whole file is kept, since
+        an empty ``cameras`` map is not a document ``apply_config`` accepts.
+        """
+        document = self._config.load("detection")
+        from_file = document.get("cameras", {})
+        indices = {int(cfg["index"]) for cfg in self._cameras.get_effective_configs()}
+        indices.update(int(index) for index in from_file)
+
+        snapshot: dict[str, Any] = {}
+        for index in sorted(indices):
+            block = self._engine.camera_config(index) or from_file.get(str(index))
+            if block is not None:
+                snapshot[str(index)] = block
+        return {"cameras": snapshot} if snapshot else document
+
     def _snapshot_calibrations(self) -> dict[str, dict[str, Any]]:
         """Every configured camera's active calibration, JSON-serialised.
+
+        Already live by construction — ``CalibrationManager.get`` reads the
+        same cache ``apply_live`` writes, not the calibration table.
 
         A camera with no active calibration (identity fallback) is simply
         omitted — the map is sparse by convention, never padded with blanks.
         """
         snapshot: dict[str, dict[str, Any]] = {}
-        for cfg in self._cameras.get_configs():
+        for cfg in self._cameras.get_effective_configs():
             index = int(cfg["index"])
             calibration = self._calibration.get(index)
             if calibration is not None:
