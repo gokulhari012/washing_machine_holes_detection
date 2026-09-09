@@ -422,6 +422,12 @@ class PlcPage(QWidget):
             ["Register Name", "Type", "Register Number", "Live Value"]
         )
         self._table.verticalHeader().setVisible(False)
+        # Zebra striping: 40-odd rows of near-identical numbers are easy to
+        # read across the wrong row, and the spin box in column 2 makes the
+        # rows tall enough for that to matter. The theme's
+        # ``alternate-background-color`` is a deliberately faint step from the
+        # base, same as the Database and Logs tables.
+        self._table.setAlternatingRowColors(True)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         header = self._table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
