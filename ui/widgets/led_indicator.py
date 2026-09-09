@@ -7,13 +7,18 @@ from PySide6.QtGui import QColor, QPainter, QRadialGradient
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
 from core.utilities.enums import ConnectionState
+from ui import theme
 
-STATE_COLORS: dict[str, str] = {
-    ConnectionState.CONNECTED.value: "#3fb950",
-    ConnectionState.DISCONNECTED.value: "#57606a",
-    ConnectionState.CONNECTING.value: "#d29922",
-    ConnectionState.ERROR.value: "#f85149",
+# Palette tokens, not hex: the light scheme darkens the verdict colours so a
+# green LED still clears 3:1 against a white panel, and an LED nobody can
+# read is worse than no LED at all.
+STATE_TOKENS: dict[str, str] = {
+    ConnectionState.CONNECTED.value: "good",
+    ConnectionState.DISCONNECTED.value: "text-disabled",
+    ConnectionState.CONNECTING.value: "warn",
+    ConnectionState.ERROR.value: "ng",
 }
+_UNKNOWN_TOKEN = "text-disabled"
 
 
 class LedIndicator(QWidget):
@@ -22,17 +27,30 @@ class LedIndicator(QWidget):
     def __init__(self, diameter: int = 14, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._diameter = diameter
-        self._color = QColor(STATE_COLORS[ConnectionState.DISCONNECTED.value])
+        # The last state set, kept so a theme change can re-resolve its token.
+        # A raw colour passed to set_color clears it: that caller chose a
+        # specific colour and gets to keep it.
+        self._token: str | None = _UNKNOWN_TOKEN
+        self._color = theme.qcolor(_UNKNOWN_TOKEN)
         self.setFixedSize(diameter, diameter)
+        theme.subscribe(self._on_theme_changed)
 
     def set_state(self, state: ConnectionState | str) -> None:
         """Colour from a ConnectionState (or its string value)."""
         key = state.value if isinstance(state, ConnectionState) else str(state)
-        self.set_color(STATE_COLORS.get(key, "#57606a"))
+        self._token = STATE_TOKENS.get(key, _UNKNOWN_TOKEN)
+        self._color = theme.qcolor(self._token)
+        self.update()
 
     def set_color(self, color: str) -> None:
+        self._token = None
         self._color = QColor(color)
         self.update()
+
+    def _on_theme_changed(self, _theme) -> None:
+        if self._token is not None:
+            self._color = theme.qcolor(self._token)
+            self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt naming)
         painter = QPainter(self)

@@ -1,0 +1,332 @@
+/* ==========================================================================
+   Washing Machine Bottom Hole Detection - theme template.
+
+   NOT a stylesheet: every colour is a placeholder that ui.theme fills in from
+   the palette of the selected AppTheme (dark or light) before handing the
+   result to QApplication.setStyleSheet. Both schemes are painted from
+   this one file, so a rule added here reaches both automatically - which is
+   the whole point; a second, hand-maintained light_theme.qss would drift.
+
+   Adding a colour means adding a token to *both* palettes in ui/theme.py; an
+   unknown placeholder is refused at load time rather than silently dropped.
+   ========================================================================== */
+
+QWidget {
+    background-color: @bg;
+    color: @text;
+    font-family: "Segoe UI", "Noto Sans", sans-serif;
+    font-size: 13px;
+}
+QLabel, QCheckBox, QRadioButton { background: transparent; }
+QToolTip {
+    background-color: @button-bg;
+    color: @text;
+    border: 1px solid @border-strong;
+    padding: 4px 8px;
+}
+
+/* ------------------------------------------------------------- typography */
+QLabel[class="pageTitle"] { font-size: 20px; font-weight: 600; color: @text-strong; }
+QLabel[class="dim"]       { color: @text-dim; }
+QLabel[class="danger"]    { color: @ng; font-weight: 700; }
+/* Amber caption for a setting that is legal but probably not what was meant
+   (the Settings page's rota notes). A class rather than an inline stylesheet
+   so it re-paints with the rest of the UI when the theme changes. */
+QLabel[class="warn"]      { color: @warn; }
+QLabel[result="GOOD"]  { color: @good; font-weight: 700; }
+QLabel[result="NG"]    { color: @ng; font-weight: 700; }
+QLabel[result="ERROR"] { color: @warn; font-weight: 700; }
+/* not a verdict: the camera never inspected this part (gantry inactive) */
+QLabel[result="SKIPPED"] { color: @text-dim; font-weight: 700; }
+
+/* ----------------------------------------------------------- nav rail */
+QListWidget#navRail {
+    background-color: @bg-deep;
+    border: none;
+    border-right: 1px solid @button-bg;
+    outline: 0;
+    padding: 6px 4px;
+}
+QListWidget#navRail::item {
+    color: @text-dim;
+    padding: 11px 14px;
+    border-radius: 6px;
+    margin: 2px 4px;
+}
+QListWidget#navRail::item:hover    { background-color: @nav-hover-bg; color: @nav-hover-fg; }
+QListWidget#navRail::item:selected {
+    background-color: @nav-selected-bg;
+    color: @text-strong;
+    border-left: 3px solid @accent;
+}
+
+/* --------------------------------------------------------------- buttons */
+QPushButton {
+    background-color: @button-bg;
+    border: 1px solid @border-strong;
+    border-radius: 5px;
+    padding: 6px 16px;
+    color: @text;
+}
+QPushButton:hover    { background-color: @button-hover-bg; border-color: @button-hover-border; }
+QPushButton:pressed  { background-color: @button-pressed-bg; }
+QPushButton:disabled { background-color: @alt-bg; color: @text-disabled; border-color: @button-disabled-border; }
+QPushButton[class="primary"] {
+    background-color: @accent;
+    border: 1px solid @accent;
+    color: @on-accent;
+    font-weight: 600;
+}
+QPushButton[class="primary"]:hover    { background-color: @accent-hover; }
+QPushButton[class="primary"]:pressed  { background-color: @accent-pressed; }
+QPushButton[class="primary"]:disabled { background-color: @accent-disabled-bg; color: @accent-disabled-fg; border-color: @accent-disabled-bg; }
+QPushButton[class="danger"] {
+    background-color: transparent;
+    border: 1px solid @ng;
+    color: @ng;
+}
+QPushButton[class="danger"]:hover { background-color: @danger-bg; }
+/* Square icon buttons in a camera panel header. The panel behind them is
+   darker than the page (@surface), so these sit a step lighter than a normal
+   button or they read as empty holes. */
+QPushButton[class="panelIcon"], QPushButton[class="panelIconAccent"] {
+    padding: 0px;
+    min-width: 26px; max-width: 26px;
+    min-height: 24px; max-height: 24px;
+    border-radius: 4px;
+}
+QPushButton[class="panelIcon"] {
+    background-color: @panel-icon-bg;
+    border: 1px solid @panel-icon-border;
+}
+QPushButton[class="panelIcon"]:hover    { background-color: @panel-icon-hover-bg; border-color: @panel-icon-hover-border; }
+QPushButton[class="panelIcon"]:pressed  { background-color: @panel-icon-pressed-bg; }
+QPushButton[class="panelIcon"]:disabled { background-color: @input-bg; border-color: @border; }
+/* The trigger is the panel's action button, so it carries the accent. */
+QPushButton[class="panelIconAccent"] {
+    background-color: @accent;
+    border: 1px solid @accent;
+}
+QPushButton[class="panelIconAccent"]:hover    { background-color: @accent-hover; border-color: @accent-hover; }
+QPushButton[class="panelIconAccent"]:pressed  { background-color: @accent-pressed; border-color: @accent-pressed; }
+QPushButton[class="panelIconAccent"]:disabled { background-color: @accent-disabled-bg; border-color: @accent-disabled-bg; }
+QToolButton {
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    padding: 4px;
+    color: @text-muted;
+}
+QToolButton:hover { background-color: @button-bg; color: @text; }
+
+/* ---------------------------------------------------------------- inputs */
+QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QDateEdit, QTimeEdit, QDateTimeEdit, QPlainTextEdit, QTextEdit {
+    background-color: @input-bg;
+    border: 1px solid @border;
+    border-radius: 4px;
+    padding: 5px 8px;
+    selection-background-color: @accent;
+    selection-color: @on-accent;
+}
+QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus,
+QDateEdit:focus, QTimeEdit:focus, QDateTimeEdit:focus, QPlainTextEdit:focus, QTextEdit:focus {
+    border-color: @accent;
+}
+QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled, QComboBox:disabled {
+    color: @text-disabled; background-color: @input-disabled-bg;
+}
+QSpinBox::up-button, QDoubleSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::down-button {
+    background-color: @button-bg; border: none; width: 16px;
+}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover { background-color: @button-hover-bg; }
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    width: 0; height: 0;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-bottom: 5px solid @text-dim;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow, QComboBox::down-arrow {
+    width: 0; height: 0;
+    border-left: 4px solid transparent; border-right: 4px solid transparent;
+    border-top: 5px solid @text-dim;
+}
+QComboBox::drop-down { border: none; width: 22px; }
+QComboBox QAbstractItemView {
+    background-color: @input-bg;
+    border: 1px solid @border-strong;
+    selection-background-color: @selection-bg;
+    outline: 0;
+}
+QCheckBox::indicator, QRadioButton::indicator {
+    width: 15px; height: 15px;
+    border: 1px solid @border-strong;
+    border-radius: 3px;
+    background-color: @input-bg;
+}
+QRadioButton::indicator { border-radius: 8px; }
+QCheckBox::indicator:hover, QRadioButton::indicator:hover { border-color: @accent; }
+QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+    background-color: @accent;
+    border-color: @accent;
+}
+QCheckBox:disabled, QRadioButton:disabled { color: @text-disabled; }
+
+/* ------------------------------------------------------- group box / tabs */
+QGroupBox {
+    border: 1px solid @border;
+    border-radius: 6px;
+    margin-top: 12px;
+    padding-top: 10px;
+    font-weight: 600;
+}
+QGroupBox::title {
+    subcontrol-origin: margin;
+    left: 10px;
+    padding: 0 5px;
+    color: @text-muted;
+}
+QTabWidget::pane { border: 1px solid @border; border-radius: 4px; top: -1px; }
+QTabBar::tab {
+    background-color: @alt-bg;
+    border: 1px solid @border;
+    border-bottom: none;
+    padding: 7px 18px;
+    border-top-left-radius: 5px;
+    border-top-right-radius: 5px;
+    color: @text-dim;
+    margin-right: 2px;
+}
+QTabBar::tab:selected { background-color: @button-bg; color: @text-strong; border-bottom: 2px solid @accent; }
+QTabBar::tab:hover:!selected { background-color: @tab-hover-bg; }
+
+/* ---------------------------------------------------------------- tables */
+QTableView, QTableWidget, QTreeView, QListView {
+    background-color: @surface;
+    alternate-background-color: @alt-bg;
+    gridline-color: @grid-line;
+    border: 1px solid @border;
+    border-radius: 4px;
+    selection-background-color: @selection-bg;
+    selection-color: @text-strong;
+    outline: 0;
+}
+QHeaderView::section {
+    background-color: @header-bg;
+    color: @text-muted;
+    padding: 6px 8px;
+    border: none;
+    border-bottom: 2px solid @border;
+    border-right: 1px solid @grid-line;
+    font-weight: 600;
+}
+QTableCornerButton::section { background-color: @header-bg; border: none; }
+
+/* ------------------------------------------------------------- scrollbars */
+QScrollBar:vertical { background: @bg; width: 11px; margin: 0; }
+QScrollBar::handle:vertical {
+    background: @border; border-radius: 5px; min-height: 30px; margin: 2px;
+}
+QScrollBar::handle:vertical:hover { background: @scroll-hover; }
+QScrollBar:horizontal { background: @bg; height: 11px; margin: 0; }
+QScrollBar::handle:horizontal {
+    background: @border; border-radius: 5px; min-width: 30px; margin: 2px;
+}
+QScrollBar::handle:horizontal:hover { background: @scroll-hover; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
+
+/* ------------------------------------------- toolbar / statusbar / menus */
+QLabel#brandLabel { font-size: 15px; font-weight: 700; color: @text-strong; }
+/* Layout padding in the toolbar and status bar; it must show whatever bar
+   it sits on, not the page background a bare QWidget would paint. */
+QWidget#barSpacer { background: transparent; }
+QToolBar {
+    background-color: @surface;
+    border: none;
+    border-bottom: 1px solid @button-bg;
+    padding: 4px 8px;
+    spacing: 6px;
+}
+QStatusBar {
+    background-color: @bg-deep;
+    border-top: 1px solid @button-bg;
+    color: @text-dim;
+}
+QStatusBar::item { border: none; }
+QMenuBar { background-color: @bg-deep; }
+QMenuBar::item { padding: 6px 10px; background: transparent; }
+QMenuBar::item:selected { background-color: @button-bg; border-radius: 4px; }
+QMenu { background-color: @input-bg; border: 1px solid @border-strong; padding: 4px; }
+QMenu::item { padding: 6px 24px; border-radius: 4px; }
+QMenu::item:selected { background-color: @selection-bg; }
+QMenu::separator { height: 1px; background: @border; margin: 4px 8px; }
+
+/* ------------------------------------------------------ slider / progress */
+QSlider::groove:horizontal {
+    height: 5px; background: @button-bg; border-radius: 2px;
+}
+QSlider::sub-page:horizontal { background: @accent; border-radius: 2px; }
+QSlider::handle:horizontal {
+    width: 14px; height: 14px; margin: -5px 0;
+    background: @slider-handle; border-radius: 7px;
+}
+QSlider::handle:horizontal:hover { background: @slider-handle-hover; }
+QProgressBar {
+    background-color: @input-bg; border: 1px solid @border;
+    border-radius: 4px; text-align: center; color: @text;
+}
+QProgressBar::chunk { background-color: @accent; border-radius: 3px; }
+
+/* -------------------------------------------------------- custom widgets */
+QFrame[class="panel"] {
+    background-color: @surface;
+    border: 1px solid @border;
+    border-radius: 8px;
+}
+QFrame[class="tile"] {
+    background-color: @tile-bg;
+    border: 1px solid @tile-border;
+    border-radius: 8px;
+}
+QLabel#tileTitle {
+    color: @text-dim; font-size: 11px; font-weight: 600; letter-spacing: 1px;
+}
+QLabel#tileValue { font-size: 26px; font-weight: 700; color: @text-strong; }
+
+/* Dashboard summary cards (cycle summary, camera coordinates): each
+   label/value pair sits in its own bordered "gridCell" card so the panel
+   reads as a filled table instead of loose text — see
+   ui.dashboard.summary_panels. */
+QFrame#gridCell {
+    background-color: @cell-bg;
+    border: 1px solid @cell-border;
+    border-radius: 6px;
+}
+QLabel#cellTitle {
+    color: @cell-title-fg; font-size: 13px; font-weight: 700; letter-spacing: 1px;
+}
+QLabel#cellValue { font-size: 20px; font-weight: 700; color: @cell-value-fg; }
+QLabel#cellValueLarge { font-size: 34px; font-weight: 800; color: @cell-value-strong-fg; }
+
+/* Camera Coordinates table: merged camera-name header cell, bold X/Y column
+   headers, coloured value cells — each item paints its own background/text
+   colour in code (ui.dashboard.summary_panels), so this only sets the frame
+   and grid lines around them. */
+QTableWidget#coordinatesTable {
+    background-color: transparent;
+    border: none;
+    gridline-color: @cell-border;
+    font-size: 14px;
+}
+QTableWidget#coordinatesTable::item { padding: 1px; border: none; }
+
+QFrame#alarmBanner { border-radius: 6px; }
+QFrame#alarmBanner[severity="error"]   { background-color: @danger-bg; border: 1px solid @ng; }
+QFrame#alarmBanner[severity="warning"] { background-color: @warn-bg; border: 1px solid @warn; }
+QFrame#alarmBanner QLabel { background: transparent; font-weight: 600; }
+QFrame#alarmBanner[severity="error"] QLabel   { color: @danger-fg; }
+QFrame#alarmBanner[severity="warning"] QLabel { color: @warn-fg; }
+
+/* splitter */
+QSplitter::handle { background-color: @button-bg; }
+QSplitter::handle:hover { background-color: @accent; }

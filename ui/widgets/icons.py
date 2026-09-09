@@ -21,11 +21,14 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QIcon, QPainter, QPainterPath, QPixmap
 
+from ui import theme
+
 #: nominal logical size the icons are painted at; the button sets the display size
 ICON_SIZE = 32
 
-_DEFAULT_COLOR = "#d6dbe3"
-_DEFAULT_DISABLED = "#57606a"
+# ``None`` means "take the colour from the theme in force at call time". A
+# plain hex default would freeze the dark palette into the function signature
+# at import, which is wrong the moment the light theme is selected.
 
 
 # --------------------------------------------------------------- painters
@@ -58,9 +61,20 @@ def _icon(paint, color: str, disabled_color: str, size: int) -> QIcon:
 
 
 def play_icon(
-    color: str = _DEFAULT_COLOR,
-    disabled_color: str = _DEFAULT_DISABLED,
+    color: str | None = None,
+    disabled_color: str | None = None,
     size: int = ICON_SIZE,
 ) -> QIcon:
-    """Triangular 'run' icon for the per-camera trigger button."""
-    return _icon(_paint_play, color, disabled_color, size)
+    """Triangular 'run' icon for the per-camera trigger button.
+
+    Either colour left as ``None`` is resolved from the active theme. A
+    caller painting onto a coloured button (the accent-filled trigger)
+    passes explicit colours instead, because those follow the button rather
+    than the page.
+    """
+    return _icon(
+        _paint_play,
+        theme.color("icon-fg") if color is None else color,
+        theme.color("icon-disabled-fg") if disabled_color is None else disabled_color,
+        size,
+    )

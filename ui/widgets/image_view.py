@@ -26,6 +26,8 @@ from PySide6.QtWidgets import (
     QGraphicsView,
 )
 
+from ui import theme
+
 _CENTER_MARK_COLOR = QColor("#ff2d95")
 _CENTER_MARK_FRACTION = 0.04  # crosshair arm length, as a fraction of the shorter image side
 _CENTER_MARK_MIN_HALF_LENGTH = 6.0
@@ -75,13 +77,20 @@ class ImageView(QGraphicsView):
         self._auto_fit = True
         self._has_image = False
 
-        self.setBackgroundBrush(QColor("#0d1117"))
+        self.setBackgroundBrush(theme.qcolor("viewer-bg"))
+        theme.subscribe(self._on_theme_changed)
         self.setRenderHints(
             QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform
         )
         self.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
         self.setFrameShape(QGraphicsView.Shape.NoFrame)
+
+    def _on_theme_changed(self, _theme) -> None:
+        """Re-read the letterbox colour. The crosshair keeps its magenta: it
+        is a landmark on the photograph, not part of the chrome, and has to
+        stay legible against a part rather than against the UI."""
+        self.setBackgroundBrush(theme.qcolor("viewer-bg"))
 
     # ------------------------------------------------------------------ api
     @property

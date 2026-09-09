@@ -15,7 +15,7 @@ a layout stretch factor instead of trailing off into an empty spacer:
   coordinate values themselves.
 
 Every label/value pair in :class:`CycleSummaryPanel` is wrapped in its own
-bordered "gridCell" card (see ``resources/styles/dark_theme.qss``) and every
+bordered "gridCell" card (see ``resources/styles/theme.qss``) and every
 grid row/column carries equal stretch, so as the panel is given more height
 by its parent layout, the cards themselves grow to fill it — the border, not
 just the text inside it, reaches the bottom of the tile. The coordinates
@@ -31,7 +31,6 @@ from __future__ import annotations
 from datetime import datetime
 
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -44,6 +43,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ui import theme
+
 EMPTY = "—"
 CLOCK_INTERVAL_MS = 1000
 
@@ -52,12 +53,16 @@ CLOCK_INTERVAL_MS = 1000
 # time — green for X, yellow for Y, requested explicitly (they overlap the
 # GOOD/NG/ERROR palette elsewhere, but that's the point here: an axis, not a
 # verdict, is what's being read at this spot).
-X_VALUE_COLOR = QColor("#3fb950")
-Y_VALUE_COLOR = QColor("#e3c53d")
+#
+# These cells are *painted*, not styled by the QSS, so they name palette
+# tokens rather than hex: the item colours are re-applied from the live theme
+# in CameraCoordinatesPanel._restyle when the scheme changes.
+X_VALUE_TOKEN = "axis-x"
+Y_VALUE_TOKEN = "axis-y"
 
-CAMERA_HEADER_BG = QColor("#262e39")
-AXIS_HEADER_BG = QColor("#20262f")
-VALUE_ROW_BG = QColor("#1a2028")
+CAMERA_HEADER_TOKEN = "table-camera-header-bg"
+AXIS_HEADER_TOKEN = "table-axis-header-bg"
+VALUE_ROW_TOKEN = "table-value-bg"
 
 
 def _caption(text: str, centered: bool = False) -> QLabel:
@@ -167,20 +172,27 @@ class CycleSummaryPanel(QFrame):
         self._cycle_time.setText(f"{milliseconds:.0f} ms")
 
 
+def _paint_item(
+    item: QTableWidgetItem, background: str, color: str | None
+) -> None:
+    """Apply one cell's palette tokens in whatever theme is current."""
+    item.setBackground(theme.qcolor(background))
+    if color is not None:
+        item.setForeground(theme.qcolor(color))
+
+
 def _table_item(
     text: str,
     *,
-    background: QColor,
-    color: QColor | None = None,
+    background: str,
+    color: str | None = None,
     bold: bool = False,
     pixel_size: int | None = None,
 ) -> QTableWidgetItem:
     item = QTableWidgetItem(text)
     item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
     item.setFlags(Qt.ItemFlag.ItemIsEnabled)  # read-only, never selectable/editable
-    item.setBackground(background)
-    if color is not None:
-        item.setForeground(color)
+    _paint_item(item, background, color)
     if bold or pixel_size is not None:
         font = item.font()
         font.setBold(bold)
@@ -220,7 +232,7 @@ class CameraCoordinatesPanel(QFrame):
     that camera's picture in the grid beside it: the camera's name as a
     header cell merged across both columns, a bold "X" / "Y" column-header
     row, then the values themselves — X in green, Y in yellow (see
-    :data:`X_VALUE_COLOR` / :data:`Y_VALUE_COLOR`) so the two axes read apart
+    :data:`X_VALUE_TOKEN` / :data:`Y_VALUE_TOKEN`) so the two axes read apart
     instantly. Every table's row/column resize mode is ``Stretch`` and the
     outer grid's rows/columns carry equal stretch too, so all four fill the
     tile's full height with no leftover space, the same as
@@ -241,10 +253,16 @@ class CameraCoordinatesPanel(QFrame):
         grid.setRowStretch(1, 1)
 
         self._values: dict[int, tuple[QTableWidgetItem, QTableWidgetItem]] = {}
+        # (item, background token, foreground token) for every painted cell,
+        # so a theme change can re-apply them: these are the one part of the
+        # dashboard the stylesheet cannot reach.
+        self._painted: list[tuple[QTableWidgetItem, str, str | None]] = []
         for position, (index, name) in enumerate(cameras):
             table = _camera_table()
 
-            name_item = _table_item(name, background=CAMERA_HEADER_BG, bold=True, pixel_size=13)
+            name_item = _table_item(
+                name, background=CAMERA_HEADER_TOKEN, bold=True, pixel_size=13
+            )
             # Each table is only half the panel's width in the 2x2 grid, so a
             # longer name (e.g. "Camera 4 - Bottom Right") can still be wider
             # than the column — the tooltip keeps it readable even elided.
@@ -252,21 +270,39 @@ class CameraCoordinatesPanel(QFrame):
             table.setItem(0, 0, name_item)
             table.setSpan(0, 0, 1, 2)
 
-            axis_kwargs = dict(background=AXIS_HEADER_BG, bold=True, pixel_size=13)
-            table.setItem(1, 0, _table_item("X", **axis_kwargs))
-            table.setItem(1, 1, _table_item("Y", **axis_kwargs))
+            axis_kwargs = dict(background=AXIS_HEADER_TOKEN, bold=True, pixel_size=13)
+            x_header = _table_item("X", **axis_kwargs)
+            y_header = _table_item("Y", **axis_kwargs)
+            table.setItem(1, 0, x_header)
+            table.setItem(1, 1, y_header)
 
             x_value = _table_item(
-                EMPTY, background=VALUE_ROW_BG, color=X_VALUE_COLOR, bold=True, pixel_size=12
+                EMPTY, background=VALUE_ROW_TOKEN, color=X_VALUE_TOKEN,
+                bold=True, pixel_size=12,
             )
             y_value = _table_item(
-                EMPTY, background=VALUE_ROW_BG, color=Y_VALUE_COLOR, bold=True, pixel_size=12
+                EMPTY, background=VALUE_ROW_TOKEN, color=Y_VALUE_TOKEN,
+                bold=True, pixel_size=12,
             )
             table.setItem(2, 0, x_value)
             table.setItem(2, 1, y_value)
 
+            self._painted += [
+                (name_item, CAMERA_HEADER_TOKEN, None),
+                (x_header, AXIS_HEADER_TOKEN, None),
+                (y_header, AXIS_HEADER_TOKEN, None),
+                (x_value, VALUE_ROW_TOKEN, X_VALUE_TOKEN),
+                (y_value, VALUE_ROW_TOKEN, Y_VALUE_TOKEN),
+            ]
             self._values[index] = (x_value, y_value)
             grid.addWidget(table, position // 2, position % 2)
+
+        theme.subscribe(self._restyle)
+
+    def _restyle(self, _theme) -> None:
+        """Re-apply every painted cell's tokens after a theme change."""
+        for item, background, color in self._painted:
+            _paint_item(item, background, color)
 
     def set_position(self, camera_index: int, x_mm: float, y_mm: float) -> None:
         items = self._values.get(camera_index)

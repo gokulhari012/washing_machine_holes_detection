@@ -67,7 +67,7 @@ Workers own **threads only** — zero business logic. Business logic lives in se
 | [services/](services/) | orchestration; `InspectionService` is the pipeline, `ShiftService` the rota | business rules |
 | [workers/](workers/) | 4 thread hosts (see [§7](#7-threading-model)) | cadence/lifecycle work |
 | [ui/](ui/) | `main_window` + 9 pages + `widgets/` | any screen change |
-| [resources/styles/](resources/) | dark QSS theme | styling |
+| [resources/styles/](resources/) | `theme.qss` — one token template, both schemes | styling |
 | [tests/](tests/) | pytest — vision, PLC, repositories, calibration | always |
 | [tools/](tools/) | `hole_debug.py` tuner, `basler_probe.py` | detector tuning |
 | [scripts/](scripts/), [development_files/](development_files/) | build script + throwaway lab scripts | rarely — see [gotchas](#9-gotchas--traps) |
@@ -460,7 +460,7 @@ Five domains in `KNOWN_CONFIGS`: `app_config`, `plc`, `camera`, `detection`,
 | `detection` | Hot-swapped **manually** by the page, which calls `VisionEngine.apply_camera_config(index, cfg)` *before* `save()` so validation happens first ([ui/detection/detection_page.py](ui/detection/detection_page.py)) — only the edited camera's block is swapped/persisted, the other three are untouched |
 | `plc` | **Subscribed** (`main.py`'s `_on_plc_config_saved`) → stops the poll worker, rebuilds `PlcManager` in place via `PlcManager.rebuild`, starts a fresh poll worker |
 | `machine_models` | Applied live via `MachineModelService.apply_profile` |
-| `app_config` | Read per-cycle in the pipeline; other keys read at startup. The `shifts` block is **subscribed** by `ShiftService`, which drops its cached rota and re-polls on every save |
+| `app_config` | Read per-cycle in the pipeline; other keys read at startup. The `shifts` block is **subscribed** by `ShiftService`, which drops its cached rota and re-polls on every save; `application.theme` is **subscribed** by `main.py`'s `_on_app_config_saved`, which re-paints the UI (see [§13](#13-theming)) |
 
 `detection.json`'s shape is per-camera: `{"cameras": {"1": {"active_detector": ...,
 "common": {...}, "opencv": {...}, "dark_hole": {...}, ...}, "2": {...}, ...}}` — each
@@ -691,6 +691,17 @@ edit and folded into the live profile: prefer writing the file directly, or
 clear the target first. `tests/test_machine_model_autosync.py` drives the real
 pages' Save handlers through the wiring end to end.
 
+**An inline `setStyleSheet("color: #...")` does not follow the theme.** The
+station now ships two colour schemes painted from one token template
+([§13](#13-theming)), so a hard-coded hex in Python is correct on whichever
+scheme it was written against and wrong on the other — and it is *invisible*
+until somebody switches. Prefer a QSS class or object name (`class="dim"`,
+`class="warn"`, `#brandLabel`); if the widget genuinely paints rather than
+styles, read `theme.color()` and subscribe to `theme.subscribe` so it
+re-reads. Same trap for a bare `QWidget` used as layout padding: it paints the
+*page* background over whatever bar it sits on, which is a shade off on dark
+and obvious on light — hence `QWidget#barSpacer { background: transparent; }`.
+
 **The PLC DB audit mirror is incomplete.** `PlcService._mirror_to_database` and the
 `plc_configurations` table cover only the original 100–119 registers — `model_select`,
 `camera_results` and `gantry_status` are **not** mirrored. JSON remains the source of
@@ -734,6 +745,8 @@ what it is, but treat these as stale:
   `image_file` camera driver
 - register table stops at 119 (missing per-camera results 128–131 and everything above)
 - §6 "Generation Plan" is a historical build checklist, not current state
+- describes a single hard-coded dark stylesheet; there are now two schemes
+  rendered from one `@token` template (`resources/styles/theme.qss`, [§13](#13-theming))
 
 ---
 
@@ -890,18 +903,19 @@ Calibration and Machine Models are the developer-only pair because both rewrite
 the *coordinate frame and the per-model tuning snapshot* — commissioning work, not
 shift work. Every other engineering console is admin.
 
-The **manual trigger controls are developer-only too**, and gated by *visibility*
-rather than by `min_role` (they are widgets, not pages): the toolbar's "Simulate
-trigger for all camera at a time" button (`MainWindow._refresh_nav_visibility`, the
-same place the nav rail is refreshed) and the Dashboard's whole trigger bar — the
-"Delay between cameras" spin box **and** its Simulate Trigger button
-(`DashboardPage._refresh_access`). They are *hidden*, not disabled. The per-camera
-▶ buttons on the camera panels are **not** gated — that is the operator's control.
-Because a page outlives a login, `DashboardPage` re-reads the session through
-`AuthService.subscribe` (a plain Qt-free callback list fired on every login and
-logout, so `services/` still knows nothing about the UI); `MainWindow` keeps
-refreshing from the login handler it already owns. `tests/test_manual_trigger_access.py`
-pins all of it.
+Three **widgets** are developer-only as well, gated by *visibility* rather than by
+`min_role` (they are not pages): the toolbar's "Simulate trigger for all camera at a
+time" button (`MainWindow._refresh_nav_visibility`, the same place the nav rail is
+refreshed), the Dashboard's whole trigger bar — the "Delay between cameras" spin box
+**and** its Simulate Trigger button (`DashboardPage._refresh_access`) — and the
+Settings page's **Appearance** group, the dark/light theme picker
+(`SettingsPage._refresh_access`, see [§13](#13-theming)). All are *hidden*, not
+disabled. The per-camera ▶ buttons on the camera panels are **not** gated — that is
+the operator's control. Because a page outlives a login, `DashboardPage` and
+`SettingsPage` re-read the session through `AuthService.subscribe` (a plain Qt-free
+callback list fired on every login and logout, so `services/` still knows nothing
+about the UI); `MainWindow` keeps refreshing from the login handler it already owns.
+`tests/test_manual_trigger_access.py` and `tests/test_theme.py` pin all of it.
 
 ```
 UserRole.covers()  ←  AuthService.has_role(role)  ←  MainWindow.add_page(min_role=…)
@@ -929,3 +943,56 @@ UserRole.covers()  ←  AuthService.has_role(role)  ←  MainWindow.add_page(min
 - There is **no account-management UI**: accounts are the two defaults, and Settings
   → Change Password only ever changes the password of whoever is logged in.
   `AuthService.create_user` exists and is admin-gated, but nothing calls it.
+
+---
+
+## 13. Theming
+
+Two schemes — **dark** (the shipped one, what the station was commissioned
+against) and **light** — painted from **one** stylesheet. There is no
+`light_theme.qss`, deliberately: 300 duplicated lines diverge the first time
+somebody styles a new widget in only one of them.
+
+```
+config app_config.application.theme  ──►  AppTheme  (core/utilities/enums.py)
+                                             │
+resources/styles/theme.qss  ── @token ──►  ui/theme.py
+   (template, not a stylesheet)              _DARK / _LIGHT palettes
+                                             │
+                                    apply_theme(qt_app, theme)
+                                      ├─ app.setStyle("Fusion")
+                                      ├─ app.setPalette(...)      # native dialogs
+                                      ├─ app.setStyleSheet(...)   # everything styled
+                                      └─ observers  ──► the widgets that *paint*
+```
+
+- **`theme.qss` is a template.** Every colour is an `@token`; `build_stylesheet`
+  substitutes the selected palette. A token the palette does not define raises
+  `ConfigurationError` rather than reaching Qt, which would silently drop the
+  whole rule. Adding a colour means adding it to **both** `_DARK` and `_LIGHT`
+  — `tests/test_theme.py` fails if only one gets it.
+- **Style it, don't paint it.** A widget coloured through the QSS follows a
+  theme change for free. Only code that paints — table cell backgrounds, log
+  level foregrounds, LED fills, icon pixmaps, the image viewer's letterbox —
+  needs `theme.color()`/`theme.qcolor()` **and** a `theme.subscribe(...)`
+  callback to re-read them. An inline `setStyleSheet("color: #...")` is the
+  trap: it survives the switch and keeps the old scheme's colour. The five
+  places that legitimately paint are `ui/dashboard/summary_panels.py`,
+  `ui/database/database_page.py`, `ui/logs/logs_page.py`,
+  `ui/widgets/led_indicator.py` and `ui/widgets/image_view.py`.
+- **Three colours deliberately do *not* follow the theme**, because they sit on
+  a photograph rather than on the UI: the image viewer's centre crosshair
+  (`_CENTER_MARK_COLOR`), the calibration point picker's marker, and the ROI
+  editor's accent. They have to stay legible against a washing-machine bottom,
+  not against a page.
+- **The switch is live.** `Application._on_app_config_saved` re-paints when
+  `application.theme` differs from what is in force; every other Settings save
+  is a no-op. Startup reads the file directly (`main._configured_theme`) before
+  the object graph exists, so the first frame is already in the right scheme,
+  and an unreadable or unrecognised value degrades to dark rather than
+  crashing the station.
+- **Who may change it:** developers only, hidden not disabled — see
+  [§12](#12-roles--access). An admin saving Settings preserves the stored
+  choice, because `_load` put it in the (hidden) combo box.
+- `apply_dark_theme` survives as a thin alias for the standalone lab scripts in
+  `scripts/` and `development_files/`, which have no config file to read.
