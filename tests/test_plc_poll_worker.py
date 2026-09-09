@@ -70,7 +70,7 @@ def test_global_trigger_is_cleared_on_detection(stack) -> None:
 
 
 def test_a_second_trigger_fires_again_after_the_clear(stack) -> None:
-    """Baselining on the 0 we wrote is what lets the next 1 read as an edge."""
+    """Once the released 0 has been observed on the wire, the next 1 is an edge."""
     client, manager, rmap = stack
     fired: list[int] = []
     worker = PlcPollWorker(manager, poll_interval_ms=10)
@@ -81,8 +81,67 @@ def test_a_second_trigger_fires_again_after_the_clear(stack) -> None:
         for _ in range(3):
             client.set_register(rmap.trigger, 1)
             assert wait_until(lambda: client.get_register(rmap.trigger) == 0)
+            # the clear stuck, so the worker sees the 0 on its next tick and is
+            # armed again — that observation is what makes the next 1 an edge
+            assert wait_until(lambda: worker._last_trigger == 0)
 
     assert len(fired) == 3
+
+
+def test_a_trigger_the_plc_holds_high_fires_exactly_once(stack) -> None:
+    """A PLC that drives the trigger high until it sees vision_complete
+    overwrites the 0 the PC acknowledges with. The cycle must still run once —
+    baselining on the 0 we wrote made every following tick look like a fresh
+    rising edge, re-running the inspection over and over off one PLC trigger.
+    """
+    client, manager, rmap = stack
+    fired: list[int] = []
+    worker = PlcPollWorker(manager, poll_interval_ms=10)
+    worker.trigger_detected.connect(fired.append, Qt.ConnectionType.DirectConnection)
+
+    original_write = client.write_register
+
+    def holding_write(address: int, value: int) -> None:
+        """The PLC re-asserts its own trigger; our 0 never takes."""
+        if address == rmap.trigger and value == 0:
+            return
+        original_write(address, value)
+
+    client.write_register = holding_write
+
+    with running(worker):
+        assert wait_until(lambda: worker._last_trigger == 0)
+        client.set_register(rmap.trigger, 1)
+        assert wait_until(lambda: len(fired) == 1)
+        time.sleep(0.1)  # ~10 further ticks with the trigger still high
+
+    assert len(fired) == 1
+    assert client.get_register(rmap.trigger) == 1  # still held by the "PLC"
+
+
+def test_a_held_trigger_fires_again_only_after_the_plc_lowers_it(stack) -> None:
+    """The next cycle waits for a real falling edge, not for our own write."""
+    client, manager, rmap = stack
+    fired: list[int] = []
+    worker = PlcPollWorker(manager, poll_interval_ms=10)
+    worker.trigger_detected.connect(fired.append, Qt.ConnectionType.DirectConnection)
+
+    original_write = client.write_register
+    client.write_register = lambda address, value: (
+        None if (address == rmap.trigger and value == 0) else original_write(address, value)
+    )
+
+    with running(worker):
+        assert wait_until(lambda: worker._last_trigger == 0)
+        client.set_register(rmap.trigger, 1)
+        assert wait_until(lambda: len(fired) == 1)
+
+        client.set_register(rmap.trigger, 0)  # PLC finally releases it
+        assert wait_until(lambda: worker._last_trigger == 0)
+        client.set_register(rmap.trigger, 1)  # ... and raises the next cycle
+        assert wait_until(lambda: len(fired) == 2)
+
+    assert len(fired) == 2
 
 
 def test_trigger_high_at_connect_is_baselined_not_cleared(stack) -> None:

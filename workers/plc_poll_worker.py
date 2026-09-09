@@ -32,6 +32,10 @@ between the two kinds of trigger, on purpose:
 * the **global trigger** is cleared here, on the tick that detects the edge
   and before the inspection has run, so a 0 means *received*. Completion is
   the separate signal on vision_complete, which is what the PLC waits on.
+  The edge state is baselined on the value actually *read* (1), never on the
+  0 written back, so a PLC that keeps driving the trigger high until it sees
+  vision_complete cannot re-fire the cycle every tick: a 0 has to be observed
+  on the wire before the next 1 counts as an edge.
 * a **per-camera trigger** is cleared at the *end* of that camera's cycle, by
   ``PlcManager.write_camera_inspection_output`` on the inspection thread, just
   before that camera's vision_complete goes high. A camera trigger still
@@ -126,13 +130,17 @@ class PlcPollWorker(QThread):
                         )
                         self.trigger_detected.emit(machine_number)
                         # Acknowledge immediately: the PLC only has to raise
-                        # the trigger, and the register is free for the next
-                        # cycle right away. The value we just read is stale
-                        # after this, so baseline on the 0 we wrote rather
-                        # than on `value` — otherwise the next 1 would look
-                        # like a continuation, not an edge.
+                        # the trigger, never lower it. Baseline on the 1 we
+                        # actually read, *not* on the 0 we just wrote: a PLC
+                        # that drives the trigger high until it sees
+                        # vision_complete overwrites that 0, and assuming it
+                        # stuck makes every following tick look like a fresh
+                        # rising edge — one PLC trigger then runs the cycle
+                        # over and over. Requiring a 0 to be *observed* before
+                        # the next edge costs at most one tick when our clear
+                        # does stick, and the PLC waits on vision_complete
+                        # before raising the next trigger anyway.
                         self._manager.clear_trigger()
-                        value = 0
                     self._last_trigger = value
 
                     self._poll_camera_triggers()

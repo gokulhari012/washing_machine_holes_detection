@@ -344,9 +344,15 @@ read results on, because it is written last and the PLC may read the instant it
 goes high.
 
 Two consequences that are easy to break:
-- The global trigger's clear **re-baselines the edge state on the 0 it wrote**, not
-  on the 1 just read — otherwise the next 1 looks like a continuation of the old
-  high and the following cycle never fires.
+- **Both** kinds of trigger baseline the edge state on the **1 actually read**, never
+  on the 0 the PC wrote back. Assuming the clear stuck is what re-ran one PLC trigger
+  as an endless stream of cycles: a PLC that drives the trigger high until it sees
+  `vision_complete` overwrites the PC's 0, so every following 50 ms tick read "1 with
+  a 0 baseline" — a fresh rising edge — and the queued triggers each ran a full cycle
+  as soon as the previous one released the busy flag. A **0 has to be observed on the
+  wire** before the next 1 counts. When the PC's clear *does* stick, that costs one
+  poll tick, and the PLC waits on `vision_complete` before raising the next trigger
+  anyway.
 - A camera trigger is baselined on the **1** it was read at, precisely so the
   end-of-cycle release registers as a falling edge and the PLC's next 1 as a fresh
   rising one. Holding it high across many poll ticks does not re-fire the cycle.
