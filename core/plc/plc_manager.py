@@ -10,6 +10,8 @@
 - typed operations for the inspection workflow (trigger, machine number,
   heartbeat, position/result writes) and raw access for the manual register
   viewer on the PLC page,
+- :meth:`pause`/:meth:`resume` to suspend every outgoing register/coil write
+  except the heartbeat — see their docstrings,
 - :meth:`rebuild` to swap in a new client/register map in place after a PLC
   configuration save, so the connection and register addresses take effect
   live instead of requiring an application restart.
@@ -39,6 +41,7 @@ from core.utilities.exceptions import PlcError
 logger = get_logger(LogSource.PLC)
 
 StateCallback = Callable[[ConnectionState], None]
+PausedCallback = Callable[[bool], None]
 
 # camera index -> (x_mm, y_mm), or None when that camera found no hole
 PositionMap = dict[int, tuple[float, float] | None]
@@ -65,6 +68,9 @@ class PlcManager:
         self._backoff_index = 0
         self._next_attempt_monotonic = 0.0
         self.last_error: str = ""
+        self._paused = False
+        self._paused_callbacks: list[PausedCallback] = []
+        self._pause_write_logged = False
 
     # ----------------------------------------------------------------- state
     @property
@@ -93,6 +99,64 @@ class PlcManager:
                 callback(new_state)
             except Exception:  # observers must never break the PLC loop
                 logger.exception("PLC state callback raised")
+
+    # ------------------------------------------------------------- pause
+    @property
+    def paused(self) -> bool:
+        return self._paused
+
+    def subscribe_paused(self, callback: PausedCallback) -> None:
+        """Register a callback fired whenever :meth:`pause`/:meth:`resume`
+        actually changes state (any thread) — mirrors :meth:`subscribe_state`."""
+        with self._state_lock:
+            self._paused_callbacks.append(callback)
+
+    def pause(self) -> None:
+        """Suspend every outgoing register/coil write except the heartbeat.
+
+        Reads, and everything upstream of a write (trigger edge detection,
+        the inspection pipeline, database persistence, the dashboard), keep
+        running unchanged — only the write itself is silently skipped, at
+        :meth:`_write`/:meth:`_write_coil`, the single choke point every
+        write call site already goes through. No ``PlcError`` is raised and
+        no alarm fires: a deliberate operator pause is not a communication
+        fault.
+
+        In practice this halts the *line*, not just this station's chatter:
+        the global trigger's acknowledgement (:meth:`clear_trigger`) and
+        every inspection-output write are skipped too, so a paused PLC never
+        sees ``vision_complete`` go high and dead-waits on whatever it last
+        raised — exactly the effect "pause communication" is for. The
+        heartbeat keeps toggling regardless (see :meth:`toggle_heartbeat`),
+        so the PLC's watchdog does not trip and drop the link entirely while
+        paused.
+
+        Idempotent; a second call while already paused is a no-op (no
+        duplicate log line, no duplicate callback).
+        """
+        if self._paused:
+            return
+        self._paused = True
+        self._pause_write_logged = False
+        logger.info("PLC communication paused (writes suspended, heartbeat continues)")
+        self._notify_paused(True)
+
+    def resume(self) -> None:
+        """Undo :meth:`pause`: writes flow again from the next call site."""
+        if not self._paused:
+            return
+        self._paused = False
+        logger.info("PLC communication resumed")
+        self._notify_paused(False)
+
+    def _notify_paused(self, paused: bool) -> None:
+        with self._state_lock:
+            callbacks = list(self._paused_callbacks)
+        for callback in callbacks:
+            try:
+                callback(paused)
+            except Exception:  # observers must never break the PLC loop
+                logger.exception("PLC paused callback raised")
 
     # ------------------------------------------------------------ connection
     def connect(self) -> None:
@@ -245,9 +309,12 @@ class PlcManager:
 
     # ----------------------------------------------------- workflow writes
     def toggle_heartbeat(self) -> None:
-        """Flip the heartbeat register (0↔1) so the PLC can watchdog the PC."""
+        """Flip the heartbeat register (0↔1) so the PLC can watchdog the PC.
+
+        The one write exempt from :meth:`pause` — see its docstring for why.
+        """
         self._heartbeat_value ^= 1
-        self._write(self._map.heartbeat, [self._heartbeat_value])
+        self._write(self._map.heartbeat, [self._heartbeat_value], bypass_pause=True)
 
     def write_model_select(self, code: int) -> bool:
         """Publish *code* to the machine-model-select register.
@@ -518,7 +585,10 @@ class PlcManager:
             self._handle_comm_error(exc)
             raise
 
-    def _write(self, address: int, values: list[int]) -> None:
+    def _write(self, address: int, values: list[int], *, bypass_pause: bool = False) -> None:
+        if self._paused and not bypass_pause:
+            self._log_paused_write_skipped(address)
+            return
         try:
             if len(values) == 1:
                 self._client.write_register(address, values[0])
@@ -536,11 +606,23 @@ class PlcManager:
             raise
 
     def _write_coil(self, address: int, value: bool) -> None:
+        if self._paused:
+            self._log_paused_write_skipped(address)
+            return
         try:
             self._client.write_coil(address, value)
         except PlcError as exc:
             self._handle_comm_error(exc)
             raise
+
+    def _log_paused_write_skipped(self, address: int) -> None:
+        """One line per pause session, not per skipped write — a paused
+        station can otherwise sit on the poll loop for minutes, and every
+        tick's trigger/heartbeat-adjacent writes would each try to log."""
+        if self._pause_write_logged:
+            return
+        self._pause_write_logged = True
+        logger.info("PLC write to [%d] skipped (communication paused)", address)
 
     def _handle_comm_error(self, exc: PlcError) -> None:
         """Drop into ERROR state so ensure_connected() drives recovery."""

@@ -17,12 +17,24 @@ property/value rows — deliberately structured rather than a hand-formatted
 text dump, since a profile now carries three independent settings domains
 per camera and a flat paragraph stopped scaling once detection and
 calibration became per-camera too.
+
+Below the tree, "Screw Driver Position Compensation" is the one part of a
+profile edited directly here rather than captured from a live value: 4
+per-camera (x_mm, y_mm) offsets plus an enable checkbox, saved straight onto
+the selected profile via "Save Compensation". When enabled and the profile is
+applied, the offsets are added only to the position written to the PLC — the
+recorded/dashboard hole position is never touched — see
+``services.machine_model_service.MachineModelService.set_screw_compensation``
+and ``services.inspection_service.InspectionService._plc_position``.
 """
 
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
+    QCheckBox,
+    QDoubleSpinBox,
     QFormLayout,
+    QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QHeaderView,
@@ -43,10 +55,20 @@ from models.app_state import AppState
 from services.auth_service import AuthService
 from services.machine_model_service import MachineModelService
 
+_SCREW_CAMERAS = (1, 2, 3, 4)
+
 
 def _code_spin() -> QSpinBox:
     spin = QSpinBox()
     spin.setRange(0, 65535)
+    return spin
+
+
+def _position_spin() -> QDoubleSpinBox:
+    spin = QDoubleSpinBox()
+    spin.setRange(-1000.0, 1000.0)
+    spin.setDecimals(2)
+    spin.setSuffix(" mm")
     return spin
 
 
@@ -141,6 +163,42 @@ class MachineModelsPage(QWidget):
         self._tree.header().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self._tree.header().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         right.addWidget(self._tree, stretch=1)
+
+        screw_box = QGroupBox("Screw Driver Position Compensation")
+        screw_layout = QVBoxLayout(screw_box)
+        self._screw_enabled = QCheckBox(
+            "Add these offsets to the position written to the PLC"
+        )
+        self._screw_enabled.setToolTip(
+            "When checked, each camera's offset below is added to that "
+            "camera's detected hole position before it is written to the "
+            "PLC. The recorded/dashboard position is never affected."
+        )
+        self._screw_enabled.toggled.connect(self._on_screw_enabled_toggled)
+        screw_layout.addWidget(self._screw_enabled)
+
+        screw_grid = QGridLayout()
+        screw_grid.addWidget(QLabel("Screw"), 0, 0)
+        screw_grid.addWidget(QLabel("X"), 0, 1)
+        screw_grid.addWidget(QLabel("Y"), 0, 2)
+        self._screw_spins: list[tuple[QDoubleSpinBox, QDoubleSpinBox]] = []
+        for row, camera_index in enumerate(_SCREW_CAMERAS, start=1):
+            screw_grid.addWidget(QLabel(f"Camera {camera_index}"), row, 0)
+            x_spin = _position_spin()
+            y_spin = _position_spin()
+            screw_grid.addWidget(x_spin, row, 1)
+            screw_grid.addWidget(y_spin, row, 2)
+            self._screw_spins.append((x_spin, y_spin))
+        screw_layout.addLayout(screw_grid)
+
+        save_screw_btn = QPushButton("Save Compensation")
+        save_screw_btn.setToolTip(
+            "Save these 4 screw driver offsets into the selected profile"
+        )
+        save_screw_btn.clicked.connect(self._on_save_screw_compensation)
+        screw_layout.addWidget(save_screw_btn)
+        right.addWidget(screw_box)
+
         self._status = QLabel("—")
         self._status.setProperty("class", "dim")
         self._status.setWordWrap(True)
@@ -183,10 +241,12 @@ class MachineModelsPage(QWidget):
         if profile is None:
             self._meta_label.setText("—")
             self._tree.clear()
+            self._populate_screw_compensation({})
             return
         self._name.setText(profile["name"])
         self._code.setValue(int(profile["plc_code"]))
         self._populate_profile(profile)
+        self._populate_screw_compensation(profile)
 
     # -------------------------------------------------------------- actions
     def _on_new_from_current(self) -> None:
@@ -244,6 +304,33 @@ class MachineModelsPage(QWidget):
             return
         self._reload()
 
+    def _on_screw_enabled_toggled(self, checked: bool) -> None:
+        for x_spin, y_spin in self._screw_spins:
+            x_spin.setEnabled(checked)
+            y_spin.setEnabled(checked)
+
+    def _on_save_screw_compensation(self) -> None:
+        profile_id = self._current_id()
+        if profile_id is None:
+            return
+        positions = {
+            camera_index: (x_spin.value(), y_spin.value())
+            for camera_index, (x_spin, y_spin) in zip(_SCREW_CAMERAS, self._screw_spins)
+        }
+        try:
+            self._svc.set_screw_compensation(
+                profile_id,
+                self._screw_enabled.isChecked(),
+                positions,
+                updated_by=self._username(),
+            )
+        except VisionSystemError as exc:
+            QMessageBox.warning(self, "Screw Driver Compensation", str(exc))
+            return
+        self._reload()
+        self._select_id(profile_id)
+        self._status.setText("Screw driver position compensation saved.")
+
     def _on_apply_now(self) -> None:
         profile = self._current_profile()
         if profile is None:
@@ -270,6 +357,24 @@ class MachineModelsPage(QWidget):
     def _username(self) -> str:
         user = self._auth.current_user
         return user.username if user is not None else ""
+
+    def _populate_screw_compensation(self, profile: dict) -> None:
+        """Fill the screw-driver compensation section from *profile* (or
+        blank/disabled defaults when no profile is selected)."""
+        compensation = profile.get("screw_driver_compensation", {})
+        enabled = bool(compensation.get("enabled", False))
+        positions = compensation.get("positions", {})
+
+        self._screw_enabled.blockSignals(True)
+        self._screw_enabled.setChecked(enabled)
+        self._screw_enabled.blockSignals(False)
+
+        for camera_index, (x_spin, y_spin) in zip(_SCREW_CAMERAS, self._screw_spins):
+            pos = positions.get(str(camera_index), {})
+            x_spin.setValue(float(pos.get("x_mm", 0.0)))
+            y_spin.setValue(float(pos.get("y_mm", 0.0)))
+            x_spin.setEnabled(enabled)
+            y_spin.setEnabled(enabled)
 
     # -------------------------------------------------------------- summary
     def _populate_profile(self, profile: dict) -> None:
@@ -349,6 +454,7 @@ class MachineModelsPage(QWidget):
         self._leaf(branch, "Confidence Threshold", common.get("confidence_threshold", "—"))
         self._leaf(branch, "Expected Hole Count", common.get("expected_hole_count", "—"))
         self._leaf(branch, "Position Tolerance", f"{common.get('position_tolerance_mm', '—')} mm")
+        self._leaf(branch, "Normalize Image", bool(common.get("normalize_image", False)))
 
         params = detection.get(active, {})
         if isinstance(params, dict) and params:

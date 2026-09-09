@@ -16,6 +16,14 @@ arbitrary register/value stays a separate, explicitly admin-gated control
 below the table — pushing a value to a *live* register right now is a
 different, more dangerous action than editing which address a name refers
 to, so it keeps its own confirmation path.
+
+"Pause Communication" suspends every outgoing register/coil write except the
+heartbeat (see ``PlcManager.pause``) — reads and the inspection pipeline keep
+running, but the PLC never sees vision_complete or a cleared trigger while
+paused, so the line dead-waits exactly as if stopped, without the link itself
+dropping. A red "PAUSED" badge next to the state LED mirrors
+``AppState.plc_paused_changed`` so the page reflects a pause requested from
+anywhere, not just its own checkbox.
 """
 
 from __future__ import annotations
@@ -271,8 +279,12 @@ class PlcPage(QWidget):
         title = QLabel("PLC Configuration")
         title.setProperty("class", "pageTitle")
         self._state_led = LabeledLed("PLC")
+        self._paused_label = QLabel("PAUSED")
+        self._paused_label.setProperty("class", "danger")
+        self._paused_label.setVisible(False)
         title_row.addWidget(title)
         title_row.addStretch()
+        title_row.addWidget(self._paused_label)
         title_row.addWidget(self._state_led)
         root.addLayout(title_row)
 
@@ -310,6 +322,21 @@ class PlcPage(QWidget):
         conn_form.addRow("Timeout", self._timeout)
         conn_form.addRow("Poll Interval", self._poll)
         left.addWidget(conn_box)
+
+        pause_box = QGroupBox("Communication")
+        pause_layout = QVBoxLayout(pause_box)
+        self._pause_checkbox = QCheckBox("Pause Communication")
+        self._pause_checkbox.setToolTip(
+            "While paused, no register or coil write is sent to the PLC "
+            "except the heartbeat — triggers are not acknowledged, no "
+            "inspection output is written, and vision_complete never goes "
+            "high, so the PLC dead-waits exactly as if the line were "
+            "stopped. The heartbeat keeps toggling so the PLC's watchdog "
+            "does not trip the link."
+        )
+        self._pause_checkbox.toggled.connect(self._on_pause_toggled)
+        pause_layout.addWidget(self._pause_checkbox)
+        left.addWidget(pause_box)
 
         manual_box = QGroupBox("Manual Write (admin)")
         manual = QHBoxLayout(manual_box)
@@ -433,7 +460,9 @@ class PlcPage(QWidget):
         app_state.plc_state_changed.connect(
             lambda value: self._state_led.set_state(value, f"PLC {value}")
         )
+        app_state.plc_paused_changed.connect(self._on_plc_paused_changed)
         self._load()
+        self._on_plc_paused_changed(self._svc.paused)
 
     # ---------------------------------------------------------------- load
     def _load(self) -> None:
@@ -487,6 +516,15 @@ class PlcPage(QWidget):
 
     def _on_reconnect(self) -> None:
         self._svc.request_reconnect()
+
+    def _on_pause_toggled(self, checked: bool) -> None:
+        self._svc.set_paused(checked)
+
+    def _on_plc_paused_changed(self, paused: bool) -> None:
+        self._pause_checkbox.blockSignals(True)
+        self._pause_checkbox.setChecked(paused)
+        self._pause_checkbox.blockSignals(False)
+        self._paused_label.setVisible(paused)
 
     def _on_save(self) -> None:
         try:

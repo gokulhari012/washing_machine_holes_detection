@@ -91,6 +91,7 @@ class FakeCalibrationManager:
         self._calibrations: dict[int, CameraCalibration] = {}
         self.applied: list[CameraCalibration] = []
         self.reject_camera: int | None = None
+        self.screw_compensation: tuple[bool, dict[int, tuple[float, float]]] = (False, {})
 
     def seed(self, calibration: CameraCalibration) -> None:
         self._calibrations[calibration.camera_index] = calibration
@@ -102,6 +103,11 @@ class FakeCalibrationManager:
         if calibration.camera_index == self.reject_camera:
             raise VisionSystemError(f"camera {calibration.camera_index}: rejected")
         self.applied.append(calibration)
+
+    def apply_screw_compensation(
+        self, enabled: bool, positions: dict[int, tuple[float, float]]
+    ) -> None:
+        self.screw_compensation = (enabled, positions)
 
 
 def make_service(tmp_path):

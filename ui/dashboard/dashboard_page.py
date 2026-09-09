@@ -98,7 +98,10 @@ class DashboardPage(QWidget):
         content.addLayout(grid, stretch=4)
 
         # The right-hand column: cycle summary on top, the cameras' hole
-        # coordinates below, both fed from AppState signals.
+        # coordinates below, both fed from AppState signals. Both are given a
+        # layout stretch factor (5:4, matching their row counts) rather than
+        # a trailing addStretch(), so the two bordered cards fill the whole
+        # column height with no dead space beneath them.
         side = QVBoxLayout()
         side.setSpacing(10)
         self._summary = CycleSummaryPanel()
@@ -107,9 +110,8 @@ class DashboardPage(QWidget):
         if model_name:
             self._summary.set_model(f"{model_name} ({model_code})")
         self._summary.set_shift(app_state.current_shift)
-        side.addWidget(self._summary)
-        side.addWidget(self._coordinates)
-        side.addStretch()
+        side.addWidget(self._summary, stretch=5)
+        side.addWidget(self._coordinates, stretch=4)
         content.addLayout(side, stretch=1)
 
         root.addLayout(content, stretch=1)

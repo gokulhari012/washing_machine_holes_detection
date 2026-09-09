@@ -25,6 +25,7 @@ class AppState(QObject):
 
     # connection / hardware
     plc_state_changed = Signal(str)            # ConnectionState value
+    plc_paused_changed = Signal(bool)          # True while PLC writes are suspended
     camera_state_changed = Signal(int, str)    # camera index, ConnectionState value
     # profile name, PLC code - also the "your settings just changed" notice
     # the engineering pages reload on (see set_active_machine_model)
@@ -49,6 +50,7 @@ class AppState(QObject):
         super().__init__()
         self._lock = threading.Lock()
         self._plc_state = ConnectionState.DISCONNECTED
+        self._plc_paused = False
         self._camera_states: dict[int, ConnectionState] = {}
         self._total = 0
         self._good = 0
@@ -64,6 +66,14 @@ class AppState(QObject):
         with self._lock:
             self._plc_state = state
         self.plc_state_changed.emit(state.value)
+
+    def set_plc_paused(self, paused: bool) -> None:
+        """Reflect ``PlcManager``'s pause state — pushed via
+        ``PlcManager.subscribe_paused`` in the composition root, the same
+        wiring ``update_plc_state`` uses for connection state."""
+        with self._lock:
+            self._plc_paused = paused
+        self.plc_paused_changed.emit(paused)
 
     def update_camera_state(self, camera_index: int, state: ConnectionState) -> None:
         with self._lock:
@@ -158,6 +168,11 @@ class AppState(QObject):
     def plc_state(self) -> ConnectionState:
         with self._lock:
             return self._plc_state
+
+    @property
+    def plc_paused(self) -> bool:
+        with self._lock:
+            return self._plc_paused
 
     @property
     def camera_states(self) -> dict[int, ConnectionState]:

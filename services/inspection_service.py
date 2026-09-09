@@ -160,9 +160,12 @@ class InspectionService:
         # 4. PLC output — positions for found holes, sentinel otherwise, plus
         # each camera's own GOOD/NG/ERROR verdict alongside its position. A
         # skipped camera contributes neither: its registers are left holding
-        # whatever the last cycle that really inspected it wrote.
+        # whatever the last cycle that really inspected it wrote. A camera
+        # with an active screw-driver compensation offset gets it added here
+        # only — the recorded/dashboard x_mm/y_mm on `data` stays the raw
+        # measured hole position (see `_plc_position`).
         positions = {
-            index: (data.x_mm, data.y_mm) if data.hole_found else None
+            index: self._plc_position(index, data)
             for index, data in camera_results.items()
             if index not in skipped
         }
@@ -261,6 +264,7 @@ class InspectionService:
 
         self._app_state.post_status(f"Capturing {camera.name} (single)")
 
+        camera_started = time.perf_counter()
         try:
             frame = self._cameras.capture(camera_index)
         except CameraError:
@@ -270,14 +274,16 @@ class InspectionService:
 
         detect_started = time.perf_counter()
         data = self._inspect_one(camera_index, frame)
-        detection_ms = (time.perf_counter() - detect_started) * 1000.0
+        now = time.perf_counter()
+        detection_ms = (now - detect_started) * 1000.0
+        data.cycle_time_ms = (now - camera_started) * 1000.0
         self._app_state.publish_camera_result(camera_index, data)
 
         plc_write_ok = True
         try:
             self._plc.write_camera_inspection_output(
                 camera_index,
-                (data.x_mm, data.y_mm) if data.hole_found else None,
+                self._plc_position(camera_index, data),
                 _RESULT_TO_PLC[data.result],
             )
         except PlcError as exc:
@@ -446,6 +452,7 @@ class InspectionService:
             self._app_state.post_status(
                 f"Capturing {camera.name} ({position}/{len(enabled)})"
             )
+            camera_started = time.perf_counter()
             try:
                 frame = self._cameras.capture(index)
             except CameraError:
@@ -455,7 +462,9 @@ class InspectionService:
 
             detect_started = time.perf_counter()
             data = self._inspect_one(index, frame)
-            detection_ms += (time.perf_counter() - detect_started) * 1000.0
+            now = time.perf_counter()
+            detection_ms += (now - detect_started) * 1000.0
+            data.cycle_time_ms = (now - camera_started) * 1000.0  # this camera's own capture+detect
 
             camera_results[index] = data
             self._app_state.publish_camera_result(index, data)
@@ -466,7 +475,9 @@ class InspectionService:
         self, enabled: list[int]
     ) -> tuple[dict[int, CameraInspectionData], float]:
         """All cameras grab together, then detect together (shortest cycle)."""
+        capture_started = time.perf_counter()
         frames = self._cameras.capture_all()
+        capture_ms = (time.perf_counter() - capture_started) * 1000.0
         for index, frame in frames.items():
             if frame is not None:
                 self._app_state.publish_camera_capture(index, frame)
@@ -477,16 +488,31 @@ class InspectionService:
             max_workers=max(1, len(enabled)), thread_name_prefix="detect"
         ) as pool:
             futures = {
-                index: pool.submit(self._inspect_one, index, frames.get(index))
+                index: pool.submit(self._timed_inspect_one, index, frames.get(index))
                 for index in enabled
             }
             for index, future in futures.items():
-                camera_results[index] = future.result()
+                data, detect_ms = future.result()
+                # the shared parallel capture phase plus this camera's own
+                # detect time — the closest thing to "how long this camera
+                # took" when every camera was grabbed in one batch.
+                data.cycle_time_ms = capture_ms + detect_ms
+                camera_results[index] = data
         detection_ms = (time.perf_counter() - detect_started) * 1000.0
 
         for index, data in camera_results.items():
             self._app_state.publish_camera_result(index, data)
         return camera_results, detection_ms
+
+    def _timed_inspect_one(
+        self, camera_index: int, frame: np.ndarray | None
+    ) -> tuple[CameraInspectionData, float]:
+        """``_inspect_one`` plus its own wall time, measured inside the worker
+        thread — timing it from the submitting thread instead would measure
+        queue wait, not the task's actual duration, once several run at once."""
+        started = time.perf_counter()
+        data = self._inspect_one(camera_index, frame)
+        return data, (time.perf_counter() - started) * 1000.0
 
     # ------------------------------------------------------------ per camera
     def _inspect_one(
@@ -583,6 +609,24 @@ class InspectionService:
         if nearest is not holes[0]:
             holes.remove(nearest)
             holes.insert(0, nearest)
+
+    def _plc_position(
+        self, camera_index: int, data: CameraInspectionData
+    ) -> tuple[float, float] | None:
+        """The position written to the PLC for *camera_index*: the detected
+        hole's x_mm/y_mm plus that camera's screw-driver offset, when screw
+        driver compensation is enabled for the active machine model (see
+        ``CalibrationManager.apply_screw_compensation``). ``None`` (the
+        no-hole sentinel) when no hole was found, same as before compensation
+        existed — an offset is never invented for a position that was never
+        measured. The offset is applied here only: `data.x_mm`/`data.y_mm`
+        themselves — what the dashboard and database show — are left as the
+        true detected position.
+        """
+        if not data.hole_found:
+            return None
+        dx, dy = self._calibration.screw_offset(camera_index)
+        return data.x_mm + dx, data.y_mm + dy
 
     # -------------------------------------------------------------- internal
     @staticmethod

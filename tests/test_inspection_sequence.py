@@ -98,7 +98,9 @@ def service_parts():
     cameras = FakeCameraManager()
     app_state = AppState()
     calibration = SimpleNamespace(
-        has=lambda index: True, evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0)
+        has=lambda index: True,
+        evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0),
+        screw_offset=lambda index: (0.0, 0.0),
     )
     plc = SimpleNamespace(
         write_inspection_output=lambda positions, camera_results, result, skipped=None: None,
@@ -190,6 +192,33 @@ def test_parallel_mode_still_grabs_everything_at_once(service_parts) -> None:
     assert set(cycle.cameras) == set(CAMERA_INDEXES)
 
 
+def test_each_camera_gets_its_own_cycle_time_sequential(service_parts) -> None:
+    service = build_service(service_parts, FakeConfig(capture_mode="sequential", camera_delay_ms=0))
+    cycle = service.run_inspection(machine_number=7)
+
+    for index in CAMERA_INDEXES:
+        assert cycle.cameras[index].cycle_time_ms > 0.0
+
+
+def test_each_camera_gets_its_own_cycle_time_parallel(service_parts) -> None:
+    service = build_service(service_parts, FakeConfig(capture_mode="parallel"))
+    cycle = service.run_inspection(machine_number=8)
+
+    for index in CAMERA_INDEXES:
+        assert cycle.cameras[index].cycle_time_ms > 0.0
+
+
+def test_skipped_camera_has_no_cycle_time(service_parts) -> None:
+    cameras, _app_state, _calibration, plc, _database = service_parts
+    plc.read_gantry_status = lambda index: index != 2  # camera 2's gantry is parked
+
+    service = build_service(service_parts, FakeConfig(capture_mode="sequential", camera_delay_ms=0))
+    cycle = service.run_inspection(machine_number=9)
+
+    assert cycle.cameras[2].result is InspectionResult.SKIPPED
+    assert cycle.cameras[2].cycle_time_ms == 0.0
+
+
 # A station can legitimately have more than one real hole in its field of
 # view (see core/vision/detection_result.py: DetectionResult.best is plain
 # "highest confidence"). These two candidates are used to prove the pipeline
@@ -217,7 +246,9 @@ def test_calibrated_camera_picks_the_hole_nearest_the_reference_point(service_pa
         deviation = 0.1 if (x, y) == (_NEAR_REF_HOLE.x_px, _NEAR_REF_HOLE.y_px) else 50.0
         return x / 10.0, y / 10.0, deviation
 
-    calibration = SimpleNamespace(has=lambda index: True, evaluate=evaluate)
+    calibration = SimpleNamespace(
+        has=lambda index: True, evaluate=evaluate, screw_offset=lambda index: (0.0, 0.0)
+    )
     service = InspectionService(
         cameras, MultiHoleVision(), calibration, plc, database, app_state,
         FakeConfig(camera_delay_ms=0), FakeShifts(),
@@ -235,7 +266,9 @@ def test_uncalibrated_camera_still_picks_the_highest_confidence_hole(service_par
     from before position-aware selection existed."""
     cameras, app_state, _, plc, database = service_parts
     calibration = SimpleNamespace(
-        has=lambda index: False, evaluate=lambda index, x, y, w=None, h=None: (x, y, None)
+        has=lambda index: False,
+        evaluate=lambda index, x, y, w=None, h=None: (x, y, None),
+        screw_offset=lambda index: (0.0, 0.0),
     )
     service = InspectionService(
         cameras, MultiHoleVision(), calibration, plc, database, app_state,

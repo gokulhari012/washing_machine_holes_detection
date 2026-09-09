@@ -128,6 +128,7 @@ class Application:
             connection_cfg.get("reconnect_backoff_ms"),
         )
         self.plc.subscribe_state(self.app_state.update_plc_state)
+        self.plc.subscribe_paused(self.app_state.set_plc_paused)
 
         # ------------------------------------------------------- services
         # Built before the inspection service: the pipeline stamps every cycle

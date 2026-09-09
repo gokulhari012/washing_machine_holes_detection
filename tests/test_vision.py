@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from core.utilities.exceptions import ConfigurationError, DetectionError
-from core.vision import OpenCVHoleDetector, TemplateMatchingDetector, VisionEngine
+from core.vision import OpenCVHoleDetector, TemplateMatchingDetector, VisionEngine, normalize_image
 
 PARAMS = {
     "detection_threshold": 60,
@@ -144,3 +144,51 @@ def test_engine_detect_unknown_camera_raises() -> None:
     )
     with pytest.raises(ConfigurationError):
         engine.detect(make_frame(), 9)
+
+
+def test_normalize_image_stretches_to_full_range() -> None:
+    image = np.full((20, 20), 120, dtype=np.uint8)
+    image[5:10, 5:10] = 140  # a narrow-contrast patch, 120-140 out of 0-255
+
+    stretched = normalize_image(image)
+
+    assert stretched.min() == 0
+    assert stretched.max() == 255
+    assert stretched.dtype == np.uint8
+
+
+def test_normalize_image_leaves_flat_image_unchanged() -> None:
+    flat = np.full((10, 10), 90, dtype=np.uint8)
+    assert np.array_equal(normalize_image(flat), flat)
+
+
+def test_engine_normalize_image_is_off_by_default() -> None:
+    engine = VisionEngine(
+        {"cameras": {"1": {"active_detector": "opencv", "common": {}, "opencv": PARAMS}}}
+    )
+    assert engine.normalize_enabled(1) is False
+
+
+def test_engine_normalize_image_toggle_is_per_camera() -> None:
+    engine = VisionEngine(
+        {
+            "cameras": {
+                "1": {
+                    "active_detector": "opencv",
+                    "common": {"confidence_threshold": 0.5, "normalize_image": True},
+                    "opencv": PARAMS,
+                },
+                "2": {
+                    "active_detector": "opencv",
+                    "common": {"confidence_threshold": 0.5, "normalize_image": False},
+                    "opencv": PARAMS,
+                },
+            }
+        }
+    )
+    assert engine.normalize_enabled(1) is True
+    assert engine.normalize_enabled(2) is False
+    # normalization is a preprocessing step, not a judgement change — a
+    # clean, already-full-contrast frame is still found either way.
+    assert engine.detect(make_frame(), 1).found
+    assert engine.detect(make_frame(), 2).found

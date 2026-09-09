@@ -300,3 +300,68 @@ def test_error_state_and_reconnect(stack) -> None:
     assert manager.state is ConnectionState.ERROR
     assert manager.ensure_connected() is True
     assert manager.state is ConnectionState.CONNECTED
+
+
+# --------------------------------------------------------------------- pause
+def test_pause_suspends_register_writes(stack) -> None:
+    client, manager, rmap = stack
+    manager.pause()
+
+    manager.clear_trigger()  # register write, not the heartbeat
+    assert client.get_register(rmap.trigger) == 0  # simulator seeds triggers at 0
+
+    client.set_register(rmap.trigger, 1)
+    manager.clear_trigger()
+    assert client.get_register(rmap.trigger) == 1  # write skipped, value unchanged
+
+
+def test_pause_does_not_suspend_the_heartbeat(stack) -> None:
+    client, manager, rmap = stack
+    manager.pause()
+
+    manager.toggle_heartbeat()
+    assert client.get_register(rmap.heartbeat) == 1
+    manager.toggle_heartbeat()
+    assert client.get_register(rmap.heartbeat) == 0
+
+
+def test_pause_suspends_coil_writes(stack) -> None:
+    client, manager, _rmap = stack
+    manager.pause()
+
+    manager.write_raw_coil(5, True)
+    assert client.get_coil(5) is False
+
+
+def test_resume_lets_writes_through_again(stack) -> None:
+    client, manager, rmap = stack
+    manager.pause()
+    client.set_register(rmap.trigger, 1)
+    manager.clear_trigger()
+    assert client.get_register(rmap.trigger) == 1  # still suppressed
+
+    manager.resume()
+    manager.clear_trigger()
+    assert client.get_register(rmap.trigger) == 0
+
+
+def test_pause_and_resume_are_idempotent(stack) -> None:
+    _client, manager, _rmap = stack
+    manager.pause()
+    manager.pause()
+    assert manager.paused is True
+    manager.resume()
+    manager.resume()
+    assert manager.paused is False
+
+
+def test_pause_notifies_subscribers(stack) -> None:
+    _client, manager, _rmap = stack
+    seen: list[bool] = []
+    manager.subscribe_paused(seen.append)
+
+    manager.pause()
+    manager.pause()  # idempotent: no duplicate notification
+    manager.resume()
+
+    assert seen == [True, False]

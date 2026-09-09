@@ -45,6 +45,19 @@ class PlcService:
         self._manager.disconnect()
         logger.info("Manual reconnect requested")
 
+    @property
+    def paused(self) -> bool:
+        return self._manager.paused
+
+    def set_paused(self, paused: bool) -> None:
+        """Pause or resume outgoing PLC writes. While paused, every register/
+        coil write is skipped except the heartbeat — see
+        ``PlcManager.pause``."""
+        if paused:
+            self._manager.pause()
+        else:
+            self._manager.resume()
+
     # ---------------------------------------------------------------- config
     def get_config(self) -> dict:
         return self._config.load("plc")

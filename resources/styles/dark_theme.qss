@@ -21,6 +21,7 @@ QToolTip {
 /* ------------------------------------------------------------- typography */
 QLabel[class="pageTitle"] { font-size: 20px; font-weight: 600; color: #e8ecf2; }
 QLabel[class="dim"]       { color: #8b95a3; }
+QLabel[class="danger"]    { color: #f85149; font-weight: 700; }
 QLabel[result="GOOD"]  { color: #3fb950; font-weight: 700; }
 QLabel[result="NG"]    { color: #f85149; font-weight: 700; }
 QLabel[result="ERROR"] { color: #d29922; font-weight: 700; }
@@ -269,7 +270,7 @@ QFrame[class="panel"] {
 }
 QFrame[class="tile"] {
     background-color: #1a2028;
-    border: 1px solid #2e3642;
+    border: 1px solid #3a4553;
     border-radius: 8px;
 }
 QLabel#tileTitle {
@@ -277,18 +278,32 @@ QLabel#tileTitle {
 }
 QLabel#tileValue { font-size: 26px; font-weight: 700; color: #e8ecf2; }
 
-/* Dashboard summary cards (cycle summary, camera coordinates): a denser
-   label/value pair than a stat tile, several to a card. */
+/* Dashboard summary cards (cycle summary, camera coordinates): each
+   label/value pair sits in its own bordered "gridCell" card so the panel
+   reads as a filled table instead of loose text — see
+   ui.dashboard.summary_panels. */
+QFrame#gridCell {
+    background-color: #212832;
+    border: 1px solid #38424f;
+    border-radius: 6px;
+}
 QLabel#cellTitle {
-    color: #8b95a3; font-size: 12px; font-weight: 600; letter-spacing: 1px;
+    color: #9aa4b2; font-size: 13px; font-weight: 700; letter-spacing: 1px;
 }
-QLabel#cellValue { font-size: 17px; font-weight: 600; color: #e8ecf2; }
-QLabel#cellValueLarge { font-size: 27px; font-weight: 700; color: #e8ecf2; }
-/* Camera names read as captions, not values — same grey as the X/Y titles. */
-QLabel#cellHeading {
-    color: #8b95a3; font-size: 14px; font-weight: 700;
-    border-top: 1px solid #2e3642; padding-top: 6px;
+QLabel#cellValue { font-size: 20px; font-weight: 700; color: #f2f5f9; }
+QLabel#cellValueLarge { font-size: 34px; font-weight: 800; color: #ffffff; }
+
+/* Camera Coordinates table: merged camera-name header cell, bold X/Y column
+   headers, coloured value cells — each item paints its own background/text
+   colour in code (ui.dashboard.summary_panels), so this only sets the frame
+   and grid lines around them. */
+QTableWidget#coordinatesTable {
+    background-color: transparent;
+    border: none;
+    gridline-color: #38424f;
+    font-size: 14px;
 }
+QTableWidget#coordinatesTable::item { padding: 1px; border: none; }
 
 QFrame#alarmBanner { border-radius: 6px; }
 QFrame#alarmBanner[severity="error"]   { background-color: #3d1418; border: 1px solid #f85149; }

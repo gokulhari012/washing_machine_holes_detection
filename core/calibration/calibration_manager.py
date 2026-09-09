@@ -31,6 +31,8 @@ class CalibrationManager:
         self._repository = repository
         self._lock = threading.Lock()
         self._calibrations: dict[int, CameraCalibration] = {}
+        self._screw_compensation_enabled = False
+        self._screw_offsets: dict[int, tuple[float, float]] = {}
 
     # -------------------------------------------------------------- loading
     def load_all(self) -> None:
@@ -79,6 +81,35 @@ class CalibrationManager:
         logger.info(
             "Calibration applied live for camera %d (not persisted)", calibration.camera_index
         )
+
+    # ---------------------------------------------- screw driver compensation
+    def apply_screw_compensation(
+        self, enabled: bool, positions: dict[int, tuple[float, float]]
+    ) -> None:
+        """Set the live per-camera screw-driver position offsets.
+
+        Preview-only, like :meth:`apply_live`: pushed by
+        ``MachineModelService.apply_profile`` from the selected profile's
+        ``screw_driver_compensation`` block. When *enabled*, :meth:`screw_offset`
+        returns the configured (x_mm, y_mm) for a camera instead of (0, 0) — see
+        its docstring for where that offset is used.
+        """
+        with self._lock:
+            self._screw_compensation_enabled = enabled
+            self._screw_offsets = dict(positions)
+
+    def screw_offset(self, camera_index: int) -> tuple[float, float]:
+        """The (x_mm, y_mm) offset to add to *camera_index*'s PLC-bound
+        position — never to the measured position reported to the dashboard
+        or stored in the database, which must stay the true detected hole
+        location. Returns (0.0, 0.0) when compensation is disabled or no
+        offset is configured for that camera. See
+        ``InspectionService._plc_position``, the only caller.
+        """
+        with self._lock:
+            if not self._screw_compensation_enabled:
+                return 0.0, 0.0
+            return self._screw_offsets.get(camera_index, (0.0, 0.0))
 
     # ------------------------------------------------------------- hot path
     def evaluate(

@@ -312,6 +312,7 @@ def service() -> tuple[InspectionService, FakeCameraManager, AppState, Recording
     calibration = SimpleNamespace(
         has=lambda index: True,
         evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0),
+        screw_offset=lambda index: (0.0, 0.0),
     )
     database = SimpleNamespace(save_inspection=lambda cycle: 1)
     svc = InspectionService(
@@ -345,6 +346,12 @@ def test_only_that_cameras_registers_are_written(service) -> None:
     assert camera_index == 3
     assert position == (1.0, 2.0)
     assert result is PlcResultCode.GOOD
+
+
+def test_single_camera_cycle_records_its_own_cycle_time(service) -> None:
+    svc, _cameras, _app_state, _plc = service
+    cycle = svc.run_camera_inspection(camera_index=2, machine_number=7)
+    assert cycle.cameras[2].cycle_time_ms > 0.0
 
 
 def test_partial_cycle_stays_out_of_the_product_counters(service) -> None:
@@ -390,6 +397,7 @@ def _service_with(plc: RecordingPlc) -> InspectionService:
     calibration = SimpleNamespace(
         has=lambda index: True,
         evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0),
+        screw_offset=lambda index: (0.0, 0.0),
     )
     return InspectionService(
         FakeCameraManager(),

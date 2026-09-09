@@ -30,7 +30,10 @@ applied or saved.
 
 "Continuous Capture" repeatedly re-captures the selected camera into the
 preview so the operator can watch each change take effect instead of clicking
-"Test Camera" after every one.
+"Test Camera" after every one. While running, the button itself blinks
+(alternates the "primary" style every :data:`BLINK_INTERVAL_MS`) — a
+checkable QPushButton has no built-in "checked" styling in this theme, so
+without it the button gave no ongoing sign that it was still streaming.
 
 "Apply Live" pushes settings to the connected device without persisting;
 "Save" writes camera.json (+ DB mirror). Worker/manager rebuilds after a
@@ -77,6 +80,8 @@ from ui.widgets import LabeledLed, RoiEditor
 # Adapters actually wired up in core.camera.create_camera(); USB/HikRobot/Daheng/IDS
 # stay in CameraDriver for config-file compatibility but are hidden from this dropdown.
 _SUPPORTED_DRIVERS = (CameraDriver.SIMULATED, CameraDriver.IMAGE_FILE, CameraDriver.BASLER)
+
+BLINK_INTERVAL_MS = 500
 
 class CameraPage(QWidget):
     """Add / remove / tune / test cameras."""
@@ -320,6 +325,10 @@ class CameraPage(QWidget):
         self._continuous_timer = QTimer(self)
         self._continuous_timer.setInterval(frame_interval_ms(DEFAULT_VIEW_FPS))
         self._continuous_timer.timeout.connect(self._on_continuous_tick)
+        self._blink_timer = QTimer(self)
+        self._blink_timer.setInterval(BLINK_INTERVAL_MS)
+        self._blink_timer.timeout.connect(self._on_blink_tick)
+        self._blink_on = False
 
         app_state.preview_frame.connect(self._on_preview_frame)
         app_state.camera_state_changed.connect(self._on_camera_state)
@@ -556,12 +565,45 @@ class CameraPage(QWidget):
     def _on_continuous_toggled(self, checked: bool) -> None:
         if not checked:
             self._continuous_timer.stop()
+            self._stop_blink()
             return
         if self._current_index() is None:
             self._continuous_btn.setChecked(False)
             return
         self._apply_continuous_interval()
         self._continuous_timer.start()
+        self._start_blink()
+
+    def _start_blink(self) -> None:
+        self._blink_on = True
+        self._apply_blink_style()
+        self._blink_timer.start()
+
+    def _stop_blink(self) -> None:
+        self._blink_timer.stop()
+        self._blink_on = False
+        self._apply_blink_style()
+
+    def _on_blink_tick(self) -> None:
+        self._blink_on = not self._blink_on
+        self._apply_blink_style()
+
+    def _apply_blink_style(self) -> None:
+        """Alternate the button's style class every tick — this theme has no
+        ``QPushButton:checked`` styling, so a checkable button otherwise looks
+        identical whether Continuous Capture is streaming or not.
+
+        Qt caches a widget's stylesheet-derived appearance, so a property an
+        attribute selector like ``QPushButton[class="primary"]`` depends on
+        must be unpolished *before* it changes and polished again after, or
+        the new value is picked up next time anything else invalidates the
+        cache rather than immediately.
+        """
+        style = self._continuous_btn.style()
+        style.unpolish(self._continuous_btn)
+        self._continuous_btn.setProperty("class", "primary" if self._blink_on else "")
+        style.polish(self._continuous_btn)
+        self._continuous_btn.update()
 
     def _apply_continuous_interval(self) -> None:
         """Pace the capture loop from the form's frame rate.

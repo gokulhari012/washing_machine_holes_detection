@@ -73,6 +73,7 @@ from core.vision import (
     VisionEngine,
     draw_debug_overlay,
     draw_detection_overlay,
+    normalize_image,
 )
 from models.app_state import AppState
 from services.camera_service import CameraService
@@ -257,9 +258,18 @@ class DetectionPage(QWidget):
         self._tolerance = _dspin(0.0, 500.0, 0.1, 1)
         self._tolerance.setSuffix(" mm")
         self._tolerance.setToolTip("0 disables the position tolerance check")
+        self._normalize = QCheckBox("Normalize image before detection")
+        self._normalize.setToolTip(
+            "Contrast-stretches the frame to the full 0-255 range before the "
+            "active strategy runs. Off by default: a strategy's own "
+            "thresholds (e.g. detection/contrast) are tuned against the "
+            "frame's current contrast, so turning this on may need them "
+            "re-tuned."
+        )
         common.addRow("Confidence Threshold", self._confidence)
         common.addRow("Expected Hole Count", self._expected)
         common.addRow("Position Tolerance", self._tolerance)
+        common.addRow("", self._normalize)
         left.addWidget(common_box)
 
         strategy_row = QHBoxLayout()
@@ -566,6 +576,7 @@ class DetectionPage(QWidget):
         self._confidence.setValue(float(common.get("confidence_threshold", 0.6)))
         self._expected.setValue(int(common.get("expected_hole_count", 1)))
         self._tolerance.setValue(float(common.get("position_tolerance_mm", 0.0)))
+        self._normalize.setChecked(bool(common.get("normalize_image", False)))
         self._strategy.setCurrentText(cfg.get("active_detector", "opencv"))
 
         opencv = cfg.get("opencv", {})
@@ -612,6 +623,7 @@ class DetectionPage(QWidget):
                 "confidence_threshold": self._confidence.value(),
                 "expected_hole_count": self._expected.value(),
                 "position_tolerance_mm": self._tolerance.value(),
+                "normalize_image": self._normalize.isChecked(),
             },
             "opencv": {
                 "detection_threshold": self._cv_threshold.value(),
@@ -824,6 +836,8 @@ class DetectionPage(QWidget):
         )
         combos = grid_builder(base_params)
         cropped, offset_x, offset_y = self._crop_around_roi(self._last_frame, roi)
+        if self._normalize.isChecked():  # match what the live/tested detector actually sees
+            cropped = normalize_image(cropped)
         detector_cls = _SWEEP_DETECTORS[strategy]
 
         found: list[tuple[dict, Hole]] = []

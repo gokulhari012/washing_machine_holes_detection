@@ -180,6 +180,7 @@ def _service(plc: RecordingPlc) -> tuple[InspectionService, FakeCameraManager, A
     calibration = SimpleNamespace(
         has=lambda index: True,
         evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0),
+        screw_offset=lambda index: (0.0, 0.0),
     )
     svc = InspectionService(
         cameras,

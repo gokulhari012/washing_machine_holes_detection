@@ -35,6 +35,7 @@ class CameraInspectionData:
     confidence: float = 0.0
     error: str = ""
     image_path: str | None = None
+    cycle_time_ms: float = 0.0  # this camera's own capture+detect time, not the whole cycle's
     detection: DetectionResult | None = field(default=None, repr=False)
     #: annotated frame for the dashboard panel (display-only, do not mutate)
     frame: np.ndarray | None = field(default=None, repr=False, compare=False)

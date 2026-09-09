@@ -80,6 +80,11 @@ class FakeCalibrationManager:
         self.live[calibration.camera_index] = calibration
         return len(self.persisted)
 
+    def apply_screw_compensation(
+        self, enabled: bool, positions: dict[int, tuple[float, float]]
+    ) -> None:
+        self.screw_compensation = (enabled, positions)
+
 
 def _build(tmp_path):
     config_dir = tmp_path / "config"

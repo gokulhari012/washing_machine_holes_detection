@@ -48,6 +48,16 @@ _TUNABLE_CAMERA_FIELDS = (
 )
 
 
+def _default_screw_compensation() -> dict[str, Any]:
+    """A fresh (unshared) default block: compensation off, one zeroed
+    (x_mm, y_mm) slot per camera 1-4, edited directly on the Machine Models
+    page rather than captured from a live value (see ``set_screw_compensation``)."""
+    return {
+        "enabled": False,
+        "positions": {str(index): {"x_mm": 0.0, "y_mm": 0.0} for index in range(1, 5)},
+    }
+
+
 class MachineModelService:
     """CRUD over machine-model profiles + pushing one live."""
 
@@ -101,6 +111,7 @@ class MachineModelService:
             "cameras": self._snapshot_cameras(),
             "detection": self._config.load("detection"),
             "calibration": self._snapshot_calibrations(),
+            "screw_driver_compensation": _default_screw_compensation(),
             "created_by": created_by,
             "created_at": now,
             "updated_at": now,
@@ -130,6 +141,45 @@ class MachineModelService:
         logger.info("Machine model profile %r updated from current settings", profile["name"])
         return profile
 
+    def set_screw_compensation(
+        self,
+        profile_id: int,
+        enabled: bool,
+        positions: dict[int, tuple[float, float]],
+        updated_by: str,
+    ) -> dict[str, Any]:
+        """Save the 4 screw-driver position offsets directly onto a profile.
+
+        Unlike ``cameras``/``detection``/``calibration``, this block is
+        edited by hand on the Machine Models page rather than captured from
+        a currently-live value — nothing elsewhere in the application holds
+        a "current" screw driver offset to snapshot. Applying the profile
+        (``apply_profile``) pushes it into ``CalibrationManager``, which adds
+        it to the position written to the PLC only (see
+        ``InspectionService._plc_position``) — never to the measured
+        position shown on the dashboard or stored in the database.
+
+        Raises:
+            ConfigurationError: no profile with that id.
+        """
+        document = self._config.load("machine_models")
+        profiles = document.setdefault("profiles", [])
+        profile = self._find(profiles, profile_id)
+        profile["screw_driver_compensation"] = {
+            "enabled": bool(enabled),
+            "positions": {
+                str(index): {"x_mm": float(x_mm), "y_mm": float(y_mm)}
+                for index, (x_mm, y_mm) in positions.items()
+            },
+        }
+        profile["updated_at"] = datetime.now().isoformat(timespec="seconds")
+        profile["updated_by"] = updated_by
+        self._config.save("machine_models", document)
+        logger.info(
+            "Screw driver compensation saved for machine model profile %r", profile["name"]
+        )
+        return profile
+
     def rename(self, profile_id: int, name: str, plc_code: int) -> None:
         """Raises ConfigurationError: no profile with that id, blank name, or
         plc_code already used by a different profile."""
@@ -156,8 +206,9 @@ class MachineModelService:
     # --------------------------------------------------------------- apply
     def apply_profile(self, profile: dict[str, Any]) -> list[str]:
         """Push *profile* live: per-camera ROI/exposure, per-camera
-        detection, per-camera calibration, then echo the profile's PLC code
-        back to the machine-model-select register.
+        detection, per-camera calibration and the profile's screw-driver
+        compensation offsets, then echo the profile's PLC code back to the
+        machine-model-select register.
 
         Never persists camera.json/detection.json, and never writes a new row
         to the calibration database. Camera and calibration application are
@@ -216,6 +267,15 @@ class MachineModelService:
         if detection:
             camera_indices = current_cameras.keys()
             self._engine.apply_config(migrate_legacy_detection_config(detection, camera_indices))
+
+        compensation = profile.get("screw_driver_compensation", {})
+        screw_positions = {
+            int(index): (float(pos.get("x_mm", 0.0)), float(pos.get("y_mm", 0.0)))
+            for index, pos in compensation.get("positions", {}).items()
+        }
+        self._calibration.apply_screw_compensation(
+            bool(compensation.get("enabled", False)), screw_positions
+        )
 
         try:
             self._plc.set_model_select(int(profile["plc_code"]))

@@ -13,6 +13,13 @@ lock only when that strategy declares itself not thread-safe (e.g. a GPU
 model whose inference is not re-entrant) — classical CV strategies are
 stateless per call and safely run 4 cameras' images in parallel with no
 locking at all.
+
+Each camera's ``common`` block may also set ``normalize_image`` (default
+off): when true, ``detect``/``debug_stages`` run the frame through
+:func:`core.vision.normalization.normalize_image` (a min-max contrast
+stretch) before handing it to the strategy. It is a per-camera choice, not a
+global one, because turning it on changes what a strategy's own contrast
+thresholds mean.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from core.utilities.exceptions import ConfigurationError
 from core.vision.dark_hole_detector import DarkHoleDetector
 from core.vision.detection_result import DetectionResult
 from core.vision.detector_base import HoleDetector
+from core.vision.normalization import normalize_image
 from core.vision.opencv_hole_detector import OpenCVHoleDetector
 from core.vision.template_matching_detector import TemplateMatchingDetector
 from core.vision.yolo_hole_detector import YoloHoleDetector
@@ -177,6 +185,12 @@ class VisionEngine:
         """<= 0 disables the position tolerance check."""
         return float(self._camera(camera_index).common.get("position_tolerance_mm", 0.0))
 
+    def normalize_enabled(self, camera_index: int) -> bool:
+        """Whether *camera_index* runs frames through :func:`normalize_image`
+        before its strategy sees them. Off unless ``common.normalize_image``
+        is set — see the module docstring on why this isn't on by default."""
+        return bool(self._camera(camera_index).common.get("normalize_image", False))
+
     # ---------------------------------------------------------------- detect
     def detect(self, image: np.ndarray, camera_index: int) -> DetectionResult:
         """Run *camera_index*'s strategy; candidates below its own confidence
@@ -187,6 +201,8 @@ class VisionEngine:
             DetectionError
         """
         camera = self._camera(camera_index)
+        if camera.common.get("normalize_image", False):
+            image = normalize_image(image)
         if camera.detect_lock is None:
             result = camera.detector.detect(image)
         else:
@@ -205,7 +221,10 @@ class VisionEngine:
             ConfigurationError: no detector configured for this camera.
             DetectionError
         """
-        return self._camera(camera_index).detector.debug_stages(image)
+        camera = self._camera(camera_index)
+        if camera.common.get("normalize_image", False):
+            image = normalize_image(image)
+        return camera.detector.debug_stages(image)
 
 
 # --------------------------------------------------------------------------- #

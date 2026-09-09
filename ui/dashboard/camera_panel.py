@@ -78,6 +78,7 @@ class CameraPanel(QFrame):
         self._x_value = self._add_readout(footer, "X")
         self._y_value = self._add_readout(footer, "Y")
         self._conf_value = self._add_readout(footer, "CONF")
+        self._time_value = self._add_readout(footer, "TIME")
         footer.addStretch()
         root.addLayout(footer)
 
@@ -105,6 +106,7 @@ class CameraPanel(QFrame):
         self._view.set_frame(self._downscale(frame))
         self._result.setText("…")
         self._result.setProperty("result", "")
+        self._time_value.setText("…")
         self._repolish_result()
 
     def show_result(self, data: CameraInspectionData) -> None:
@@ -121,6 +123,10 @@ class CameraPanel(QFrame):
             self._x_value.setText("—")
             self._y_value.setText("—")
             self._conf_value.setText("—")
+
+        self._time_value.setText(
+            f"{data.cycle_time_ms:.0f} ms" if data.cycle_time_ms > 0 else "—"
+        )
 
         result = data.result
         if result is InspectionResult.SKIPPED:
