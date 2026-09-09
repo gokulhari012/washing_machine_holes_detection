@@ -6,10 +6,24 @@ from come from :class:`AppState`'s snapshot. Inspection history lives on the
 Database page.
 
 The trigger bar drives the manual cycle: "Simulate Trigger" runs one complete
-inspection, and the delay spin box sets how long the pipeline waits between
-cameras when the sequential capture mode is on. The delay is persisted to
-app_config.json immediately, so the next cycle — and the next start of the
-application — uses it.
+inspection in the configured capture mode, and the delay spin box sets how long
+the pipeline waits between cameras when the sequential capture mode is on. The
+delay is persisted to app_config.json immediately, so the next cycle — and the
+next start of the application — uses it.
+
+The spin box is ``app_config.inspection.camera_delay_ms`` itself, **not** a
+setting local to the button beside it: it paces every sequential cycle,
+PLC-triggered ones included, which is why the bar says so on screen as well as
+in the tooltip. Three gaps between four cameras means the PLC waits 3x the
+delay longer for ``vision_complete`` (register 119) on every part.
+
+That whole bar is **developer-only**, like the toolbar's own trigger button:
+firing the station by hand and re-timing its capture sequence are commissioning
+acts, not shift work, so the bar is hidden (not merely disabled) for the
+logged-out operator and for admins. Visibility is re-read from
+:class:`AuthService` on every login and logout, via its observer hook — a page
+that only checked at construction would keep an operator view after a developer
+logs in. The per-camera panel triggers are unaffected.
 
 The summary card's "Current Shift" tile follows ``AppState.current_shift``,
 which the composition root republishes as the configured rota crosses a
@@ -33,10 +47,11 @@ from PySide6.QtWidgets import (
 
 from core.logging import get_logger
 from core.utilities import ConfigManager
-from core.utilities.enums import LogSource
+from core.utilities.enums import LogSource, UserRole
 from core.utilities.exceptions import ConfigurationError
 from models.app_state import AppState
 from models.dto import CameraInspectionData, InspectionCycleData
+from services.auth_service import AuthService
 from services.inspection_service import DEFAULT_CAMERA_DELAY_MS, SEQUENTIAL_MODE
 from ui.dashboard.camera_panel import CameraPanel
 from ui.dashboard.summary_panels import CameraCoordinatesPanel, CycleSummaryPanel
@@ -55,11 +70,13 @@ class DashboardPage(QWidget):
         config_manager: ConfigManager | None = None,
         on_simulate_trigger=None,
         on_camera_trigger=None,
+        auth_service: AuthService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._app_state = app_state
         self._config = config_manager
+        self._auth = auth_service
         self._on_simulate_trigger = on_simulate_trigger
         self._on_camera_trigger = on_camera_trigger
         self._loading = False
@@ -126,6 +143,9 @@ class DashboardPage(QWidget):
         app_state.counters_changed.connect(self._on_counters)
         app_state.active_machine_model_changed.connect(self._on_machine_model_changed)
         app_state.current_shift_changed.connect(self._summary.set_shift)
+        if self._auth is not None:
+            self._auth.subscribe(self._refresh_access)
+        self._refresh_access()
 
         self._load_initial()
 
@@ -146,23 +166,48 @@ class DashboardPage(QWidget):
         self._delay.setSingleStep(100)
         self._delay.setSuffix(" ms")
         self._delay.setToolTip(
-            "Pause between one camera finishing and the next one taking its picture"
+            "Pause between one camera finishing and the next one taking its "
+            "picture.\n\nThis is a station setting, not a button setting: it "
+            "applies to every sequential cycle, including the ones the PLC "
+            "triggers on register 100 - four cameras means three of these "
+            "pauses, so the PLC waits that much longer for vision_complete."
         )
         self._delay.setValue(self._stored_delay_ms())
         self._delay.valueChanged.connect(self._on_delay_changed)
         layout.addWidget(self._delay)
 
+        # Said on screen, not just in the tooltip: the spin box sits beside a
+        # manual trigger button, which makes it look like it only paces that
+        # button's cycle. It paces PLC-triggered cycles too, and at a few
+        # seconds x3 gaps that is enough to trip a PLC waiting on 119.
+        note = QLabel("(PLC triggers too)")
+        note.setProperty("class", "dim")
+        note.setToolTip(self._delay.toolTip())
+        layout.addWidget(note)
+
         self._simulate_button = QPushButton("▶  Simulate Trigger")
         self._simulate_button.setProperty("class", "primary")
         self._simulate_button.setToolTip(
-            "Run one inspection: every enabled camera takes a picture in turn"
+            "Run one inspection: every enabled camera takes a picture in turn, "
+            "in the station's configured capture mode — the same cycle a PLC "
+            "trigger on register 100 runs"
         )
         if self._on_simulate_trigger is None:
             self._simulate_button.setEnabled(False)
         else:
             self._simulate_button.clicked.connect(self._on_simulate_clicked)
         layout.addWidget(self._simulate_button)
+        self._trigger_bar = bar
         return bar
+
+    def _refresh_access(self) -> None:
+        """Show the manual trigger bar to developers only.
+
+        No auth service (tests, a station built without login) leaves it
+        visible — that is the behaviour this page had before the gate existed.
+        """
+        visible = self._auth is None or self._auth.has_role(UserRole.DEVELOPER)
+        self._trigger_bar.setVisible(visible)
 
     def _stored_delay_ms(self) -> int:
         """Configured inter-camera delay, or the pipeline default."""

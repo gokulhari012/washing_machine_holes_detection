@@ -25,6 +25,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
+from typing import Callable
 
 from core.database import User
 from core.logging import get_logger
@@ -72,6 +73,27 @@ class AuthService:
     def __init__(self, database_service: DatabaseService) -> None:
         self._users = database_service.users
         self._current: User | None = None
+        self._observers: list[Callable[[], None]] = []
+
+    # ------------------------------------------------------------ observers
+    def subscribe(self, callback: Callable[[], None]) -> None:
+        """Register a callback fired after every login and logout.
+
+        Plain callable, Qt-free, so ``services/`` keeps knowing nothing about
+        the UI: a widget whose visibility depends on the session (the
+        developer-only manual trigger controls) subscribes and re-reads
+        :meth:`has_role` itself. ``MainWindow`` does not use this — it already
+        refreshes the nav rail from the login handler it owns.
+        """
+        self._observers.append(callback)
+
+    def _notify(self) -> None:
+        """Fan out, never letting one observer break the session change."""
+        for callback in list(self._observers):
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - an observer must not break login
+                logger.exception("Auth session observer failed")
 
     # -------------------------------------------------------------- session
     @property
@@ -122,12 +144,14 @@ class AuthService:
         self._users.touch_last_login(user.username)
         self._current = user
         logger.info("User %s logged in (%s)", user.username, user.role)
+        self._notify()
         return user
 
     def logout(self) -> None:
         if self._current is not None:
             logger.info("User %s logged out", self._current.username)
         self._current = None
+        self._notify()
 
     def require_admin(self) -> None:
         """Raises AuthenticationError unless an admin is logged in."""

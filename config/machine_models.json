@@ -383,7 +383,8 @@
             "common": {
               "confidence_threshold": 0.1,
               "expected_hole_count": 11,
-              "position_tolerance_mm": 1.0
+              "position_tolerance_mm": 1.0,
+              "normalize_image": false
             },
             "opencv": {
               "detection_threshold": 20,
@@ -562,7 +563,7 @@
       },
       "created_by": "admin",
       "created_at": "2026-09-02T15:12:23",
-      "updated_at": "2026-09-09T14:46:42",
+      "updated_at": "2026-09-09T14:47:37",
       "calibration": {
         "3": {
           "pixels_per_mm_x": 70.6091,

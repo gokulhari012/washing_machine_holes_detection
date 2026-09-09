@@ -166,7 +166,7 @@ class Application:
             self.auth_service,
             factory_name=str(app_cfg.get("application", {}).get("factory_name", "")),
             camera_indexes=[int(cfg["index"]) for cfg in self.camera_configs],
-            on_simulate_trigger=self._simulate_trigger,
+            on_simulate_all_cameras=self._simulate_all_cameras_trigger,
             on_shutdown=self.shutdown,
         )
         # Three tiers, gated by min_role — see MainWindow.add_page and
@@ -187,6 +187,7 @@ class Application:
                 config_manager=self.config,
                 on_simulate_trigger=self._simulate_trigger,
                 on_camera_trigger=self._trigger_camera,
+                auth_service=self.auth_service,
             ),
         )
         self.window.add_page(
@@ -302,7 +303,15 @@ class Application:
 
     # ------------------------------------------------------------- helpers
     def _simulate_trigger(self) -> None:
+        """Dashboard trigger button — one cycle in the configured capture mode."""
         self.inspection_worker.trigger_requested.emit(next(self._manual_machine))
+
+    def _simulate_all_cameras_trigger(self) -> None:
+        """Toolbar trigger button — one cycle with every camera captured at the
+        same time, whatever ``inspection.capture_mode`` says."""
+        self.inspection_worker.all_cameras_trigger_requested.emit(
+            next(self._manual_machine)
+        )
 
     def _camera_availability(self) -> dict[int, bool]:
         """Per-camera usability for the PLC status registers, read by the poll

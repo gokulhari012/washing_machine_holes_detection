@@ -4,6 +4,14 @@ status bar (PLC + camera LEDs, factory name, live clock).
 The window is generic — the composition root constructs the pages and adds
 them via :meth:`add_page`, and passes callbacks for the two things the frame
 itself triggers: simulating a trigger and shutting the application down.
+
+The toolbar's trigger button runs one cycle with **every camera captured at
+the same time**, whatever capture mode is configured — the dashboard's own
+button, beside the inter-camera delay, is the one that follows the
+configuration. Like the commissioning pages it is **developer-only**: manually
+firing the station is not shift work, so it is hidden (not merely disabled)
+for the logged-out operator and for admins, alongside the dashboard's trigger
+bar (see :meth:`_refresh_nav_visibility` and ``DashboardPage``).
 """
 
 from __future__ import annotations
@@ -49,13 +57,13 @@ class MainWindow(QMainWindow):
         auth_service: AuthService,
         factory_name: str,
         camera_indexes: list[int],
-        on_simulate_trigger: Callable[[], None] | None = None,
+        on_simulate_all_cameras: Callable[[], None] | None = None,
         on_shutdown: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self._app_state = app_state
         self._auth = auth_service
-        self._on_simulate_trigger = on_simulate_trigger
+        self._on_simulate_all = on_simulate_all_cameras
         self._on_shutdown = on_shutdown
         self._shutdown_done = False
         # (nav item, minimum role that may see it — None = everyone)
@@ -96,13 +104,19 @@ class MainWindow(QMainWindow):
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
-        self._simulate_button = QPushButton("Simulate Trigger")
+        self._simulate_button = QPushButton("Simulate trigger for all camera at a time")
         self._simulate_button.setProperty("class", "primary")
-        self._simulate_button.setToolTip("Run one manual inspection cycle")
-        if self._on_simulate_trigger is None:
+        self._simulate_button.setToolTip(
+            "Run one manual inspection cycle with every enabled camera taking "
+            "its picture simultaneously, ignoring the configured capture mode "
+            "and the dashboard's delay between cameras"
+        )
+        if self._on_simulate_all is None:
             self._simulate_button.setEnabled(False)
         else:
-            self._simulate_button.clicked.connect(self._on_simulate_trigger)
+            self._simulate_button.clicked.connect(self._on_simulate_all)
+        # Developer-only; refreshed again on every login/logout.
+        self._simulate_button.setVisible(self._auth.has_role(UserRole.DEVELOPER))
         toolbar.addWidget(self._simulate_button)
 
         toolbar.addWidget(self._space(16))
@@ -252,7 +266,8 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ auth
     def _refresh_nav_visibility(self) -> None:
-        """Show/hide role-gated nav entries for the current session.
+        """Show/hide role-gated nav entries — and the developer-only toolbar
+        trigger button — for the current session.
 
         Called after every ``add_page`` and every login/logout. If the
         currently selected row just became hidden (an admin logged out while
@@ -260,6 +275,11 @@ class MainWindow(QMainWindow):
         an admin one), falls back to the first visible row — Dashboard has no
         ``min_role``, so this always finds one.
         """
+        # The manual trigger is commissioning-grade too: hidden outright for
+        # anyone below developer, so an operator cannot fire the station by
+        # hand from the toolbar.
+        self._simulate_button.setVisible(self._auth.has_role(UserRole.DEVELOPER))
+
         first_visible = None
         for row, (item, min_role) in enumerate(self._pages):
             hidden = min_role is not None and not self._auth.has_role(min_role)
@@ -308,7 +328,7 @@ class MainWindow(QMainWindow):
         state.inspection_completed.connect(lambda _cycle: self._set_simulate_enabled(True))
 
     def _set_simulate_enabled(self, enabled: bool) -> None:
-        self._simulate_button.setEnabled(enabled and self._on_simulate_trigger is not None)
+        self._simulate_button.setEnabled(enabled and self._on_simulate_all is not None)
 
     def _on_camera_state(self, camera_index: int, state: str) -> None:
         led = self._camera_leds.get(camera_index)

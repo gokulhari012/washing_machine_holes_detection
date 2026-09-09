@@ -156,8 +156,19 @@ The cycle's `shift` is resolved by `ShiftService` against the cycle's own
 **Capture modes** (`app_config.inspection.capture_mode`):
 - `sequential` (**current setting**) — one camera at a time, each picture published to
   the dashboard the moment it is taken, `camera_delay_ms` between cameras. Right for
-  four high-res GigE cameras sharing one NIC.
+  four high-res GigE cameras sharing one NIC. The dashboard's "Delay between
+  cameras" spin box edits that key directly, so it paces **PLC-triggered cycles
+  too**, not just the button beside it — four cameras means three gaps, so the PLC
+  waits 3x the delay longer for `vision_complete`. The bar says so on screen; don't
+  quietly drop that note.
 - `parallel` — all four grab and detect at once via `ThreadPoolExecutor`. Shortest cycle.
+
+`run_inspection(machine, capture_mode=...)` overrides the configured mode for one
+cycle without persisting anything. Only the toolbar's **"Simulate trigger for all
+camera at a time"** button uses it (via `InspectionWorker.all_cameras_trigger_requested`,
+which shares the busy flag with every other trigger) — it always forces `parallel`.
+The dashboard's own Simulate Trigger and every PLC trigger pass nothing and follow
+`capture_mode`. Both capture modes grab only the gantry-active cameras.
 
 **Judgement per camera** (`_inspect_one`) — `expected_hole_count`/`position_tolerance_mm`
 are themselves per-camera (`VisionEngine.expected_hole_count(camera_index)` etc., see
@@ -878,6 +889,19 @@ developer out of the pages their role is a superset of.
 Calibration and Machine Models are the developer-only pair because both rewrite
 the *coordinate frame and the per-model tuning snapshot* — commissioning work, not
 shift work. Every other engineering console is admin.
+
+The **manual trigger controls are developer-only too**, and gated by *visibility*
+rather than by `min_role` (they are widgets, not pages): the toolbar's "Simulate
+trigger for all camera at a time" button (`MainWindow._refresh_nav_visibility`, the
+same place the nav rail is refreshed) and the Dashboard's whole trigger bar — the
+"Delay between cameras" spin box **and** its Simulate Trigger button
+(`DashboardPage._refresh_access`). They are *hidden*, not disabled. The per-camera
+▶ buttons on the camera panels are **not** gated — that is the operator's control.
+Because a page outlives a login, `DashboardPage` re-reads the session through
+`AuthService.subscribe` (a plain Qt-free callback list fired on every login and
+logout, so `services/` still knows nothing about the UI); `MainWindow` keeps
+refreshing from the login handler it already owns. `tests/test_manual_trigger_access.py`
+pins all of it.
 
 ```
 UserRole.covers()  ←  AuthService.has_role(role)  ←  MainWindow.add_page(min_role=…)

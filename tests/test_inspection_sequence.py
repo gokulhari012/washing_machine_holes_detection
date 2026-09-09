@@ -319,3 +319,43 @@ def test_single_camera_cycle_is_stamped_the_same_way(service_parts) -> None:
 
     assert cycle.shift == "Evening"
     assert shifts.asked == [cycle.started_at]
+
+
+# ---------------------------------------------------------------------------
+# The toolbar's "Simulate trigger for all camera at a time" passes an explicit
+# capture mode for that one cycle; the dashboard button and the PLC trigger
+# pass nothing and follow app_config.
+def test_capture_mode_override_forces_one_simultaneous_grab(service_parts) -> None:
+    cameras = service_parts[0]
+    config = FakeConfig(capture_mode="sequential", camera_delay_ms=750)
+    service = build_service(service_parts, config)
+
+    cycle = service.run_inspection(machine_number=10, capture_mode="parallel")
+
+    assert cameras.capture_all_calls == 1
+    assert set(cycle.cameras) == set(CAMERA_INDEXES)
+    # the override is per-cycle only — the station stays configured sequential
+    assert config.load("app_config")["inspection"]["capture_mode"] == "sequential"
+
+
+def test_without_an_override_the_configured_mode_still_wins(service_parts) -> None:
+    cameras = service_parts[0]
+    service = build_service(
+        service_parts, FakeConfig(capture_mode="sequential", camera_delay_ms=0)
+    )
+    service.run_inspection(machine_number=11)
+
+    assert cameras.capture_all_calls == 0
+    assert cameras.capture_log == [1, 2, 3, 4]
+
+
+def test_a_parked_camera_is_not_grabbed_in_parallel_either(service_parts) -> None:
+    plc = service_parts[3]
+    cameras = service_parts[0]
+    plc.read_gantry_status = lambda index: index != 3  # camera 3's gantry is parked
+
+    service = build_service(service_parts, FakeConfig(capture_mode="sequential"))
+    cycle = service.run_inspection(machine_number=12, capture_mode="parallel")
+
+    assert 3 not in cameras.capture_log
+    assert cycle.cameras[3].result is InspectionResult.SKIPPED

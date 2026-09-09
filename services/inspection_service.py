@@ -88,6 +88,7 @@ from services.shift_service import ShiftService
 logger = get_logger(LogSource.VISION)
 
 SEQUENTIAL_MODE = "sequential"
+PARALLEL_MODE = "parallel"
 DEFAULT_CAMERA_DELAY_MS = 500
 
 _RESULT_TO_PLC = {
@@ -121,8 +122,17 @@ class InspectionService:
         self._shifts = shift_service
 
     # -------------------------------------------------------------- pipeline
-    def run_inspection(self, machine_number: int) -> InspectionCycleData:
-        """Execute the full cycle. Never raises — faults degrade the result."""
+    def run_inspection(
+        self, machine_number: int, capture_mode: str | None = None
+    ) -> InspectionCycleData:
+        """Execute the full cycle. Never raises — faults degrade the result.
+
+        ``capture_mode`` overrides ``app_config.inspection.capture_mode`` for
+        this one cycle without persisting anything — the toolbar's "all cameras
+        at a time" button passes :data:`PARALLEL_MODE` so it grabs every camera
+        at once regardless of the station's configured (normally sequential)
+        mode. A PLC trigger passes nothing and follows the configuration.
+        """
         cycle_started = time.perf_counter()
         started_at = datetime.now()
         app_cfg = self._config.load("app_config")
@@ -142,7 +152,10 @@ class InspectionService:
 
         # 1.+2. capture and detect, one camera at a time or all at once
         inspection_cfg = app_cfg.get("inspection", {})
-        if str(inspection_cfg.get("capture_mode", SEQUENTIAL_MODE)).lower() == SEQUENTIAL_MODE:
+        mode = str(
+            capture_mode or inspection_cfg.get("capture_mode", SEQUENTIAL_MODE)
+        ).lower()
+        if mode == SEQUENTIAL_MODE:
             camera_results, detection_ms = self._run_sequential(active, inspection_cfg)
         else:
             camera_results, detection_ms = self._run_parallel(active)
@@ -476,7 +489,10 @@ class InspectionService:
     ) -> tuple[dict[int, CameraInspectionData], float]:
         """All cameras grab together, then detect together (shortest cycle)."""
         capture_started = time.perf_counter()
-        frames = self._cameras.capture_all()
+        # Only the gantry-active cameras: a skipped camera is not captured at
+        # all (same as the sequential path), and grabbing it would cost a
+        # full-resolution transfer nothing then reads.
+        frames = self._cameras.capture_all(enabled)
         capture_ms = (time.perf_counter() - capture_started) * 1000.0
         for index, frame in frames.items():
             if frame is not None:

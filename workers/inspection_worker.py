@@ -8,9 +8,13 @@ poll loop keeps its 50 ms cadence (heartbeat never stalls behind a capture).
 PLC output writes issued during the cycle interleave safely with polling via
 the PLC client's internal lock.
 
-``trigger_requested`` lets the UI start a manual cycle ("Simulate Trigger")
-from the main thread — emitting the signal marshals the call onto this
-thread automatically.
+``trigger_requested`` lets the UI start a manual cycle from the main thread —
+emitting the signal marshals the call onto this thread automatically.
+``all_cameras_trigger_requested`` is the same cycle with the capture mode
+forced to parallel, which is what the toolbar's "Simulate trigger for all
+camera at a time" button asks for; the dashboard's own button follows the
+configured capture mode instead. Both share the busy flag with the per-camera
+trigger, so no two cycles ever overlap.
 """
 
 from __future__ import annotations
@@ -19,7 +23,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from core.logging import get_logger
 from core.utilities.enums import LogSource
-from services.inspection_service import InspectionService
+from services.inspection_service import PARALLEL_MODE, InspectionService
 
 logger = get_logger(LogSource.VISION)
 
@@ -27,8 +31,10 @@ logger = get_logger(LogSource.VISION)
 class InspectionWorker(QObject):
     """Queued, serialised execution of inspection cycles."""
 
-    #: emit to run a cycle from any thread (UI "Simulate Trigger" button)
+    #: emit to run a cycle from any thread (dashboard "Simulate Trigger" button)
     trigger_requested = Signal(int)
+    #: emit to run a cycle with every camera grabbed at once (toolbar button)
+    all_cameras_trigger_requested = Signal(int)
     #: emit to inspect one camera from any thread (dashboard per-camera button);
     #: arguments are (camera_index, machine_number)
     camera_trigger_requested = Signal(int, int)
@@ -43,6 +49,7 @@ class InspectionWorker(QObject):
         self._thread.setObjectName("InspectionWorker")
         self.moveToThread(self._thread)
         self.trigger_requested.connect(self.on_trigger)
+        self.all_cameras_trigger_requested.connect(self.on_all_cameras_trigger)
         self.camera_trigger_requested.connect(self.on_camera_trigger)
 
     # ------------------------------------------------------------ lifecycle
@@ -59,8 +66,18 @@ class InspectionWorker(QObject):
     # ----------------------------------------------------------------- slot
     @Slot(int)
     def on_trigger(self, machine_number: int) -> None:
-        """Run one cycle. Re-entry cannot normally happen (the PLC handshake
-        serialises triggers); if it does, the extra trigger is dropped loudly."""
+        """Run one cycle in the configured capture mode. Re-entry cannot
+        normally happen (the PLC handshake serialises triggers); if it does,
+        the extra trigger is dropped loudly."""
+        self._run_cycle(machine_number, None)
+
+    @Slot(int)
+    def on_all_cameras_trigger(self, machine_number: int) -> None:
+        """Run one cycle with every camera captured simultaneously, whatever
+        the configured capture mode is (toolbar button)."""
+        self._run_cycle(machine_number, PARALLEL_MODE)
+
+    def _run_cycle(self, machine_number: int, capture_mode: str | None) -> None:
         if self._busy:
             logger.warning(
                 "Trigger for machine %d ignored — inspection already running "
@@ -70,7 +87,7 @@ class InspectionWorker(QObject):
             return
         self._busy = True
         try:
-            cycle = self._service.run_inspection(machine_number)
+            cycle = self._service.run_inspection(machine_number, capture_mode)
             self.inspection_finished.emit(cycle)
         finally:
             self._busy = False
