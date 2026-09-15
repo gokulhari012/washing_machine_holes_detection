@@ -192,6 +192,36 @@ def test_parallel_mode_still_grabs_everything_at_once(service_parts) -> None:
     assert set(cycle.cameras) == set(CAMERA_INDEXES)
 
 
+def test_a_misspelled_capture_mode_runs_sequential_and_honours_the_delay(
+    service_parts, monkeypatch
+) -> None:
+    """Anything unrecognised is the documented default, not parallel.
+
+    ``"parellel"`` (a real typo from a live ``app_config.json``) used to slip
+    through the ``!= "sequential"`` branch, so the station ran parallel and
+    ``camera_delay_ms`` was silently ignored.
+    """
+    cameras = service_parts[0]
+    slept: list[float] = []
+    monkeypatch.setattr("services.inspection_service.time.sleep", slept.append)
+
+    service = build_service(
+        service_parts, FakeConfig(capture_mode="parellel", camera_delay_ms=750)
+    )
+    service.run_inspection(machine_number=7)
+
+    assert cameras.capture_all_calls == 0
+    assert slept == [0.75, 0.75, 0.75]
+
+
+def test_capture_mode_is_case_and_whitespace_tolerant(service_parts) -> None:
+    cameras = service_parts[0]
+    service = build_service(service_parts, FakeConfig(capture_mode="  Parallel "))
+    service.run_inspection(machine_number=8)
+
+    assert cameras.capture_all_calls == 1
+
+
 def test_each_camera_gets_its_own_cycle_time_sequential(service_parts) -> None:
     service = build_service(service_parts, FakeConfig(capture_mode="sequential", camera_delay_ms=0))
     cycle = service.run_inspection(machine_number=7)

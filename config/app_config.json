@@ -23,7 +23,7 @@
     "export_directory": "exports"
   },
   "inspection": {
-    "capture_mode": "parellel",
+    "capture_mode": "sequential",
     "camera_delay_ms": 5000
   },
   "security": {

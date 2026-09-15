@@ -172,6 +172,12 @@ The cycle's `shift` is resolved by `ShiftService` against the cycle's own
   quietly drop that note.
 - `parallel` — all four grab and detect at once via `ThreadPoolExecutor`. Shortest cycle.
 
+Anything else in that key — a typo like `parellel`, which the live file really did
+carry — resolves to `sequential` with a warning in the log
+(`InspectionService._resolve_capture_mode`). It used to fall through the
+`!= "sequential"` test straight into the parallel branch, so a misspelling ran
+parallel cycles and silently ignored `camera_delay_ms`.
+
 `run_inspection(machine, capture_mode=...)` overrides the configured mode for one
 cycle without persisting anything. Only the toolbar's **"Simulate trigger for all
 camera at a time"** button uses it (via `InspectionWorker.all_cameras_trigger_requested`,

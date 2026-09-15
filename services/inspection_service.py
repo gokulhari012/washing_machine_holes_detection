@@ -122,6 +122,29 @@ logger = get_logger(LogSource.VISION)
 
 SEQUENTIAL_MODE = "sequential"
 PARALLEL_MODE = "parallel"
+
+
+def _resolve_capture_mode(value: object) -> str:
+    """Normalise a configured/overridden capture mode to a known one.
+
+    Anything unrecognised resolves to :data:`SEQUENTIAL_MODE` — the station's
+    documented default — and says so once per cycle in the log. It used to fall
+    through to the parallel branch simply because it was not equal to
+    ``"sequential"``, which turned a typo in ``app_config.json``
+    (``"parellel"``) into a silent parallel cycle with ``camera_delay_ms``
+    ignored and nothing anywhere saying why.
+    """
+    mode = str(value).strip().lower()
+    if mode in (SEQUENTIAL_MODE, PARALLEL_MODE):
+        return mode
+    logger.warning(
+        "Unknown capture_mode %r - running %s. Valid values are %r and %r.",
+        value,
+        SEQUENTIAL_MODE,
+        SEQUENTIAL_MODE,
+        PARALLEL_MODE,
+    )
+    return SEQUENTIAL_MODE
 DEFAULT_CAMERA_DELAY_MS = 500
 
 _RESULT_TO_PLC = {
@@ -190,9 +213,9 @@ class InspectionService:
         # command before either path starts, and off together in one more
         # once it returns — see the module docstring's Strobe lighting note.
         inspection_cfg = app_cfg.get("inspection", {})
-        mode = str(
+        mode = _resolve_capture_mode(
             capture_mode or inspection_cfg.get("capture_mode", SEQUENTIAL_MODE)
-        ).lower()
+        )
         lit = self._strobe_group_on(active)
         try:
             if mode == SEQUENTIAL_MODE:

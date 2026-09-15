@@ -68,6 +68,7 @@ class MainWindow(QMainWindow):
         self._shutdown_done = False
         # (nav item, minimum role that may see it — None = everyone)
         self._pages: list[tuple[QListWidgetItem, UserRole | None]] = []
+        self._simulate_action = None  # set by _build_toolbar
 
         self.setWindowTitle("Washing Machine Bottom Hole Detection System")
         self.resize(1440, 900)
@@ -122,9 +123,13 @@ class MainWindow(QMainWindow):
             self._simulate_button.setEnabled(False)
         else:
             self._simulate_button.clicked.connect(self._on_simulate_all)
-        # Developer-only; refreshed again on every login/logout.
-        self._simulate_button.setVisible(self._auth.has_role(UserRole.DEVELOPER))
-        toolbar.addWidget(self._simulate_button)
+        # Developer-only; refreshed again on every login/logout. The toolbar
+        # wraps the button in a QWidgetAction and drives the widget's
+        # visibility from that action, so a later ``setVisible(True)`` on the
+        # button alone is undone on the next toolbar layout - the action is
+        # what has to be toggled (see :meth:`_refresh_nav_visibility`).
+        self._simulate_action = toolbar.addWidget(self._simulate_button)
+        self._set_simulate_visible(self._auth.has_role(UserRole.DEVELOPER))
 
         toolbar.addWidget(self._space(16))
         self._session_label = QLabel()
@@ -286,7 +291,7 @@ class MainWindow(QMainWindow):
         # The manual trigger is commissioning-grade too: hidden outright for
         # anyone below developer, so an operator cannot fire the station by
         # hand from the toolbar.
-        self._simulate_button.setVisible(self._auth.has_role(UserRole.DEVELOPER))
+        self._set_simulate_visible(self._auth.has_role(UserRole.DEVELOPER))
 
         first_visible = None
         for row, (item, min_role) in enumerate(self._pages):
@@ -334,6 +339,20 @@ class MainWindow(QMainWindow):
         # one cycle at a time — the toolbar button follows the dashboard one
         state.trigger_received.connect(lambda _machine: self._set_simulate_enabled(False))
         state.inspection_completed.connect(lambda _cycle: self._set_simulate_enabled(True))
+
+    def _set_simulate_visible(self, visible: bool) -> None:
+        """Show/hide the toolbar trigger through its QWidgetAction.
+
+        Hiding the widget directly works once, but showing it again does not:
+        the toolbar re-applies its action's visibility to the widget on the
+        next layout pass. Toggling the action keeps both in step, which is why
+        the button only ever appeared when the app *started* logged in as a
+        developer (``security.auto_login_developer``) and stayed missing after
+        a developer logged in by hand.
+        """
+        if self._simulate_action is not None:
+            self._simulate_action.setVisible(visible)
+        self._simulate_button.setVisible(visible)
 
     def _set_simulate_enabled(self, enabled: bool) -> None:
         self._simulate_button.setEnabled(enabled and self._on_simulate_all is not None)

@@ -86,6 +86,22 @@ def test_toolbar_trigger_appears_for_a_developer(window, auth) -> None:
     assert window._simulate_button.text() == "Simulate trigger for all camera at a time"
 
 
+def test_toolbar_trigger_action_follows_the_session(window, auth) -> None:
+    """The QWidgetAction is what the toolbar actually honours.
+
+    Toggling only the button left the action hidden, so the toolbar re-hid the
+    widget on its next layout and the trigger appeared only on a station that
+    started already logged in (``security.auto_login_developer``).
+    """
+    assert window._simulate_action.isVisible() is False
+    login_as(auth, UserRole.DEVELOPER)
+    window._refresh_nav_visibility()
+    assert window._simulate_action.isVisible() is True
+    auth.logout()
+    window._refresh_nav_visibility()
+    assert window._simulate_action.isVisible() is False
+
+
 # ----------------------------------------------------------------- dashboard
 @pytest.fixture()
 def dashboard(qapp, auth):
