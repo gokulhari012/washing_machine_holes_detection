@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import itertools
+import json
 import os
 import sys
 import threading
@@ -39,7 +40,7 @@ from core.led import LedManager, build_led_settings, create_led_client
 from core.logging import LogManager, get_logger
 from core.plc import PlcManager, RegisterMap, create_plc_client
 from core.utilities import ConfigManager
-from core.utilities.enums import LogSource, UserRole
+from core.utilities.enums import AppTheme, LogSource, UserRole
 from core.utilities.exceptions import VisionSystemError
 from core.vision import VisionEngine, migrate_legacy_detection_config
 from models import AppState
@@ -73,7 +74,7 @@ from ui.logs import LogsPage
 from ui.machine_models import MachineModelsPage
 from ui.settings import SettingsPage
 from ui.main_window import MainWindow
-from ui.theme import apply_dark_theme
+from ui.theme import apply_theme, current_theme
 
 MAINTENANCE_INTERVAL_MS = 30 * 60 * 1000  # backup/retention check cadence
 
@@ -81,7 +82,10 @@ MAINTENANCE_INTERVAL_MS = 30 * 60 * 1000  # backup/retention check cadence
 class Application:
     """Owns every long-lived object and the startup/shutdown order."""
 
-    def __init__(self) -> None:
+    def __init__(self, qt_app: QApplication) -> None:
+        # Held only so a theme change can re-paint at runtime; nothing else
+        # in the graph touches the QApplication.
+        self.qt_app = qt_app
         # ------------------------------------------------ config & logging
         self.config = ConfigManager(BASE_DIR / "config")
         app_cfg = self.config.load("app_config")
@@ -257,6 +261,7 @@ class Application:
         # rebuilt manager, not the one the save just replaced.
         self.config.subscribe("camera", self._on_camera_settings_saved)
         self.config.subscribe("detection", self._on_detection_settings_saved)
+        self.config.subscribe("app_config", self._on_app_config_saved)
         self.calibration.subscribe(self._on_calibration_saved)
         self._maintenance_timer = QTimer(self.window)
         self._maintenance_timer.timeout.connect(self._run_maintenance_async)
@@ -379,6 +384,21 @@ class Application:
 
     def _on_calibration_saved(self, _calibration) -> None:
         self._sync_active_machine_model("calibration")
+
+    def _on_app_config_saved(self, app_cfg: dict) -> None:
+        """Re-paint the UI if the Settings page changed the colour scheme.
+
+        The page writes the preference and nothing else — repainting is the
+        composition root's job because it owns the QApplication. Comparing
+        against the theme already in force keeps every *other* settings save
+        (rota, retention, operator name) from pointlessly re-rendering the
+        stylesheet and re-running the theme observers.
+        """
+        theme = AppTheme.from_value(app_cfg.get("application", {}).get("theme"))
+        if theme is current_theme():
+            return
+        apply_theme(self.qt_app, theme)
+        self.logger.info("Theme changed to %s", theme.value)
 
     def _sync_active_machine_model(self, domain: str) -> None:
         """Fold a just-saved settings domain into the active machine model.
@@ -520,6 +540,22 @@ class Application:
         sys.excepthook = hook
 
 
+def _configured_theme() -> AppTheme:
+    """``application.theme`` from config/app_config.json, defaulting to dark.
+
+    Deliberately standalone: this runs before the object graph is built, and
+    a missing or malformed config file must still leave a themed, usable
+    window rather than crash the station on start.
+    """
+    try:
+        document = json.loads(
+            (BASE_DIR / "config" / "app_config.json").read_text(encoding="utf-8")
+        )
+        return AppTheme.from_value(document.get("application", {}).get("theme"))
+    except (OSError, ValueError, AttributeError):
+        return AppTheme.DARK
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Washing Machine Bottom Hole Detection")
     parser.add_argument(
@@ -533,9 +569,13 @@ def main() -> int:
 
     qt_app = QApplication(sys.argv)
     qt_app.setApplicationName("WM Hole Detection")
-    apply_dark_theme(qt_app)
+    # Painted before the window exists so the first frame is already in the
+    # right scheme. Read straight from the file rather than through the
+    # Application's ConfigManager, which does not exist yet; an unreadable or
+    # unrecognised value degrades to dark (AppTheme.from_value).
+    apply_theme(qt_app, _configured_theme())
 
-    application = Application()
+    application = Application(qt_app)
     if args.selftest > 0:
         application.window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
     application.start()

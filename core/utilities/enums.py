@@ -89,6 +89,34 @@ class LogSource(StrEnum):
     UI = "UI"
 
 
+class AppTheme(StrEnum):
+    """Which colour scheme the whole UI is painted in.
+
+    Persisted as ``application.theme`` in ``app_config.json`` and applied by
+    :func:`ui.theme.apply_theme`, which paints *both* schemes from one token
+    map and one QSS template — there is no second stylesheet to keep in step.
+    An unrecognised value degrades to :attr:`DARK` (see
+    :meth:`from_value`) rather than raising: a typo in the config file must
+    not stop the station booting.
+    """
+
+    DARK = "dark"
+    LIGHT = "light"
+
+    @classmethod
+    def from_value(cls, value: object) -> "AppTheme":
+        """Parse a config value, falling back to ``dark`` for anything else."""
+        try:
+            return cls(str(value).strip().lower())
+        except ValueError:
+            return cls.DARK
+
+    @property
+    def label(self) -> str:
+        """Human-readable name for the Settings dropdown."""
+        return self.value.capitalize()
+
+
 class UserRole(StrEnum):
     """Access level for password-protected areas and nav-rail pages.
 

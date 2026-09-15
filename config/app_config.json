@@ -7,7 +7,7 @@
     "shift": "A",
     "serial_prefix": "WM-",
     "language": "en",
-    "theme": "dark"
+    "theme": "light"
   },
   "database": {
     "path": "data/inspection.db",

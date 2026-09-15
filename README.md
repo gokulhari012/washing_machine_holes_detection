@@ -5,10 +5,12 @@ the bottom of washing machines on a conveyor: **4 fixed cameras** detect the
 drain-hole position in each section, results are exchanged with the line
 **PLC over Ethernet (Modbus TCP)**, and every inspection is stored in SQLite.
 
-Dark industrial HMI in the style of VisionPro / In-Sight: dashboard with four
+Industrial HMI in the style of VisionPro / In-Sight: dashboard with four
 live camera panels, camera/PLC/detection/calibration configuration pages,
 searchable database viewer with CSV/Excel/PDF export, live logs, and
-password-protected settings.
+password-protected settings. Ships **dark**; a **light** scheme for brightly
+lit lines is selectable on the Settings page (developer login — see
+[Theme](#theme)).
 
 ---
 
@@ -40,6 +42,23 @@ appear in the nav rail.
 Default passwords are the usernames (`admin`/`admin`, `developer`/`developer`)
 — **change both in Settings before production use** (log in as each and use
 Change Password; the page changes the password of whoever is logged in).
+
+### Theme
+
+Settings → **Appearance** → Theme switches the whole application between the
+shipped **Dark** scheme and a **Light** one for a brightly lit line where the
+screen washes out. It applies on Save, with no restart, and is remembered in
+`config/app_config.json` (`application.theme`).
+
+The group is **visible to developers only** — it is a commissioning decision
+about the station's screen and the light around it, not something to change
+between shifts, and it changes the colours every verdict on the line is read
+by. An admin saving Settings keeps whatever a developer chose.
+
+Both schemes are painted from one stylesheet: `resources/styles/theme.qss` is
+a template of `@token` placeholders filled in from the palette in
+`ui/theme.py`. A new colour is added to both palettes there, never by copying
+the stylesheet.
 
 Smoke test (starts hidden, runs 8 s, saves `logs/selftest.png`, exits):
 
@@ -213,7 +232,7 @@ models/            AppState (observable) + DTOs
 services/          inspection · camera · plc · database · export · backup · auth
 workers/           PlcPollWorker · InspectionWorker · AcquisitionWorker×4 · DatabaseWorker
 ui/                main_window + dashboard/ camera/ plc/ detection/ calibration/
-                   database/ logs/ settings/ widgets/ (dark QSS theme in resources/)
+                   database/ logs/ settings/ widgets/ (QSS theme template in resources/)
 tests/             pytest suite (vision, PLC, repositories, calibration)
 ```
 

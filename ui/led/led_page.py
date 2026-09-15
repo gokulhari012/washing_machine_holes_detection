@@ -18,6 +18,8 @@ operation.
 
 from __future__ import annotations
 
+from html import escape
+
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -40,10 +42,24 @@ from core.led import protocol
 from core.utilities.exceptions import VisionSystemError
 from models.app_state import AppState
 from services.led_service import LedService
+from ui import theme
 from ui.widgets import LabeledLed
 
 BAUD_OPTIONS = ["9600", "19200", "38400", "57600", "115200"]
-_LOG_COLORS = {"tx": "#7ec9ff", "rx": "#9fe39f", "error": "#ff8a80", "info": "#e8b339"}
+#: Log line kind -> palette token. The log is drawn as inline HTML rather than
+#: styled by the QSS (a QTextEdit's contents are a document, not widgets), so
+#: these are looked up through ``theme.color`` at render time and the whole
+#: transcript is re-rendered when the scheme changes — an inline hex here
+#: would keep the dark pastels on a white background, where they vanish.
+_LOG_TOKENS = {
+    "tx": "led-log-tx",
+    "rx": "led-log-rx",
+    "error": "led-log-error",
+    "info": "led-log-info",
+}
+#: Transcript lines kept for re-rendering after a theme change. Bounded so a
+#: long troubleshooting session cannot grow the buffer without limit.
+_LOG_LIMIT = 500
 
 
 class LedPage(QWidget):
@@ -57,6 +73,9 @@ class LedPage(QWidget):
     ) -> None:
         super().__init__(parent)
         self._svc = led_service
+        # (timestamp, message, kind) for every line on screen, so the log can
+        # be re-rendered in the other scheme's colours on a theme switch.
+        self._entries: list[tuple[str, str, str]] = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
@@ -98,6 +117,7 @@ class LedPage(QWidget):
         splitter.setStretchFactor(2, 1)
 
         app_state.led_state_changed.connect(self._on_led_state_changed)
+        theme.subscribe(self._repaint_log)
         self._load()
 
     # ------------------------------------------------------------------ build
@@ -202,7 +222,7 @@ class LedPage(QWidget):
         self._log_view.setReadOnly(True)
         layout.addWidget(self._log_view, stretch=1)
         clear_btn = QPushButton("Clear Log")
-        clear_btn.clicked.connect(self._log_view.clear)
+        clear_btn.clicked.connect(self._clear_log)
         layout.addWidget(clear_btn)
         return box
 
@@ -305,6 +325,32 @@ class LedPage(QWidget):
     def _log(self, message: str, kind: str) -> None:
         from datetime import datetime
 
-        color = _LOG_COLORS.get(kind, "#dcdcdc")
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self._log_view.append(f'<span style="color:{color}">{timestamp} {message}</span>')
+        self._entries.append((timestamp, message, kind))
+        del self._entries[:-_LOG_LIMIT]
+        self._log_view.append(self._format_entry(timestamp, message, kind))
+
+    def _format_entry(self, timestamp: str, message: str, kind: str) -> str:
+        colour = theme.color(_LOG_TOKENS.get(kind, "led-log-default"))
+        return f'<span style="color:{colour}">{timestamp} {escape(message)}</span>'
+
+    def _clear_log(self) -> None:
+        """Clear the view *and* the transcript behind it.
+
+        Both, or a theme switch would resurrect the lines the operator just
+        cleared when :meth:`_repaint_log` re-renders from ``_entries``.
+        """
+        self._entries.clear()
+        self._log_view.clear()
+
+    def _repaint_log(self, _theme) -> None:
+        """Re-render the transcript in the new scheme's colours.
+
+        Registered with :func:`ui.theme.subscribe` because this page paints
+        its log rather than styling it. The page is built once by the
+        composition root and lives as long as the window, so it never
+        unsubscribes.
+        """
+        self._log_view.clear()
+        for timestamp, message, kind in self._entries:
+            self._log_view.append(self._format_entry(timestamp, message, kind))

@@ -209,3 +209,27 @@ def test_an_admin_save_preserves_a_developers_choice(qt_app, tmp_path):
     auth.login(UserRole.ADMIN)
     _settings_page(config, auth)._on_save()
     assert config.get_value("app_config", "application.theme") == "light"
+
+
+# ------------------------------------------------- LED page's drawn log
+# The LED page appends inline-styled HTML to a QTextEdit rather than letting
+# the QSS colour it — a text document's spans are not widgets — so it is one
+# of the places that must look its colours up per theme and re-render on a
+# switch. These pin the wiring without building the whole page.
+def test_every_led_log_kind_maps_to_a_token_both_palettes_define():
+    """A new log kind whose token exists in only one scheme is the drift."""
+    from ui.led.led_page import _LOG_TOKENS
+
+    tokens = set(_LOG_TOKENS.values()) | {"led-log-default"}
+    for scheme in AppTheme:
+        for token in tokens:
+            assert token in theme._PALETTES[scheme], f"{token} missing from {scheme}"
+
+
+def test_the_led_log_colours_differ_between_the_schemes():
+    """The dark scheme's pastels are unreadable on the light QTextEdit, so
+    they must not simply be reused."""
+    from ui.led.led_page import _LOG_TOKENS
+
+    for token in _LOG_TOKENS.values():
+        assert theme._DARK[token] != theme._LIGHT[token], token
