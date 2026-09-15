@@ -240,9 +240,9 @@ class SettingsPage(QWidget):
         ))
         storage.addRow("Retention", self._retention)
         storage.addRow("", self._note(
-            "Permanently deletes inspection records and log entries older than "
-            "this from the database. Saved image files are never deleted — "
-            "clear images/ by hand. 0 keeps everything forever."
+            "Permanently deletes inspection records and log entries older "
+            "than this from the database, and the matching images/<date>/ "
+            "folders from disk. 0 keeps everything forever."
         ))
         storage.addRow(backup_now)
         left.addWidget(self._storage_box)
