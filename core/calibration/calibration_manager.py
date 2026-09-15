@@ -94,8 +94,7 @@ class CalibrationManager:
         the cache does — ``apply_profile`` builds a fresh object per switch.
 
         The camera's **screw driver compensation** survives the swap for the
-        same reason and by the same mechanism (see
-        :meth:`save_screw_compensation`).
+        same reason and by the same mechanism (see :meth:`screw_offset`).
         """
         with self._lock:
             previous = self._calibrations.get(calibration.camera_index)
@@ -145,50 +144,6 @@ class CalibrationManager:
                 logger.exception("Calibration observer failed")
 
     # ---------------------------------------------- screw driver compensation
-    def save_screw_compensation(
-        self, camera_index: int, enabled: bool, x_mm: float, y_mm: float
-    ) -> bool:
-        """Persist *camera_index*'s screw-driver offset and apply it at once.
-
-        The cache is updated as part of the save, so the very next inspection
-        encodes the new offset — this is a live machine setting, not a
-        snapshot waiting on a machine-model switch, and an operator who
-        presses Save expects the next part to move.
-
-        Writes through :meth:`CalibrationRepository.update_screw_compensation`,
-        which updates the camera's active row in place rather than archiving a
-        new calibration: adjusting where the screw driver sits is not a
-        recalibration. Returns ``False`` (and changes nothing) for a camera
-        that has no calibration to attach the offset to.
-
-        Observers are deliberately **not** notified: :meth:`subscribe` means
-        "the operator calibrated this camera", which folds into the active
-        machine-model profile — and the offsets are rig facts a profile does
-        not carry (``CameraCalibration.to_dict``).
-        """
-        with self._lock:
-            calibration = self._calibrations.get(camera_index)
-        if calibration is None:
-            return False
-        if not self._repository.update_screw_compensation(
-            camera_index, bool(enabled), float(x_mm), float(y_mm)
-        ):
-            return False
-        with self._lock:
-            # Re-read under the lock: apply_live may have swapped the object.
-            live = self._calibrations.get(camera_index, calibration)
-            live.screw_compensation_enabled = bool(enabled)
-            live.screw_offset_x_mm = float(x_mm)
-            live.screw_offset_y_mm = float(y_mm)
-        logger.info(
-            "Screw driver compensation for camera %d: %s (%.2f, %.2f) mm",
-            camera_index,
-            "on" if enabled else "off",
-            x_mm,
-            y_mm,
-        )
-        return True
-
     def screw_offset(self, camera_index: int) -> tuple[float, float]:
         """The (x_mm, y_mm) offset to add to *camera_index*'s PLC-bound
         position — never to the measured position reported to the dashboard
@@ -196,6 +151,11 @@ class CalibrationManager:
         location. Returns (0.0, 0.0) when the camera is uncalibrated or its
         compensation is switched off. See ``InspectionService._plc_position``,
         the only caller.
+
+        There is no separate setter: the offsets are part of the calibration,
+        so :meth:`save` (the Calibration page's one Save button) persists them
+        and refreshes the cache in the same call — the next inspection encodes
+        the new offset with nothing to re-apply.
         """
         with self._lock:
             calibration = self._calibrations.get(camera_index)

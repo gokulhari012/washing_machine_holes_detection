@@ -258,14 +258,10 @@ where the screw driver sits relative to a camera is a fact about the rig, not th
 part, so it is **not** in `CameraCalibration.to_dict` and a machine-model switch
 carries the live values across (`CalibrationManager.apply_live`). It used to be a
 per-profile block on the Machine Models page; don't re-add it there.
-`CalibrationManager.save_screw_compensation` writes the active calibration row **in
-place** (no history row — an offset tweak is not a recalibration), updates the live
-cache in the same call so the **next inspection already uses it**, and deliberately
-does *not* fire the calibration observers (that fan-out means "the operator
-calibrated", which syncs into the active profile). A camera with no active
-calibration has nowhere to store an offset: the save returns `False` and the page
-says so instead of writing — inventing an identity row would switch that camera out of the
-uncalibrated fallback and enable its tolerance check at 1 px = 1 mm.
+There is **no second save button**: the offsets are part of the calibration, so the
+page's one "Save Calibration" persists them through `CalibrationManager.save` like
+every other field, which also refreshes the live cache — so the **next inspection
+already uses the new offset**, with nothing to re-apply.
 
 **Uncalibrated fallback:** identity mapping, 1 px = 1 mm, `deviation_mm=None`,
 tolerance check disabled. The system runs out of the box.

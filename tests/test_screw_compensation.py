@@ -3,9 +3,9 @@ applied to the PLC-bound position only, and live the moment it is saved.
 
 The feature used to be a per-machine-model block pushed into the manager by
 ``MachineModelService.apply_profile``; it now rides the calibration row next
-to the axis signs, so "Save Compensation" on the Calibration page has to take
-effect immediately rather than waiting for a model switch — that immediacy is
-what most of these tests pin.
+to the axis signs, saved by the Calibration page's one "Save Calibration"
+button. That save has to take effect immediately rather than waiting for a
+model switch — that immediacy is what most of these tests pin.
 """
 
 from types import SimpleNamespace
@@ -19,24 +19,19 @@ from core.calibration.calibration_model import CameraCalibration
 class FakeRepository:
     """Just enough of ``CalibrationRepository`` for the manager."""
 
-    def __init__(self, active: set[int]) -> None:
-        self._active = active
-        self.writes: list[tuple[int, bool, float, float]] = []
+    def __init__(self) -> None:
+        self.saved: list = []
 
     def get_all_active(self) -> dict:
         return {}
 
-    def update_screw_compensation(
-        self, camera_index: int, enabled: bool, x_mm: float, y_mm: float
-    ) -> bool:
-        if camera_index not in self._active:
-            return False
-        self.writes.append((camera_index, enabled, x_mm, y_mm))
-        return True
+    def save(self, row) -> int:
+        self.saved.append(row)
+        return len(self.saved)
 
 
 def make_manager(*calibrations: CameraCalibration) -> tuple[CalibrationManager, FakeRepository]:
-    repository = FakeRepository({c.camera_index for c in calibrations})
+    repository = FakeRepository()
     manager = CalibrationManager(repository)
     for calibration in calibrations:
         manager._calibrations[calibration.camera_index] = calibration
@@ -68,16 +63,24 @@ def test_uncalibrated_camera_has_no_offset() -> None:
 
 
 def test_save_persists_and_takes_effect_in_the_same_call() -> None:
-    """The point of the feature's move: no model switch, no restart."""
+    """The point of the feature's move: no model switch, no restart. The
+    Calibration page's Save builds the whole calibration, Step 5 included."""
     manager, repository = make_manager(CameraCalibration(camera_index=2))
-    assert manager.save_screw_compensation(2, True, 1.5, -2.5) is True
+    manager.save(
+        CameraCalibration(
+            camera_index=2,
+            screw_compensation_enabled=True,
+            screw_offset_x_mm=1.5,
+            screw_offset_y_mm=-2.5,
+        )
+    )
     assert manager.screw_offset(2) == (1.5, -2.5)
-    assert repository.writes == [(2, True, 1.5, -2.5)]
-    # ...and the cached calibration carries it, so a later full save keeps it
-    assert manager.get(2).screw_offset_x_mm == pytest.approx(1.5)
+    row = repository.saved[-1]
+    assert (row.screw_offset_x_mm, row.screw_offset_y_mm) == (1.5, -2.5)
+    assert row.screw_compensation_enabled is True
 
 
-def test_save_disabling_clears_the_offset_reported() -> None:
+def test_saving_with_compensation_switched_off_stops_the_offset() -> None:
     manager, _ = make_manager(
         CameraCalibration(
             camera_index=2,
@@ -86,29 +89,17 @@ def test_save_disabling_clears_the_offset_reported() -> None:
             screw_offset_y_mm=-2.5,
         )
     )
-    manager.save_screw_compensation(2, False, 1.5, -2.5)
+    manager.save(
+        CameraCalibration(
+            camera_index=2,
+            screw_compensation_enabled=False,
+            screw_offset_x_mm=1.5,
+            screw_offset_y_mm=-2.5,
+        )
+    )
     assert manager.screw_offset(2) == (0.0, 0.0)
     # the values survive the switch-off, ready to be re-enabled
     assert manager.get(2).screw_offset_x_mm == pytest.approx(1.5)
-
-
-def test_save_refuses_a_camera_with_no_calibration() -> None:
-    """An identity row invented here would silently enable that camera's
-    tolerance judgement at 1 px = 1 mm — see the repository's docstring."""
-    manager, repository = make_manager(CameraCalibration(camera_index=1))
-    assert manager.save_screw_compensation(3, True, 5.0, 5.0) is False
-    assert repository.writes == []
-    assert manager.screw_offset(3) == (0.0, 0.0)
-
-
-def test_save_does_not_notify_calibration_observers() -> None:
-    """``subscribe`` means "the operator calibrated this camera", which folds
-    into the active machine model — an offset is not that."""
-    manager, _ = make_manager(CameraCalibration(camera_index=1))
-    seen: list[CameraCalibration] = []
-    manager.subscribe(seen.append)
-    manager.save_screw_compensation(1, True, 1.0, 1.0)
-    assert seen == []
 
 
 def test_a_machine_model_switch_keeps_the_live_offset() -> None:

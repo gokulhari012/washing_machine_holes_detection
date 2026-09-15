@@ -78,22 +78,22 @@ def test_calibration_single_active(db) -> None:
     assert list(repo.get_all_active().keys()) == [1]
 
 
-def test_calibration_screw_compensation_updates_in_place(db) -> None:
-    """Adjusting the screw-driver offset is not a recalibration: it edits the
-    active row rather than archiving it, so the camera's history is untouched."""
+def test_calibration_round_trips_the_screw_driver_offset(db) -> None:
+    """The offset is part of the calibration row, so a plain save carries it."""
     repo = CalibrationRepository(db)
-    repo.save(Calibration(camera_index=1, pixels_per_mm_x=10.0, pixels_per_mm_y=10.0))
-    row_id = repo.get_active(1).id
-
-    assert repo.update_screw_compensation(1, True, -20.0, 200.0) is True
+    repo.save(
+        Calibration(
+            camera_index=1,
+            pixels_per_mm_x=10.0,
+            pixels_per_mm_y=10.0,
+            screw_compensation_enabled=True,
+            screw_offset_x_mm=-20.0,
+            screw_offset_y_mm=200.0,
+        )
+    )
     active = repo.get_active(1)
-    assert active.id == row_id
     assert active.screw_compensation_enabled is True
     assert (active.screw_offset_x_mm, active.screw_offset_y_mm) == (-20.0, 200.0)
-
-
-def test_calibration_screw_compensation_needs_an_active_row(db) -> None:
-    assert CalibrationRepository(db).update_screw_compensation(2, True, 1.0, 1.0) is False
 
 
 def test_users(db) -> None:

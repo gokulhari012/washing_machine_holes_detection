@@ -270,33 +270,6 @@ class CalibrationRepository(BaseRepository):
             session.flush()
             return calibration.id
 
-    def update_screw_compensation(
-        self, camera_index: int, enabled: bool, x_mm: float, y_mm: float
-    ) -> bool:
-        """Write the screw-driver offset onto the camera's *active* row.
-
-        Deliberately an update rather than a ``save``: the offsets describe
-        where the screw driver sits, so changing one is not a recalibration
-        and must not archive the camera's calibration history or create a new
-        row. A camera with no active calibration is left alone and ``False``
-        is returned — inventing an identity calibration row for it would
-        silently switch that camera from the uncalibrated fallback to a real
-        (and wrong) coordinate frame, enabling the tolerance judgement with a
-        1 px = 1 mm scale.
-        """
-        with self._db.session_scope() as session:
-            row = session.scalar(
-                select(Calibration).where(
-                    Calibration.camera_index == camera_index, Calibration.is_active
-                )
-            )
-            if row is None:
-                return False
-            row.screw_compensation_enabled = enabled
-            row.screw_offset_x_mm = x_mm
-            row.screw_offset_y_mm = y_mm
-            return True
-
 
 # --------------------------------------------------------------------------- #
 # Logs

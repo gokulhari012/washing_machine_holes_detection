@@ -48,14 +48,12 @@ Workflow (per camera):
    selected camera, added to the position written to the PLC and nowhere
    else: the recorded/dashboard hole position and the GOOD/NG judgement stay
    the true measurement. Per camera like every other step, so it follows the
-   camera selector. Its own "Save Compensation" button writes straight onto
-   that camera's active calibration row **and into the live cache**, so the
-   next inspection encodes the new offset — there is nothing to re-apply
-   afterwards. It lived on the Machine Models page before, as a per-profile
-   block covering all four cameras; where the screw driver sits relative to a
+   camera selector, and it is saved by Step 6's "Save Calibration" along with
+   everything else on the page — there is deliberately no second save button.
+   It lived on the Machine Models page before, as a per-profile block
+   covering all four cameras; where the screw driver sits relative to a
    camera is a fact about the rig rather than the part, so it belongs to the
-   calibration alongside the axis signs. A camera with no saved calibration
-   has nowhere to store an offset and the save says so.
+   calibration alongside the axis signs.
 6. **Save Calibration** persists as the camera's active calibration.
 7. **Live Test** captures + detects + evaluates through the saved model.
 """
@@ -342,29 +340,20 @@ class CalibrationPage(QWidget):
         screw_row = QHBoxLayout()
         self._screw_x = _offset_spin()
         self._screw_y = _offset_spin()
-        self._screw_note = QLabel("")
-        self._screw_note.setProperty("class", "dim")
         screw_row.addWidget(QLabel("Offset X"))
         screw_row.addWidget(self._screw_x)
         screw_row.addWidget(QLabel("Y"))
         screw_row.addWidget(self._screw_y)
-        screw_row.addWidget(self._screw_note)
         screw_row.addStretch()
         screw_layout.addLayout(screw_row)
 
-        save_screw_btn = QPushButton("Save Compensation")
-        save_screw_btn.setToolTip(
-            "Store this offset on the selected camera's active calibration "
-            "and apply it immediately — the next inspection uses it"
-        )
-        save_screw_btn.clicked.connect(self._on_save_screw_compensation)
-        screw_layout.addWidget(save_screw_btn)
         screw_hint = QLabel(
-            "Per camera, like the rest of this page — switch cameras above to "
-            "set another one. The offset rides that camera's calibration, not "
-            "the machine model: it describes where the screw driver sits "
-            "relative to the camera, which no part change redefines. A camera "
-            "that has never been calibrated has nowhere to store one."
+            "Saved by \"Save Calibration\" below, and live from the next "
+            "inspection onwards. Per camera, like the rest of this page — "
+            "switch cameras above to set another one. The offset rides that "
+            "camera's calibration, not the machine model: it describes where "
+            "the screw driver sits relative to the camera, which no part "
+            "change redefines."
         )
         screw_hint.setWordWrap(True)
         screw_hint.setProperty("class", "dim")
@@ -794,7 +783,6 @@ class CalibrationPage(QWidget):
         enabled = calibration is not None and calibration.screw_compensation_enabled
         self._screw_x.setValue(calibration.screw_offset_x_mm if calibration else 0.0)
         self._screw_y.setValue(calibration.screw_offset_y_mm if calibration else 0.0)
-        self._screw_note.setText("" if calibration else "camera not calibrated")
 
         self._screw_enabled.blockSignals(True)
         self._screw_enabled.setChecked(enabled)
@@ -802,41 +790,8 @@ class CalibrationPage(QWidget):
         self._on_screw_enabled_toggled(enabled)
 
     def _on_screw_enabled_toggled(self, checked: bool) -> None:
-        index = self._camera_index()
-        editable = checked and index is not None and self._manager.get(index) is not None
-        self._screw_x.setEnabled(editable)
-        self._screw_y.setEnabled(editable)
-
-    def _on_save_screw_compensation(self) -> None:
-        """Persist the selected camera's offset and apply it in the same call.
-
-        ``CalibrationManager.save_screw_compensation`` updates the live cache
-        as it writes, so the next inspection's PLC position already carries
-        the new offset — this is the whole point of the button, and why it
-        does not wait for a machine-model switch or an application restart.
-        """
-        index = self._camera_index()
-        if index is None:
-            return
-        enabled = self._screw_enabled.isChecked()
-        try:
-            stored = self._manager.save_screw_compensation(
-                index, enabled, self._screw_x.value(), self._screw_y.value()
-            )
-        except VisionSystemError as exc:
-            QMessageBox.warning(self, "Screw Driver Compensation", str(exc))
-            return
-        if not stored:
-            self._status.setText(
-                f"Camera {index} has no saved calibration to store a screw "
-                f"driver offset on — calibrate it first."
-            )
-            return
-        state = "enabled" if enabled else "disabled"
-        self._status.setText(
-            f"Screw driver compensation {state} and applied for camera {index}: "
-            f"({self._screw_x.value():.2f}, {self._screw_y.value():.2f}) mm"
-        )
+        self._screw_x.setEnabled(checked)
+        self._screw_y.setEnabled(checked)
 
     def _on_save(self) -> None:
         index = self._camera_index()
@@ -858,9 +813,16 @@ class CalibrationPage(QWidget):
             if box.isChecked()
         ]
         axis_note = f" (reported {'/'.join(inverted)} inverted)" if inverted else ""
-        # A camera's first-ever save gives Step 5 a row to write to.
-        self._load_screw_compensation()
-        self._status.setText(f"Calibration saved for camera {index}{axis_note}")
+        # Step 5 rides the same row, and CalibrationManager.save updates the
+        # live cache as it persists, so the offset is in force from the next
+        # inspection — worth saying, since it changes what the PLC is told.
+        screw_note = (
+            f"; screw driver offset ({self._screw_x.value():.2f}, "
+            f"{self._screw_y.value():.2f}) mm applied"
+            if self._screw_enabled.isChecked()
+            else ""
+        )
+        self._status.setText(f"Calibration saved for camera {index}{axis_note}{screw_note}")
 
     # --------------------------------------------------------------- events
     def hideEvent(self, event) -> None:  # noqa: N802
