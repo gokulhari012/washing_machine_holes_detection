@@ -82,6 +82,16 @@ class CameraCalibration:
     Applied by ``CalibrationManager.evaluate`` at the same point as the Y flip,
     i.e. *after* ``deviation_mm`` has been computed — a sign convention never
     shifts the GOOD/NG verdict, only which way the servo is told to travel.
+
+    ``screw_compensation_enabled``/``screw_offset_x_mm``/``screw_offset_y_mm``
+    are this camera's **screw driver position compensation** (Calibration page,
+    Step 5): a fixed millimetre offset added to the position written to the PLC
+    and *only* there — the hole position recorded, dashboard-published and
+    tolerance-judged stays the true measurement. It lives here, next to the
+    axis signs, for the same reason: where the screw driver sits relative to
+    the camera is a fact about the rig, not about the part, so a machine-model
+    switch must never redefine it. See ``CalibrationManager.screw_offset`` and
+    ``InspectionService._plc_position``.
     """
 
     camera_index: int
@@ -93,6 +103,9 @@ class CameraCalibration:
     ref_point_mm: tuple[float, float] = (0.0, 0.0)
     invert_x: bool = False  # gantry axis sign, not optics — see class docstring
     invert_y: bool = False
+    screw_compensation_enabled: bool = False  # see class docstring
+    screw_offset_x_mm: float = 0.0
+    screw_offset_y_mm: float = 0.0
     rms_error: float = 0.0
     calibrated_by: str = field(default="", compare=False)
 
@@ -424,6 +437,9 @@ class CameraCalibration:
             # reads NULL, which is "not inverted" — the behaviour it had.
             invert_x=bool(row.invert_x),
             invert_y=bool(row.invert_y),
+            screw_compensation_enabled=bool(row.screw_compensation_enabled),
+            screw_offset_x_mm=float(row.screw_offset_x_mm or 0.0),
+            screw_offset_y_mm=float(row.screw_offset_y_mm or 0.0),
             rms_error=row.rms_error,
             calibrated_by=row.calibrated_by,
         )
@@ -448,6 +464,9 @@ class CameraCalibration:
             ref_point_y_mm=self.ref_point_mm[1],
             invert_x=self.invert_x,
             invert_y=self.invert_y,
+            screw_compensation_enabled=self.screw_compensation_enabled,
+            screw_offset_x_mm=self.screw_offset_x_mm,
+            screw_offset_y_mm=self.screw_offset_y_mm,
             rms_error=self.rms_error,
             calibrated_by=self.calibrated_by,
         )
@@ -465,6 +484,11 @@ class CameraCalibration:
         pushed "not inverted" onto a station that needs them, and sending a
         gantry the wrong way is a worse failure than a stale scale.
         ``CalibrationManager.apply_live`` keeps the live signs for that reason.
+
+        The **screw driver compensation** fields are left out for exactly the
+        same reason — where the screw driver sits relative to the camera is a
+        property of the rig, and a profile captured before the setting existed
+        would otherwise push a zero offset onto a station that needs one.
         """
         return {
             "pixels_per_mm_x": self.pixels_per_mm_x,
@@ -483,9 +507,10 @@ class CameraCalibration:
     def from_dict(cls, camera_index: int, data: dict[str, Any]) -> "CameraCalibration":
         """Inverse of :meth:`to_dict`.
 
-        The axis signs are absent from that representation on purpose, so the
-        object this returns always carries the defaults — see :meth:`to_dict`
-        and ``CalibrationManager.apply_live``, which restores the live ones.
+        The axis signs and the screw-driver offsets are absent from that
+        representation on purpose, so the object this returns always carries
+        the defaults — see :meth:`to_dict` and
+        ``CalibrationManager.apply_live``, which restores the live ones.
 
         Raises:
             CalibrationError: a matrix field has the wrong shape.

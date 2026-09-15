@@ -191,6 +191,13 @@ class Calibration(Base):
     # at the opposite corner. See CameraCalibration's class docstring.
     invert_x: Mapped[bool] = mapped_column(Boolean, default=False)
     invert_y: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Screw-driver position compensation: a fixed per-camera offset added to
+    # the position written to the PLC only (never to the recorded/displayed
+    # hole). Like the axis signs above it is a rig fact, so it rides the
+    # calibration row rather than a machine-model profile.
+    screw_compensation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    screw_offset_x_mm: Mapped[float] = mapped_column(Float, default=0.0)
+    screw_offset_y_mm: Mapped[float] = mapped_column(Float, default=0.0)
     rms_error: Mapped[float] = mapped_column(Float, default=0.0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     calibrated_by: Mapped[str] = mapped_column(String(64), default="")

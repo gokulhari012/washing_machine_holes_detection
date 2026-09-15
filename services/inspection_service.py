@@ -676,8 +676,9 @@ class InspectionService:
     ) -> tuple[float, float] | None:
         """The position written to the PLC for *camera_index*: the detected
         hole's x_mm/y_mm plus that camera's screw-driver offset, when screw
-        driver compensation is enabled for the active machine model (see
-        ``CalibrationManager.apply_screw_compensation``). ``None`` (the
+        driver compensation is enabled on that camera's calibration
+        (Calibration page, Step 5 — see
+        ``CalibrationManager.screw_offset``). ``None`` (the
         no-hole sentinel) when no hole was found, same as before compensation
         existed — an offset is never invented for a position that was never
         measured. The offset is applied here only: `data.x_mm`/`data.y_mm`

@@ -118,6 +118,13 @@ class DatabaseEngine:
         # NULL reads as "not inverted", which is the pre-feature behaviour.
         ("calibrations", "invert_x", "BOOLEAN"),
         ("calibrations", "invert_y", "BOOLEAN"),
+        # Per-camera screw-driver position compensation, added when that
+        # feature moved from the machine-model profile onto the calibration
+        # (Calibration page, "Step 5"). NULL reads as disabled / zero offset,
+        # which is the pre-feature behaviour.
+        ("calibrations", "screw_compensation_enabled", "BOOLEAN"),
+        ("calibrations", "screw_offset_x_mm", "REAL"),
+        ("calibrations", "screw_offset_y_mm", "REAL"),
         # Per-camera viewing frame rate, added with the Camera page's FPS
         # setting (paces live preview, Continuous Capture, Auto Calibrate).
         ("camera_configurations", "fps", "REAL"),

@@ -311,27 +311,6 @@
           "rms_error": 0.0,
           "calibrated_by": ""
         }
-      },
-      "screw_driver_compensation": {
-        "enabled": true,
-        "positions": {
-          "1": {
-            "x_mm": -20.0,
-            "y_mm": 200.0
-          },
-          "2": {
-            "x_mm": 0.0,
-            "y_mm": 0.0
-          },
-          "3": {
-            "x_mm": 0.0,
-            "y_mm": 0.0
-          },
-          "4": {
-            "x_mm": 0.0,
-            "y_mm": 0.0
-          }
-        }
       }
     },
     {

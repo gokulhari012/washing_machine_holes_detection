@@ -242,6 +242,25 @@ deliberately left unflipped. They ride the `calibrations` table but **not**
 `CameraCalibration.to_dict`, so a machine model never carries them — see
 [§8](#8-config-system).
 
+**Screw driver position compensation** (`CameraCalibration.screw_compensation_enabled`
+/ `screw_offset_x_mm` / `screw_offset_y_mm`, Calibration page → "Step 5") is a fixed
+per-camera mm offset added in `InspectionService._plc_position` — to the **position
+written to the PLC and nowhere else**. The x_mm/y_mm published to the dashboard,
+stored in SQLite and judged against `position_tolerance_mm` stay the true measured
+hole. It rides the calibration row next to the axis signs, and for the same reason:
+where the screw driver sits relative to a camera is a fact about the rig, not the
+part, so it is **not** in `CameraCalibration.to_dict` and a machine-model switch
+carries the live values across (`CalibrationManager.apply_live`). It used to be a
+per-profile block on the Machine Models page; don't re-add it there.
+`CalibrationManager.save_screw_compensation` writes the active calibration row **in
+place** (no history row — an offset tweak is not a recalibration), updates the live
+cache in the same call so the **next inspection already uses it**, and deliberately
+does *not* fire the calibration observers (that fan-out means "the operator
+calibrated", which syncs into the active profile). A camera with no active
+calibration has nowhere to store an offset: the save returns `False` and the page
+says so instead of writing — inventing an identity row would switch that camera out of the
+uncalibrated fallback and enable its tolerance check at 1 px = 1 mm.
+
 **Uncalibrated fallback:** identity mapping, 1 px = 1 mm, `deviation_mm=None`,
 tolerance check disabled. The system runs out of the box.
 
@@ -683,11 +702,12 @@ to that camera's *configured* `led_channel` on every call (via `LedService`), so
 applying a machine model also re-lights each camera for free, with no code here
 even aware of it (see [LED Controller](#led-controller-rs232-independent-of-the-plc)).
 
-**A calibration's axis signs are the one thing a profile does not capture.**
-`CameraCalibration.to_dict` omits `invert_x`/`invert_y` and `CalibrationManager.apply_live`
-carries the live ones across a switch, for the same reason `led_channel` and `rotation`
-are outside `_TUNABLE_CAMERA_FIELDS`: which corner a gantry homes at is a fact about
-the rig, not the part. Carrying them would let a profile captured before the setting
+**A calibration's axis signs and screw-driver offsets are the things a profile does
+not capture.** `CameraCalibration.to_dict` omits `invert_x`/`invert_y` and the
+`screw_*` fields, and `CalibrationManager.apply_live` carries the live ones across a
+switch, for the same reason `led_channel` and `rotation` are outside
+`_TUNABLE_CAMERA_FIELDS`: which corner a gantry homes at — and where the screw driver
+sits — is a fact about the rig, not the part. Carrying them would let a profile captured before the setting
 existed push "not inverted" onto a station that needs them — and a gantry driven the
 wrong way is a worse failure than a stale scale. See [§5](#5-the-inspection-cycle-end-to-end).
 

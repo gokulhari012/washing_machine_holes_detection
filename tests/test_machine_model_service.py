@@ -105,7 +105,6 @@ class FakeCalibrationManager:
         self._calibrations: dict[int, CameraCalibration] = {}
         self.applied: list[CameraCalibration] = []
         self.reject_camera: int | None = None
-        self.screw_compensation: tuple[bool, dict[int, tuple[float, float]]] = (False, {})
 
     def seed(self, calibration: CameraCalibration) -> None:
         self._calibrations[calibration.camera_index] = calibration
@@ -117,11 +116,6 @@ class FakeCalibrationManager:
         if calibration.camera_index == self.reject_camera:
             raise VisionSystemError(f"camera {calibration.camera_index}: rejected")
         self.applied.append(calibration)
-
-    def apply_screw_compensation(
-        self, enabled: bool, positions: dict[int, tuple[float, float]]
-    ) -> None:
-        self.screw_compensation = (enabled, positions)
 
 
 def make_service(tmp_path):
@@ -497,4 +491,4 @@ def test_deleting_the_active_profile_stops_syncing_into_it(tmp_path) -> None:
 def test_sync_rejects_an_unknown_domain(tmp_path) -> None:
     service, _cameras, _engine, _plc, _calibration = make_service(tmp_path)
     with pytest.raises(ValueError):
-        service.sync_active_profile("screw_driver_compensation")
+        service.sync_active_profile("shifts")
