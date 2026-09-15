@@ -50,6 +50,25 @@ class PlcTimeoutError(PlcError):
 
 
 # --------------------------------------------------------------------------- #
+# LED Controller
+# --------------------------------------------------------------------------- #
+class LedError(VisionSystemError):
+    """Base class for LED controller communication failures."""
+
+
+class LedConnectionError(LedError):
+    """The RS232 connection to the LED controller could not be opened, or was lost."""
+
+
+class LedWriteError(LedError):
+    """A command could not be written to the LED controller's serial port."""
+
+
+class LedTimeoutError(LedError):
+    """The LED controller did not acknowledge a command within the configured timeout."""
+
+
+# --------------------------------------------------------------------------- #
 # Camera
 # --------------------------------------------------------------------------- #
 class CameraError(VisionSystemError):

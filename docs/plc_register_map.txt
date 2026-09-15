@@ -1,6 +1,9 @@
 PLC REGISTER MAP — Washing Machine Bottom Hole Detection System
 ==================================================================
-Generated from config/plc.json (the live station config) on 2026-09-06.
+Generated from config/plc.json (the live station config) on 2026-09-06,
+hand-edited 2026-09-10 for the camera_positions/servo_home_positions
+32-bit conversion (see "SCALING / POSITION ENCODING" below) — other
+sections were not re-verified against the live file at this edit.
 For full handshake/protocol/timing details see CLAUDE.md section 6
 ("PLC contract"). If plc.json changes, re-generate or hand-edit this file
 to match — it is a snapshot, not read by the application.
@@ -12,7 +15,10 @@ Connection (config/plc.json):
   unit_id  : 1
 
 Register type: all addresses below are 16-bit unsigned HOLDING REGISTERS
-unless marked "COIL" (a separate address space — see camera_jog_busy).
+unless marked "COIL" (a separate address space — see camera_jog_busy) or
+marked "32-bit" (camera_positions, servo_home_positions — each axis spans
+TWO consecutive 16-bit registers: the address listed is the LOW word, the
+next address up is the HIGH word — see "SCALING / POSITION ENCODING" below).
 
 
 ------------------------------------------------------------------
@@ -50,24 +56,26 @@ NOTE: Camera 3 lives in a different address range (6000s) than cameras
 1/2/4 (100s/150s) across every group below — this is this station's
 actual wiring, not a typo or inconsistency to "fix".
 
-camera_positions — PC->PLC
+camera_positions — PC->PLC — 32-bit (2 registers per axis, low word first)
   Detected hole X/Y for that camera, encoded as an absolute servo target
-  (see "Position encoding" below) — NOT a plain millimetre value.
-    Camera 1: X=110   Y=111
-    Camera 2: X=112   Y=113
-    Camera 3: X=6050  Y=6052
-    Camera 4: X=116   Y=117
+  (see "Position encoding" below) — NOT a plain millimetre value. Each
+  address listed is the LOW word; the HIGH word is the next address up
+  (e.g. camera 1 X = registers 200 low + 201 high).
+    Camera 1: X=200/201   Y=202/203
+    Camera 2: X=204/205   Y=206/207
+    Camera 3: X=6100/6101 Y=6102/6103
+    Camera 4: X=212/213   Y=214/215
 
-servo_home_positions — PLC->PC
+servo_home_positions — PLC->PC — 32-bit (2 registers per axis, low word first)
   The PLC's own live value for that axis's current "home" — the datum
   camera_positions above are measured relative to. Read fresh immediately
   before every position write (never cached), because the PLC may move
   the axis between cycles. A camera absent from this group falls back to
   home = 0 (plain mm x position_scale, positive side of centre only).
-    Camera 1: X=144   Y=145
-    Camera 2: X=146   Y=147
-    Camera 3: X=6046  Y=6048
-    Camera 4: X=150   Y=151
+    Camera 1: X=220/221   Y=222/223
+    Camera 2: X=224/225   Y=226/227
+    Camera 3: X=6104/6105 Y=6106/6107
+    Camera 4: X=232/233   Y=234/235
 
 camera_results — PC->PLC
   This camera's own verdict: 1 = GOOD, 2 = NG, 3 = ERROR. A camera not
@@ -164,15 +172,22 @@ A holding register is unsigned, so a negative offset can't be written
 directly. Every hole position is instead expressed relative to that
 axis's servo home (see servo_home_positions above):
 
-    raw = servo_home + round(mm x position_scale)      (clamped 0-65535)
+    raw = servo_home + round(mm x position_scale)      (clamped 0-4294967295)
 
 Example: home 6000, hole 2.0 mm right of centre, scale 100 -> raw 6200.
 2.0 mm the OTHER way -> raw 5800. No sign handling needed on the PLC side.
 
 Raw value 0 on camera_positions is the "no hole found" sentinel — written
-to both X and Y with no servo-home read at all when a camera finds
-nothing. This stays unambiguous only because every servo home sits far
-from zero.
+to both X and Y (both register words) with no servo-home read at all when
+a camera finds nothing. This stays unambiguous only because every servo
+home sits far from zero.
+
+camera_positions and servo_home_positions are 32-bit: the raw value above
+is split into two 16-bit register words, LOW WORD FIRST — the address
+listed for an axis holds bits 0-15, the next address up holds bits 16-31
+(low = raw & 0xFFFF, high = (raw >> 16) & 0xFFFF; the Mitsubishi D-register
+double-word convention, matching this station's SLMP link). A raw value
+that fits in 16 bits (the common case) simply leaves the high word at 0.
 
 
 ------------------------------------------------------------------
@@ -182,9 +197,6 @@ QUICK ADDRESS INDEX (sorted)
 101        machine_number
 102        heartbeat
 103        model_select
-110/111    camera_positions[1]  (X/Y)
-112/113    camera_positions[2]  (X/Y)
-116/117    camera_positions[4]  (X/Y)
 118        result
 119        vision_complete
 120/121    camera_jog[1]        (X/Y)
@@ -203,9 +215,6 @@ QUICK ADDRESS INDEX (sorted)
 140        camera_status[1]
 141        camera_status[2]
 143        camera_status[4]
-144/145    servo_home_positions[1]  (X/Y)
-146/147    servo_home_positions[2]  (X/Y)
-150/151    servo_home_positions[4]  (X/Y)
 152        camera_jog_z[1]
 153        camera_jog_z[2]
 154        camera_jog_z[3]
@@ -213,13 +222,35 @@ QUICK ADDRESS INDEX (sorted)
 156        camera_brightness[1]
 157        camera_brightness[2]
 158        camera_brightness[4]
+200/201    camera_positions[1].x  (32-bit)
+202/203    camera_positions[1].y  (32-bit)
+204/205    camera_positions[2].x  (32-bit)
+206/207    camera_positions[2].y  (32-bit)
+212/213    camera_positions[4].x  (32-bit)
+214/215    camera_positions[4].y  (32-bit)
+220/221    servo_home_positions[1].x  (32-bit)
+222/223    servo_home_positions[1].y  (32-bit)
+224/225    servo_home_positions[2].x  (32-bit)
+226/227    servo_home_positions[2].y  (32-bit)
+232/233    servo_home_positions[4].x  (32-bit)
+234/235    servo_home_positions[4].y  (32-bit)
 6040       camera_triggers[3]
 6042       camera_vision_complete[3]
 6044       camera_status[3]
-6046/6048  servo_home_positions[3]  (X/Y)
-6050/6052  camera_positions[3]      (X/Y)
 6054       camera_results[3]
 6056       camera_brightness[3]
+6100/6101  camera_positions[3].x      (32-bit)
+6102/6103  camera_positions[3].y      (32-bit)
+6104/6105  servo_home_positions[3].x  (32-bit)
+6106/6107  servo_home_positions[3].y  (32-bit)
+
+NOTE: 110-117 and 144-151 are now FREE — they held camera_positions and
+servo_home_positions before the 32-bit conversion (1 register per axis).
+Widening each axis to 2 registers no longer fit there without colliding
+with result(118)/vision_complete(119), so both blocks moved to 200-235
+(and, for camera 3, into its own 6000s range at 6100-6107 alongside its
+other registers). Confirm with whoever maintains the PLC program before
+reusing 110-117/144-151.
 
 Coils (separate address space):
 1          camera_jog_busy[1]

@@ -5,11 +5,18 @@ device operations to the :class:`CameraManager`. The acquisition workers are
 rebuilt by the composition root when the configuration is saved (via
 ``ConfigManager.subscribe("camera", ...)``).
 
-``brightness`` (0-255) is a light-brightness level for an external,
-PLC-controlled light source, not an in-camera image adjustment — every apply/
-save also pushes it to that camera's PLC brightness register (best-effort:
-a PLC communication failure is logged, not raised, so it never blocks the
-camera settings themselves from applying — see :meth:`_push_brightness`).
+``brightness`` (0-255) is a light-brightness level for an external LED light
+source, not an in-camera image adjustment — every apply/save also pushes it
+to the LED Controller channel named by that camera's ``led_channel`` (1-4;
+0 means "not wired to a channel", so the push is simply skipped). Best-effort:
+an LED communication failure is logged, not raised, so it never blocks the
+camera settings themselves from applying — see :meth:`_push_brightness`.
+
+``led_strobe`` switches that same channel to an on-only-during-capture model
+instead: :meth:`light_on`/:meth:`light_off` are the caller's (the Camera page's)
+responsibility to bracket around a capture or a Continuous Capture run — see
+their docstrings. While strobe mode is on, :meth:`_push_brightness` is a
+no-op, so an unrelated Apply/Save can't leave the light lit at rest.
 """
 
 from __future__ import annotations
@@ -20,9 +27,9 @@ from core.camera import DEFAULT_VIEW_FPS, CameraHealth, CameraManager, CameraSet
 from core.logging import get_logger
 from core.utilities import ConfigManager
 from core.utilities.enums import ConnectionState, LogSource
-from core.utilities.exceptions import CameraError, ConfigurationError, PlcError
+from core.utilities.exceptions import CameraError, ConfigurationError, LedError
 from services.database_service import DatabaseService
-from services.plc_service import PlcService
+from services.led_service import LedService
 
 logger = get_logger(LogSource.CAMERA)
 
@@ -35,12 +42,12 @@ class CameraService:
         camera_manager: CameraManager,
         config_manager: ConfigManager,
         database_service: DatabaseService,
-        plc_service: PlcService,
+        led_service: LedService,
     ) -> None:
         self._manager = camera_manager
         self._config = config_manager
         self._database = database_service
-        self._plc = plc_service
+        self._led = led_service
 
     # -------------------------------------------------------------- queries
     def get_configs(self) -> list[dict]:
@@ -124,12 +131,47 @@ class CameraService:
         """(width, height) for the 'Detect Resolution' button. Raises CameraError."""
         return self._manager.detect_resolution(index)
 
+    # -------------------------------------------------------------- strobing
+    def light_on(self, index: int) -> None:
+        """Turn camera *index*'s configured LED channel on at its configured
+        brightness — for strobe mode, called immediately before a capture
+        (or once, at the start of a Continuous Capture run).
+
+        No-op when the camera has no channel configured (``led_channel``
+        <= 0) or isn't found. Best-effort: an LED communication failure is
+        logged, never raised, so it can never block a capture.
+        """
+        self._set_channel_for(index, on=True)
+
+    def light_off(self, index: int) -> None:
+        """Turn camera *index*'s configured LED channel off — the other half
+        of :meth:`light_on`, called immediately after a capture (or once, at
+        the end of a Continuous Capture run). Same no-op/best-effort rules.
+        """
+        self._set_channel_for(index, on=False)
+
+    def _set_channel_for(self, index: int, *, on: bool) -> None:
+        cfg = self.effective_config(index)
+        if cfg is None:
+            return
+        channel = int(cfg.get("led_channel", 0))
+        if channel <= 0:
+            return
+        level = int(cfg.get("brightness", 0)) if on else 0
+        try:
+            self._led.set_channel_brightness(channel, level)
+        except LedError as exc:
+            logger.warning(
+                "Camera %d: light_%s failed on LED channel %d (%s)",
+                index, "on" if on else "off", channel, exc,
+            )
+
     # --------------------------------------------------------- configuration
     def apply_live(self, camera_config: dict) -> None:
         """Push settings to a connected camera without persisting (preview tuning).
 
-        Also pushes ``brightness`` to that camera's PLC light-brightness
-        register (best-effort — see :meth:`_push_brightness`).
+        Also pushes ``brightness`` to that camera's configured LED Controller
+        channel (best-effort — see :meth:`_push_brightness`).
 
         Raises:
             ConfigurationError | CameraConfigurationError
@@ -141,8 +183,8 @@ class CameraService:
     def save_camera(self, camera_config: dict) -> None:
         """Insert-or-update one camera entry in camera.json + DB mirror.
 
-        Also pushes ``brightness`` to that camera's PLC light-brightness
-        register (best-effort — see :meth:`_push_brightness`).
+        Also pushes ``brightness`` to that camera's configured LED Controller
+        channel (best-effort — see :meth:`_push_brightness`).
 
         Raises:
             ConfigurationError: entry malformed.
@@ -175,18 +217,28 @@ class CameraService:
 
     # -------------------------------------------------------------- internal
     def _push_brightness(self, settings: CameraSettings) -> None:
-        """Write this camera's brightness to its PLC register, if configured.
+        """Write this camera's brightness to its configured LED Controller
+        channel, if any.
 
-        Best-effort: a communication failure is logged and swallowed rather
-        than raised, so a PLC hiccup (or a station whose light isn't wired to
-        the PLC at all — ``set_camera_brightness`` then just returns False)
-        never blocks the camera settings themselves from applying/saving.
+        ``led_channel`` of 0 means this camera isn't wired to a channel, so
+        there is nothing to push — same convention as an unconfigured PLC
+        register elsewhere in this app. Also a no-op while ``led_strobe`` is
+        on: strobe mode's resting state is *off*, and :meth:`light_on`/
+        :meth:`light_off` around an actual capture are what drive the
+        channel then — an Apply/Save here must not light it up outside a
+        capture just because the brightness field changed. Best-effort: an
+        LED communication failure (not connected, no response, ...) is
+        logged and swallowed rather than raised, so it never blocks the
+        camera settings themselves from applying/saving.
         """
+        if settings.led_channel <= 0 or settings.led_strobe:
+            return
         try:
-            self._plc.set_camera_brightness(settings.index, settings.brightness)
-        except PlcError as exc:
+            self._led.set_channel_brightness(settings.led_channel, settings.brightness)
+        except LedError as exc:
             logger.warning(
-                "Camera %d: brightness not pushed to PLC (%s)", settings.index, exc
+                "Camera %d: brightness not pushed to LED channel %d (%s)",
+                settings.index, settings.led_channel, exc,
             )
 
     def _mirror_to_database(self, settings: CameraSettings) -> None:
@@ -201,6 +253,8 @@ class CameraService:
                 "gain_db": settings.gain_db,
                 "gamma": settings.gamma,
                 "brightness": settings.brightness,
+                "led_channel": settings.led_channel,
+                "led_strobe": settings.led_strobe,
                 "fps": settings.fps,
                 "rotation": settings.rotation,
                 "width": settings.width,

@@ -26,11 +26,13 @@ from PySide6.QtWidgets import QApplication
 from core.calibration import CameraCalibration
 from core.calibration.calibration_manager import CalibrationManager
 from core.camera import CameraManager
+from core.led import LedControllerSettings, LedManager, SimulatedLedClient
 from core.plc import PlcManager, RegisterMap, SimulatedPlc
 from core.utilities.config_manager import ConfigManager
 from core.vision import VisionEngine
 from models.app_state import AppState
 from services.camera_service import CameraService
+from services.led_service import LedService
 from services.machine_model_service import MachineModelService
 from services.plc_service import PlcService
 from ui.calibration import CalibrationPage
@@ -42,7 +44,7 @@ CAMERA_DOC = {
         {
             "index": 1, "name": "Cam 1", "driver": "simulated", "connection_id": "",
             "enabled": True, "exposure_us": 10000, "gain_db": 0.0, "gamma": 1.0,
-            "brightness": 10, "fps": 4.0, "rotation": 0,
+            "brightness": 10, "led_channel": 0, "led_strobe": False, "fps": 4.0, "rotation": 0,
             "width": 1280, "height": 1024, "trigger_mode": "software",
             "roi": {"x": 0, "y": 0, "width": 0, "height": 0},
         },
@@ -134,7 +136,9 @@ def station(tmp_path, qt_app):
     plc_manager = PlcManager(SimulatedPlc(register_map=register_map), register_map)
     plc_manager.connect()
     plc_service = PlcService(plc_manager, config, database)
-    cameras = CameraService(CameraManager(CAMERA_DOC["cameras"]), config, database, plc_service)
+    led_manager = LedManager(SimulatedLedClient(), LedControllerSettings())
+    led_service = LedService(led_manager, config)
+    cameras = CameraService(CameraManager(CAMERA_DOC["cameras"]), config, database, led_service)
     engine = VisionEngine(DETECTION_DOC)
     calibration = CalibrationManager(SimpleNamespace(get_all_active=lambda: {}))
     app_state = AppState()
@@ -158,7 +162,8 @@ def test_camera_page_shows_the_applied_exposure_and_roi(station) -> None:
     _apply(station, page)
 
     assert page._exposure.value() == 33000
-    assert [spin.value() for spin in page._roi_spins] == [5, 6, 7, 8]
+    # spins are centre x/y, w/h; profile's roi is top-left (5, 6, 7, 8)
+    assert [spin.value() for spin in page._roi_spins] == [8, 10, 7, 8]
 
 
 def test_detection_page_shows_the_applied_strategy_and_thresholds(station) -> None:

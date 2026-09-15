@@ -1,0 +1,9 @@
+{
+  "connection": {
+    "driver": "serial",
+    "port": "COM3",
+    "baud_rate": 19200,
+    "timeout_ms": 100
+  },
+  "max_brightness": 200
+}

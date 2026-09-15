@@ -1,0 +1,9 @@
+{
+  "connection": {
+    "driver": "simulated",
+    "port": "",
+    "baud_rate": 19200,
+    "timeout_ms": 1000
+  },
+  "max_brightness": 255
+}

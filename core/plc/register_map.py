@@ -3,12 +3,12 @@
 Position encoding
 -----------------
 A hole position is the offset in millimetres from the centre of the analysed
-image. A 16-bit holding register is unsigned, so a negative offset cannot be
-written directly; instead the value is expressed **relative to that axis's
-servo home position**, which the PLC publishes in its own register and the PC
-reads back each time it writes a result:
+image. A holding register is unsigned, so a negative offset cannot be written
+directly; instead the value is expressed **relative to that axis's servo home
+position**, which the PLC publishes in its own register(s) and the PC reads
+back each time it writes a result:
 
-    raw = servo_home + round(mm * position_scale)     (clamped to uint16)
+    raw = servo_home + round(mm * position_scale)     (clamped to uint32)
 
 e.g. servo home 6000, hole 2.0 mm right of centre, scale 100 -> 6200. A hole
 2.0 mm the other way writes 5800. The PLC therefore reads one absolute servo
@@ -25,6 +25,32 @@ A camera with no servo-home registers configured falls back to a home of 0,
 i.e. plain ``mm * position_scale``, and can then only express positions on the
 positive side of centre.
 
+32-bit (double-word) registers
+-------------------------------
+Every *positional* value — each entry of ``camera_positions`` (the hole X/Y
+written to the PLC) and ``servo_home_positions`` (the home X/Y read back from
+it) — is 32-bit, not the 16-bit width every other register in this map uses.
+A single Modbus/SLMP holding register only ever carries 16 bits, so a 32-bit
+value spans **two consecutive registers**, addressed by the *base* (lower)
+address configured for that axis in ``plc.json``: e.g. ``camera_positions.1.x
+= 200`` means camera 1's X occupies registers 200 and 201, not just 200.
+
+Word order is **low word first**: the base address holds the low 16 bits, the
+next address the high 16 bits (:meth:`split_dword`/:meth:`join_dword`) — the
+convention Mitsubishi D-register double-word (32-bit) access uses, which
+matches this application's SLMP link (the non-simulated PLC protocol
+documented in CLAUDE.md). A Modbus-only station whose PLC program expects the
+opposite word order would need its own client-level swap; nothing here
+assumes Modbus specifically.
+
+Configuring an axis's X and Y addresses 2 apart (e.g. ``x=200, y=202``) lets
+``PlcManager`` batch the whole 4-register X+Y pair into one read/write
+transaction, the same optimisation the old 16-bit, 1-apart (``x=110,
+y=111``) layout used — see :meth:`PlcManager._write_position`/
+:meth:`PlcManager.read_servo_home`. It is not required: any two non-
+overlapping base addresses work, just as two separate transactions instead
+of one.
+
 Gantry gating
 -------------
 ``gantry_status`` is the other PLC→PC per-camera input. The PLC publishes 1
@@ -40,7 +66,7 @@ from dataclasses import dataclass, field
 
 from core.utilities.exceptions import ConfigurationError
 
-UINT16_MAX = 65535
+UINT32_MAX = 0xFFFFFFFF
 
 
 @dataclass(frozen=True)
@@ -94,12 +120,6 @@ class RegisterMap:
     # changes, so the PLC can refuse to run the station with a dead camera.
     # Optional per camera, like every other block here.
     camera_status: dict[int, int] = field(default_factory=dict)
-    # Per-camera light-brightness register — camera index -> address. The PC
-    # writes the 0-255 brightness level configured for that camera (see
-    # CameraSettings.brightness) whenever its settings are applied or saved,
-    # so a PLC-driven light source (not the camera's own ISP) tracks it.
-    # Optional per camera, like every other block here.
-    camera_brightness: dict[int, int] = field(default_factory=dict)
     # Per-camera gantry-status register — camera index -> address. A PLC→PC
     # *input*, like servo_home_positions: the PLC publishes whether that
     # camera's gantry is active, and the PC inspects only the cameras whose
@@ -156,10 +176,6 @@ class RegisterMap:
                 int(index): int(address)
                 for index, address in registers.get("camera_status", {}).items()
             }
-            camera_brightness = {
-                int(index): int(address)
-                for index, address in registers.get("camera_brightness", {}).items()
-            }
             gantry_status = {
                 int(index): int(address)
                 for index, address in registers.get("gantry_status", {}).items()
@@ -179,7 +195,6 @@ class RegisterMap:
                 camera_triggers=camera_triggers,
                 camera_vision_complete=camera_vision_complete,
                 camera_status=camera_status,
-                camera_brightness=camera_brightness,
                 gantry_status=gantry_status,
                 position_scale=int(scaling.get("position_scale", 10)),
                 model_select=int(model_select) if model_select is not None else None,
@@ -190,20 +205,39 @@ class RegisterMap:
 
     # ----------------------------------------------------------------- codec
     def encode_position(self, mm: float, servo_home: int = 0) -> int:
-        """Millimetres from image centre → raw register value.
+        """Millimetres from image centre → raw 32-bit register value.
 
         *servo_home* is the value just read from that axis's servo home
-        register; the result is that home biased by the scaled offset, clamped
-        to the uint16 range. A negative offset therefore encodes as a raw
-        value *below* home rather than needing a sign.
+        register pair; the result is that home biased by the scaled offset,
+        clamped to the uint32 range. A negative offset therefore encodes as a
+        raw value *below* home rather than needing a sign. The raw value
+        returned here is the *combined* 32-bit number — see
+        :meth:`split_dword` for how it becomes the two register words
+        actually written to the PLC.
         """
         raw = servo_home + round(mm * self.position_scale)
-        return max(0, min(UINT16_MAX, raw))
+        return max(0, min(UINT32_MAX, raw))
 
     def decode_position(self, raw: int, servo_home: int = 0) -> float:
-        """Raw register value → millimetres from image centre.
+        """Raw (combined 32-bit) register value → millimetres from image centre.
 
         The inverse of :meth:`encode_position`, and it needs the same
         *servo_home* the value was written against.
         """
         return (raw - servo_home) / self.position_scale
+
+    @staticmethod
+    def split_dword(raw: int) -> tuple[int, int]:
+        """Combined 32-bit value → ``(low_word, high_word)``, the order the
+        pair is written to/read from the wire in (see the module docstring).
+        The base address configured for an axis gets *low_word*, base+1 gets
+        *high_word* — low word first, the Mitsubishi D-register convention.
+        """
+        raw &= UINT32_MAX
+        return raw & 0xFFFF, (raw >> 16) & 0xFFFF
+
+    @staticmethod
+    def join_dword(low: int, high: int) -> int:
+        """The inverse of :meth:`split_dword`: two register words → the
+        combined 32-bit value."""
+        return ((high & 0xFFFF) << 16) | (low & 0xFFFF)

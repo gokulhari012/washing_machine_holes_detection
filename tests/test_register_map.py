@@ -14,11 +14,14 @@ def make_config() -> dict:
             "heartbeat": 102,
             "result": 118,
             "vision_complete": 119,
+            # 32-bit: each axis is a base address (low word) + base+1 (high
+            # word), so X and Y are configured 2 apart, not 1 — see
+            # RegisterMap.split_dword/join_dword.
             "camera_positions": {
-                "1": {"x": 110, "y": 111},
-                "2": {"x": 112, "y": 113},
-                "3": {"x": 114, "y": 115},
-                "4": {"x": 116, "y": 117},
+                "1": {"x": 200, "y": 202},
+                "2": {"x": 204, "y": 206},
+                "3": {"x": 208, "y": 210},
+                "4": {"x": 212, "y": 214},
             },
         },
         "scaling": {"position_scale": 10},
@@ -28,7 +31,7 @@ def make_config() -> dict:
 def test_from_config() -> None:
     rmap = RegisterMap.from_config(make_config())
     assert rmap.trigger == 100
-    assert rmap.camera_positions[3] == (114, 115)
+    assert rmap.camera_positions[3] == (208, 210)
     assert rmap.position_scale == 10
 
 
@@ -68,10 +71,32 @@ def test_encode_without_servo_home_is_plain_scaled_mm() -> None:
     assert RegisterMap.NO_HOLE_RAW == 0
 
 
-def test_codec_clamps_to_uint16() -> None:
+def test_codec_clamps_to_uint32() -> None:
     rmap = RegisterMap.from_config(make_config())
-    assert rmap.encode_position(99999.0, 6000) == 65535
-    assert rmap.encode_position(-99999.0, 6000) == 0
+    assert rmap.encode_position(999_999_999.0, 6000) == 4294967295
+    assert rmap.encode_position(-999_999_999.0, 6000) == 0
+
+
+def test_a_uint16_sized_value_no_longer_clamps() -> None:
+    """The whole point of the conversion: values that used to clamp at 65535
+    now fit, since a position register is 32-bit."""
+    rmap = RegisterMap.from_config(make_config())
+    assert rmap.encode_position(99999.0, 6000) == 999990 + 6000
+
+
+def test_split_and_join_dword_round_trip() -> None:
+    for raw in (0, 1, 65535, 65536, 66536, 4294967295):
+        low, high = RegisterMap.split_dword(raw)
+        assert 0 <= low <= 0xFFFF
+        assert 0 <= high <= 0xFFFF
+        assert RegisterMap.join_dword(low, high) == raw
+
+
+def test_split_dword_is_low_word_first() -> None:
+    """66536 = 65536 (1 << 16) + 1000 -> high word 1, low word 1000 — the
+    base address gets the low word, base+1 the high word."""
+    low, high = RegisterMap.split_dword(66536)
+    assert (low, high) == (1000, 1)
 
 
 def test_servo_home_positions_default_to_empty() -> None:
@@ -119,13 +144,3 @@ def test_camera_results_parsed_when_present() -> None:
     assert rmap.camera_results == {1: 128, 2: 129}
 
 
-def test_camera_brightness_defaults_to_empty() -> None:
-    rmap = RegisterMap.from_config(make_config())
-    assert rmap.camera_brightness == {}
-
-
-def test_camera_brightness_parsed_when_present() -> None:
-    config = make_config()
-    config["registers"]["camera_brightness"] = {"1": 156, "2": 157}
-    rmap = RegisterMap.from_config(config)
-    assert rmap.camera_brightness == {1: 156, 2: 157}

@@ -21,7 +21,7 @@ over Ethernet; every cycle is stored in SQLite with an annotated PNG.
 ```bash
 python main.py                # normal start
 python main.py --selftest 8   # start hidden, run 8 s, save logs/selftest.png, exit 0
-pytest                        # 325 tests, ~7 s, all passing as of 2026-09-08
+pytest                        # 414 tests, ~7 s, all passing as of 2026-09-10
 python tools/hole_debug.py path/to/images/   # detector tuner; --camera N applies that camera's ROI
 python scripts/build_exe.py   # PyInstaller onedir -> dist/WMHoleDetection/
 ```
@@ -55,10 +55,11 @@ Workers own **threads only** — zero business logic. Business logic lives in se
 | Path | Contents | Touch when |
 |---|---|---|
 | [main.py](main.py) | composition root, startup/shutdown order, global excepthook | adding any new service/page/worker |
-| [config/](config/) | live JSON: `app_config`, `plc`, `camera`, `detection`, `machine_models` | changing runtime settings |
+| [config/](config/) | live JSON: `app_config`, `plc`, `led`, `camera`, `detection`, `machine_models` | changing runtime settings |
 | [config/defaults/](config/defaults/) | pristine copies for "Restore Defaults" | **must mirror any new config key** |
 | [core/utilities/](core/utilities/) | `ConfigManager`, enums, `ShiftSchedule`, exception hierarchy | adding a config domain, enum value, error type |
 | [core/plc/](core/plc/) | `PlcClientBase`, Modbus/SLMP/Simulated adapters, `RegisterMap`, `PlcManager` | protocol or register work |
+| [core/led/](core/led/) | `protocol.py` (KDC-24V60W-4T wire format), `LedClientBase`, Serial/Simulated adapters, `LedManager` | LED Controller (per-camera light) work |
 | [core/camera/](core/camera/) | `CameraBase`, 5 drivers, `CameraManager` | camera driver work |
 | [core/vision/](core/vision/) | `HoleDetector` ABC, 4 detectors, `VisionEngine`, overlay drawing | detection algorithm work |
 | [core/calibration/](core/calibration/) | px→mm scale / homography, reference point | coordinate math |
@@ -66,8 +67,8 @@ Workers own **threads only** — zero business logic. Business logic lives in se
 | [models/](models/) | `AppState` (observable QObject) + frozen DTOs | new cross-thread signal or payload field |
 | [services/](services/) | orchestration; `InspectionService` is the pipeline, `ShiftService` the rota | business rules |
 | [workers/](workers/) | 4 thread hosts (see [§7](#7-threading-model)) | cadence/lifecycle work |
-| [ui/](ui/) | `main_window` + 9 pages + `widgets/` | any screen change |
-| [resources/styles/](resources/) | `theme.qss` — one token template, both schemes | styling |
+| [ui/](ui/) | `main_window` + 10 pages + `widgets/` | any screen change |
+| [resources/styles/](resources/) | dark QSS theme | styling |
 | [tests/](tests/) | pytest — vision, PLC, repositories, calibration | always |
 | [tools/](tools/) | `hole_debug.py` tuner, `basler_probe.py` | detector tuning |
 | [scripts/](scripts/), [development_files/](development_files/) | build script + throwaway lab scripts | rarely — see [gotchas](#9-gotchas--traps) |
@@ -230,11 +231,11 @@ tolerance check disabled. The system runs out of the box.
 
 A holding register is unsigned, so a negative offset cannot be written directly.
 Instead every coordinate is expressed relative to that axis's **servo home
-position**, which the PLC publishes in its own register and the PC reads back
+position**, which the PLC publishes in its own register(s) and the PC reads back
 immediately before each write:
 
 ```
-raw = servo_home + round(mm × position_scale)    # clamped to uint16
+raw = servo_home + round(mm × position_scale)    # clamped to uint32
 ```
 e.g. home 6000, hole 2.0 mm right of centre, scale 100 → 6200; 2.0 mm the other way
 → 5800. The PLC gets an absolute servo target in the servo's own units, with no
@@ -249,6 +250,24 @@ A camera with no `servo_home_positions` entry encodes against a home of `0`
 (plain `mm × position_scale`) and can then only express the positive side of
 centre — `PlcManager.read_servo_home` returns `(0, 0)` rather than failing.
 
+**Every positional register is 32-bit, not 16-bit** — both `camera_positions`
+(the hole X/Y written to the PLC) and `servo_home_positions` (the home X/Y read
+back). A single holding register only ever carries 16 bits, so each axis's
+*configured* address is the **base of a 2-register pair**: `camera_positions.1.x
+= 200` means camera 1's X spans registers 200 **and** 201, not just 200. Word
+order is **low word first** (base = low 16 bits, base+1 = high 16 bits —
+`RegisterMap.split_dword`/`join_dword`), the Mitsubishi D-register double-word
+convention, matching this app's SLMP link. Configuring an axis's X and Y 2 apart
+(`x=200, y=202`) lets `PlcManager` batch the full 4-register X+Y pair into one
+transaction — the same optimisation the old 16-bit, 1-apart layout used, just
+with the gap widened from 1 to 2 (`PlcManager._write_position`/`read_servo_home`
+check `y_address == x_address + 2`, not `+ 1`). This was a conversion from a
+previous all-16-bit scheme (uint16 clamp, 1-apart X/Y) — the uint16 ceiling
+(65535 raw units) was becoming a real constraint against large servo-home values,
+and the register **addresses moved** as part of it (see the table below); this
+needed sign-off from whoever maintains the PLC program, since the PLC-side
+memory map must address the same registers the same way.
+
 ### Register map — live `config/plc.json`
 
 | Addr | Dir | Purpose |
@@ -258,16 +277,36 @@ centre — `PlcManager.read_servo_home` returns `(0, 0)` rather than failing.
 | 102 | PC→PLC | Heartbeat (toggles every 500 ms — PLC watchdogs the PC) |
 | 103 | PLC→PC | **`model_select`** — machine-model code, polled every 1000 ms |
 | 104 | PLC→PC | **`serial_number`** — this machine's serial, read once per cycle; `app_config.application.serial_prefix` is prepended on the PC |
-| 110–117 | PC→PLC | Camera 1–4 hole X/Y as a servo target (encoded as above) |
 | 118 | PC→PLC | Overall result: 1=GOOD, 2=NG, 3=ERROR |
 | 119 | PC→PLC | Vision complete (PC sets 1; PLC reads, resets 119 + trigger) |
 | 128–131 | PC→PLC | **`camera_results`** — per-camera GOOD/NG/ERROR |
 | 132–135 | PLC→PC | **`camera_triggers`** — inspect camera N alone (0→1 edge; PC writes 0 back **at end of cycle**) |
 | 136–139 | PC→PLC | **`camera_vision_complete`** — camera N's own completion handshake |
 | 140–143 | PC→PLC | **`camera_status`** — 1 = camera N usable, 0 = disconnected/failing |
-| 144–151 | PLC→PC | **`servo_home_positions`** — servo 1–4 home X/Y, the datum for 110–117 |
-| 156–158, 6056 | PC→PLC | **`camera_brightness`** — camera 1–4 light-brightness level (0-255), pushed whenever that camera's settings are applied/saved (see [§8](#8-config-system)) |
 | 159–161, 6058 | PLC→PC | **`gantry_status`** — 1 = camera N's gantry is in position and that camera is inspected; anything else skips it entirely (see below) |
+| 200–215 | PC→PLC | Camera 1–4 hole X/Y as a servo target (encoded as above) — **32-bit**, 2 registers per axis (see above) |
+| 220–235 | PLC→PC | **`servo_home_positions`** — servo 1–4 home X/Y, the datum for 200–215 — **32-bit**, 2 registers per axis |
+
+**Addresses 110–117 and 144–151 are now free.** They held `camera_positions` and
+`servo_home_positions` before the 32-bit conversion (1 register per axis, packed
+tight against 118/119) — widening each axis to 2 registers no longer fit there
+without colliding with `result`/`vision_complete`, so both blocks moved to
+200–215/220–235. Confirm with whoever maintains the PLC program before reusing
+110–117/144–151 for anything else, the same as every other freed block here.
+
+**Addresses 156–158, 6056 are also free.** They used to carry `camera_brightness` —
+camera 1–4 light-brightness level, pushed by `CameraService` whenever a camera's
+settings were applied/saved. That path now goes to the RS232 LED Controller instead
+(see [LED Controller](#led-controller-rs232-independent-of-the-plc) below), so these
+registers carry nothing; confirm with whoever maintains the PLC program before
+reusing them, the same as 120–127/152–155.
+
+The live `config/plc.json` wires cameras 1/2/4 at the same 200–215/220–235
+addresses as the table above; camera 3 sits in its own 6000s range instead
+(6100–6103 for its position X/Y, 6104–6107 for its servo-home X/Y), matching
+every other per-camera block that camera already uses a different range for
+(`camera_triggers`, `camera_vision_complete`, `camera_status`, `camera_results`)
+— see `config/plc.json` directly for the live addresses, not this table.
 
 Bolded rows are **newer than [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, which documents only 100–119.
 
@@ -280,7 +319,7 @@ read failure degrades to the machine number rather than failing the cycle. The
 prefix is a PC-side setting (Settings page): the PLC publishes a number, never
 text, so the 16-bit range caps the serial at 65535. The address 104 is a
 placeholder following this station's numbering — **confirm the real PLC's
-memory map has it free**, same as `camera_brightness`.
+memory map has it free**.
 
 **Camera status (140–143)** is pushed by `PlcPollWorker._publish_camera_status`, not by
 the camera state callbacks — that keeps all PLC I/O on the PLC thread, and a change
@@ -296,13 +335,14 @@ those cameras were not inspected and their last values still stand. Per-camera
 triggers are polled on every 50 ms tick with the same baseline-after-reconnect rule as
 the global trigger, but are released at a different point in the cycle (see above).
 
-`servo_home_positions` (144–151) pairs one-to-one with `camera_positions`: 144/145
-hold servo 1's home X/Y, 146/147 servo 2's, and so on. Unlike every other
-per-camera block these are **inputs** — the PC reads them, never writes them.
-`PlcManager.read_servo_home` fetches the pair in one transaction when contiguous,
-on the inspection thread, immediately before the position write; it is deliberately
-never cached, because the PLC may move the axis between cycles. Optional per camera
-(absent → home `0`), so an older `plc.json` keeps loading.
+`servo_home_positions` (220–235) pairs one-to-one with `camera_positions`: 220–223
+hold servo 1's home X/Y (220–221 = X low/high word, 222–223 = Y low/high word),
+224–227 servo 2's, and so on. Unlike every other per-camera block these are
+**inputs** — the PC reads them, never writes them. `PlcManager.read_servo_home`
+fetches all 4 words in one transaction when X and Y are configured contiguously
+(2 apart), on the inspection thread, immediately before the position write; it is
+deliberately never cached, because the PLC may move the axis between cycles.
+Optional per camera (absent → home `0`), so an older `plc.json` keeps loading.
 
 **`gantry_status` (159–161, 6058)** is the other PLC→PC per-camera *input*, and
 the only register that decides whether a camera is inspected at all. Read live
@@ -311,8 +351,8 @@ thread, never cached — the PLC may park a gantry between cycles. Optional per
 camera: absent (or "Not used" on the PLC page) means that camera is always
 inspected, which is what every station did before the register existed. The
 addresses are **placeholders following this station's numbering** (camera 3 in
-the 6000s on the live file), exactly like `camera_brightness` — **confirm the
-real PLC's memory map has them free.** Note that `SimulatedPlc` seeds every
+the 6000s on the live file) — **confirm the real PLC's memory map has them
+free.** Note that `SimulatedPlc` seeds every
 configured gantry register to 1 on construction: 0 means parked, so an unseeded
 simulator would skip all four cameras and inspect nothing.
 
@@ -329,7 +369,8 @@ overall result → `vision_complete=1` last, because the PLC may read the moment
 over in both loops — deliberately unlike a camera merely *absent* from
 `camera_results`, which still gets ERROR: a gantry-skip is not a fault, and
 overwriting a stale-but-valid position with the no-hole sentinel would tell the
-PLC something the vision system never measured. Contiguous X/Y pairs are written in one transaction.
+PLC something the vision system never measured. A contiguous X/Y pair (2 apart,
+per the 32-bit spacing above) writes all 4 register words in one transaction.
 Each position write is preceded by a servo-home *read* on the same thread.
 
 ### Fault policy
@@ -385,6 +426,110 @@ immediately.
 (MELSEC 3E binary over raw sockets, no vendor lib — talks to an iQ-R/Q CPU's built-in
 Ethernet port, which does not speak Modbus natively). SLMP maps register N → `D<N>`.
 SLMP frame variant selected by `connection.slmp_frame`: `iq_r` (default) or `q`.
+
+### LED Controller (RS232, independent of the PLC)
+
+A second, separate hardware link: `core/led/` talks to a KCS/Shunshangxin
+KDC-24V60W-4T 4-channel LED light-source controller over RS232 —
+`core/led/protocol.py` builds the two documented ASCII commands (single-channel
+brightness `SA0200#`-style, and the multi-channel `S100T128T025F000TC#` T/F
+format), `LedClientBase`/`SerialLedClient`/`SimulatedLedClient` mirror the PLC
+adapter pattern, and `LedManager` tracks connection state and enforces the
+configured `max_brightness` safety ceiling at one choke point
+(`LedControllerSettings.build_command`). Config domain: `config/led.json`
+(`connection.driver` = `serial` or `simulated`, port/baud/timeout, plus
+`max_brightness`).
+
+**Each camera owns a channel, not the page.** `CameraSettings.led_channel`
+(1-4, or `0` = "not wired to a channel") lives in `camera.json` next to
+`brightness` (Camera Configuration page, "LED Channel" field) — every
+apply/save calls `CameraService._push_brightness`, which writes that
+camera's `brightness` (0-255) to its configured channel via `LedService`,
+best-effort (an LED comm failure is logged, never raised, so it can't block
+the camera settings themselves). `led_channel` is a rig/wiring fact like
+`driver`/`connection_id`, so it is **not** in
+`_TUNABLE_CAMERA_FIELDS` — a machine-model switch never reassigns which
+physical channel a camera's light is wired to.
+
+**Strobe mode (`CameraSettings.led_strobe`)** flips that from "always at
+`brightness`" to "on only for the duration of a capture" — a checkbox on the
+Camera page next to LED Channel. `CameraService.light_on`/`light_off` are the
+two halves; the Camera page brackets them around its own capture actions:
+"Test Camera" turns the channel on, grabs one frame, then off; "Continuous
+Capture" turns it on **once** when the run starts and off **once** when it
+stops (button toggle, an in-run capture error, switching cameras, or hiding
+the page all funnel through the same `_on_continuous_toggled(False)` path) —
+never per frame. The page tracks which camera's channel it lit
+(`_continuous_strobe_index`) separately from the list selection, because the
+selection can already have moved to a different camera by the time the run
+actually stops. While `led_strobe` is on, `_push_brightness` is a deliberate
+no-op — the channel's resting state is *off*, so an unrelated Apply/Save
+must not light it up outside a real capture.
+
+**The production trigger paths strobe too, and the global trigger does it as
+one grouped command.** `run_camera_inspection` (a per-camera PLC trigger,
+register 132+N) uses the same single-channel bracket as the Camera page —
+`InspectionService._strobe_on`/`_strobe_off` — since it only ever has one
+camera to light. `run_inspection` (the global PLC trigger and the toolbar's
+"all cameras at once" button), for both capture modes, instead lights every
+strobe-enabled, gantry-active camera together in **one** serial write —
+`InspectionService._strobe_group_on`/`_strobe_group_off`, which send the
+controller's documented multi-channel T/F frame
+(`LedManager.send_multichannel`) — immediately before the cycle's first
+capture, and turns them all off again in one more grouped write immediately
+after the last. In sequential mode this means all of that cycle's lights
+stay on together across the `camera_delay_ms` gaps between cameras too, not
+just each camera's own capture window; in parallel mode it replaces what used
+to be a loop of individual per-channel commands with a single simultaneous
+one. A gantry-skipped camera is never strobed, exactly like it is never
+captured — and unlike a non-strobe camera's channel (which the grouped frame
+re-sends at its own steady brightness so as not to blank it out, see
+`InspectionService._channel_states`), a skipped camera's own strobe channel
+goes out **off** in that frame, since its resting state was never "on" to
+begin with. Both group and single-channel brackets are a try/finally around
+the capture, so a failed grab still turns the light back off.
+`InspectionService` takes the `LedManager` directly (`self.led` in
+`main.py`, the same object `LedService` wraps) rather than going through
+`LedService` — consistent with it already taking `PlcManager` rather than
+`PlcService` — and the parameter is optional (`None` by default) so a service
+built without one, including most of `tests/test_inspection_sequence.py` and
+`tests/test_single_camera_inspection.py`, never strobes and never touches the
+LED manager at all. `tests/test_inspection_strobe.py` pins the ordering
+end-to-end with a fake LED client that shares one event trace with the fake
+camera manager, so "just before" and "immediately after" are checked
+precisely, not just that both happened somewhere in the cycle. Non-strobe
+cameras (the common case) are unaffected here — their channel, if any, is
+already being held at a steady brightness by `CameraService._push_brightness`
+on apply/save, and the inspection pipeline never touches it.
+
+**The Detection page's "Test on Camera" strobes too**, on the same
+`light_on`/`light_off` single-channel bracket as the Camera page's Test
+Camera — but driven by that camera's *saved* `led_strobe`
+(`CameraService.effective_config(camera_index)`) rather than a checkbox on
+the page, since the Detection page has no unsaved camera-settings form to
+read one from (see `ui/detection/detection_page.py._on_test`).
+
+Live preview and Calibration's Auto Calibrate scan still capture straight
+through `CameraManager`/`CameraBase` and know nothing about the LED
+Controller, so they neither strobe nor are blocked by it — only the Camera
+page's own Test Camera / Continuous Capture, the Detection page's Test on
+Camera, and the two PLC-facing inspection entry points do.
+
+**No poll loop.** Unlike the PLC link, the LED connection has nothing to
+continuously poll — every command is a one-shot write the caller triggers
+directly. It still auto-connects (`Application.start`, and again after a
+config save via `Application._on_led_config_saved`, both best-effort with an
+alarm on failure) so a station never sits disconnected without an operator
+pressing Connect. The LED Controller page (admin-gated, nav rail) is
+connection settings + a raw-command tester + a communication log only —
+per-channel manual controls were deliberately removed once the Camera page
+took over driving brightness; use the raw command box to test the hardware
+directly (including the documented multi-channel T/F format, which nothing
+else in the app sends).
+
+This subsystem superseded an earlier design where `brightness` was pushed to
+a PLC holding register (`camera_brightness`, addresses 156-158/6056) — those
+registers are now unused (see [§6](#6-plc-contract)).
 
 ---
 
@@ -446,7 +591,7 @@ deep-copy isolation, **atomic saves** (temp file + `os.replace`), dot-path acces
 resetting just one sub-section — see the Detection page's per-camera "Restore
 Defaults"), and change notification via plain callables (Qt-free).
 
-Five domains in `KNOWN_CONFIGS`: `app_config`, `plc`, `camera`, `detection`,
+Six domains in `KNOWN_CONFIGS`: `app_config`, `plc`, `led`, `camera`, `detection`,
 `machine_models`.
 
 **JSON is the boot source; the DB is an audit mirror** — and only for camera and PLC.
@@ -459,8 +604,9 @@ Five domains in `KNOWN_CONFIGS`: `app_config`, `plc`, `camera`, `detection`,
 | `camera` | **Subscribed** ([main.py:215](main.py#L215)) → rebuilds `CameraManager` + acquisition workers |
 | `detection` | Hot-swapped **manually** by the page, which calls `VisionEngine.apply_camera_config(index, cfg)` *before* `save()` so validation happens first ([ui/detection/detection_page.py](ui/detection/detection_page.py)) — only the edited camera's block is swapped/persisted, the other three are untouched |
 | `plc` | **Subscribed** (`main.py`'s `_on_plc_config_saved`) → stops the poll worker, rebuilds `PlcManager` in place via `PlcManager.rebuild`, starts a fresh poll worker |
+| `led` | **Subscribed** (`main.py`'s `_on_led_config_saved`) → rebuilds `LedManager` in place via `LedManager.rebuild`, then reconnects immediately (no poll worker to do it for this link) |
 | `machine_models` | Applied live via `MachineModelService.apply_profile` |
-| `app_config` | Read per-cycle in the pipeline; other keys read at startup. The `shifts` block is **subscribed** by `ShiftService`, which drops its cached rota and re-polls on every save; `application.theme` is **subscribed** by `main.py`'s `_on_app_config_saved`, which re-paints the UI (see [§13](#13-theming)) |
+| `app_config` | Read per-cycle in the pipeline; other keys read at startup. The `shifts` block is **subscribed** by `ShiftService`, which drops its cached rota and re-polls on every save |
 
 `detection.json`'s shape is per-camera: `{"cameras": {"1": {"active_detector": ...,
 "common": {...}, "opencv": {...}, "dark_hole": {...}, ...}, "2": {...}, ...}}` — each
@@ -491,13 +637,15 @@ maintained baseline — and the calibration history — survive an automatic swi
 
 Only `_TUNABLE_CAMERA_FIELDS` are overridable (`roi`, `exposure_us`, `gain_db`,
 `gamma`, `brightness`, `width`, `height`, `trigger_mode`). Identity/wiring fields
-(`driver`, `connection_id`, `name`, `enabled`) describe the physical rig, not the part
-— `CameraManager.apply_settings()` doesn't re-instantiate the driver anyway, so
-overriding them would silently do nothing. `brightness` (0-255) is a light-brightness
-level for an external, PLC-controlled light source — `CameraService.apply_live()`
-pushes it to that camera's `camera_brightness` PLC register on every call, so applying
-a machine model also re-lights each camera for free, with no code here even aware of
-it (see [§9](#9-gotchas--traps)).
+(`driver`, `connection_id`, `name`, `enabled`, and `led_channel`) describe the
+physical rig, not the part — `CameraManager.apply_settings()` doesn't
+re-instantiate the driver anyway, so overriding them would silently do nothing,
+and a machine-model switch has no business reassigning which LED Controller
+channel a camera's light is wired to. `brightness` (0-255) is a light-brightness
+level for an external LED light source — `CameraService.apply_live()` pushes it
+to that camera's *configured* `led_channel` on every call (via `LedService`), so
+applying a machine model also re-lights each camera for free, with no code here
+even aware of it (see [LED Controller](#led-controller-rs232-independent-of-the-plc)).
 
 Camera and calibration application are both **best-effort** (missing camera, or a
 calibration a camera rejects → warning, skipped); detection is **all-or-nothing**
@@ -652,16 +800,14 @@ currently in sync, including `model_select`, `camera_results` and `gantry_status
 
 **Camera `brightness` is not an in-camera setting.** It used to be (a -100..+100 ISP
 offset, real only on some Basler models via `BslBrightness`, or a pure pixel-offset
-visual approximation on the simulated/image_file drivers). It has been rewired: the
-field now holds 0-255 and represents an external, PLC-controlled light source's
-brightness — no driver applies it to the device or the image anymore, and
-`CameraService` pushes it to that camera's `camera_brightness` PLC register instead
-(§6, §8). The `camera_brightness` register addresses in `config/plc.json`
-(156-158, 6056) and `config/defaults/plc.json` (156-159) are placeholders following
-this station's own numbering convention (camera 3 lives in the 6000s on the live
-file, same as every other per-camera group) — **confirm the real PLC's memory map
-actually has these free before relying on them**, the same coordination any new
-register addition needs with whoever maintains the PLC program.
+visual approximation on the simulated/image_file drivers). It has been rewired twice
+since: the field first held 0-255 for an external, PLC-controlled light source, then
+(with the LED Controller module) moved again to target the RS232 KDC-24V60W-4T
+directly — no driver applies it to the device or the image, and `CameraService`
+pushes it to that camera's *configured* `led_channel` via `LedService` instead (see
+[LED Controller](#led-controller-rs232-independent-of-the-plc)). The old
+`camera_brightness` PLC registers (156-158/6056 live, 156-159 defaults) are free now
+— confirm with whoever maintains the PLC program before reusing them.
 
 **A skipped camera writes *nothing*, and that is the point.** `gantry_status`
 is the one register that can make a whole camera drop out of a cycle. It is easy
@@ -690,17 +836,6 @@ path (a migration, a restore, a repair) will now be mistaken for an operator
 edit and folded into the live profile: prefer writing the file directly, or
 clear the target first. `tests/test_machine_model_autosync.py` drives the real
 pages' Save handlers through the wiring end to end.
-
-**An inline `setStyleSheet("color: #...")` does not follow the theme.** The
-station now ships two colour schemes painted from one token template
-([§13](#13-theming)), so a hard-coded hex in Python is correct on whichever
-scheme it was written against and wrong on the other — and it is *invisible*
-until somebody switches. Prefer a QSS class or object name (`class="dim"`,
-`class="warn"`, `#brandLabel`); if the widget genuinely paints rather than
-styles, read `theme.color()` and subscribe to `theme.subscribe` so it
-re-reads. Same trap for a bare `QWidget` used as layout padding: it paints the
-*page* background over whatever bar it sits on, which is a shade off on dark
-and obvious on light — hence `QWidget#barSpacer { background: transparent; }`.
 
 **The PLC DB audit mirror is incomplete.** `PlcService._mirror_to_database` and the
 `plc_configurations` table cover only the original 100–119 registers — `model_select`,
@@ -734,6 +869,19 @@ message tells the operator.
 `dict(cfg)` — the *whole* raw entry, so driver-specific blocks (`basler`, `simulation`,
 `image_source`) reach the driver through it.
 
+**The PLC page's manual register table shows only the low word of a 32-bit
+positional register.** The "Live Value" column reads whatever single address is
+configured for that row (`PlcService.read_register`), which for `camera_positions`/
+`servo_home_positions` is the *base* address — the low 16 bits. If the combined
+32-bit value ever exceeds 65535 (a real possibility now that the ceiling is
+~4.29 billion instead of 65535), that column under-reports it; the high word
+lives at base+1, one row below where a "Camera N X" row would be if you added
+one for it, but the table has no such row. This is a display gap only — the
+actual read/write path (`PlcManager._write_position`/`read_servo_home`) always
+combines both words correctly. Don't "fix" a Live Value cell that looks smaller
+than expected without checking base+1 by hand (Manual Write's Register field
+accepts it) first.
+
 ### Doc drift
 
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) is design-intent from initial generation and predates
@@ -745,8 +893,6 @@ what it is, but treat these as stale:
   `image_file` camera driver
 - register table stops at 119 (missing per-camera results 128–131 and everything above)
 - §6 "Generation Plan" is a historical build checklist, not current state
-- describes a single hard-coded dark stylesheet; there are now two schemes
-  rendered from one `@token` template (`resources/styles/theme.qss`, [§13](#13-theming))
 
 ---
 
@@ -896,26 +1042,25 @@ developer out of the pages their role is a superset of.
 | Tier | Account | Nav rail |
 |---|---|---|
 | operator | *none — the logged-out default* | Dashboard, Database, Logs |
-| admin | `admin` / `admin` | **+** Cameras, PLC, Detection, Settings |
+| admin | `admin` / `admin` | **+** Cameras, PLC, LED Controller, Detection, Settings |
 | developer | `developer` / `developer` | **+** Calibration, Machine Models (everything) |
 
 Calibration and Machine Models are the developer-only pair because both rewrite
 the *coordinate frame and the per-model tuning snapshot* — commissioning work, not
 shift work. Every other engineering console is admin.
 
-Three **widgets** are developer-only as well, gated by *visibility* rather than by
-`min_role` (they are not pages): the toolbar's "Simulate trigger for all camera at a
-time" button (`MainWindow._refresh_nav_visibility`, the same place the nav rail is
-refreshed), the Dashboard's whole trigger bar — the "Delay between cameras" spin box
-**and** its Simulate Trigger button (`DashboardPage._refresh_access`) — and the
-Settings page's **Appearance** group, the dark/light theme picker
-(`SettingsPage._refresh_access`, see [§13](#13-theming)). All are *hidden*, not
-disabled. The per-camera ▶ buttons on the camera panels are **not** gated — that is
-the operator's control. Because a page outlives a login, `DashboardPage` and
-`SettingsPage` re-read the session through `AuthService.subscribe` (a plain Qt-free
-callback list fired on every login and logout, so `services/` still knows nothing
-about the UI); `MainWindow` keeps refreshing from the login handler it already owns.
-`tests/test_manual_trigger_access.py` and `tests/test_theme.py` pin all of it.
+The **manual trigger controls are developer-only too**, and gated by *visibility*
+rather than by `min_role` (they are widgets, not pages): the toolbar's "Simulate
+trigger for all camera at a time" button (`MainWindow._refresh_nav_visibility`, the
+same place the nav rail is refreshed) and the Dashboard's whole trigger bar — the
+"Delay between cameras" spin box **and** its Simulate Trigger button
+(`DashboardPage._refresh_access`). They are *hidden*, not disabled. The per-camera
+▶ buttons on the camera panels are **not** gated — that is the operator's control.
+Because a page outlives a login, `DashboardPage` re-reads the session through
+`AuthService.subscribe` (a plain Qt-free callback list fired on every login and
+logout, so `services/` still knows nothing about the UI); `MainWindow` keeps
+refreshing from the login handler it already owns. `tests/test_manual_trigger_access.py`
+pins all of it.
 
 ```
 UserRole.covers()  ←  AuthService.has_role(role)  ←  MainWindow.add_page(min_role=…)
@@ -943,56 +1088,3 @@ UserRole.covers()  ←  AuthService.has_role(role)  ←  MainWindow.add_page(min
 - There is **no account-management UI**: accounts are the two defaults, and Settings
   → Change Password only ever changes the password of whoever is logged in.
   `AuthService.create_user` exists and is admin-gated, but nothing calls it.
-
----
-
-## 13. Theming
-
-Two schemes — **dark** (the shipped one, what the station was commissioned
-against) and **light** — painted from **one** stylesheet. There is no
-`light_theme.qss`, deliberately: 300 duplicated lines diverge the first time
-somebody styles a new widget in only one of them.
-
-```
-config app_config.application.theme  ──►  AppTheme  (core/utilities/enums.py)
-                                             │
-resources/styles/theme.qss  ── @token ──►  ui/theme.py
-   (template, not a stylesheet)              _DARK / _LIGHT palettes
-                                             │
-                                    apply_theme(qt_app, theme)
-                                      ├─ app.setStyle("Fusion")
-                                      ├─ app.setPalette(...)      # native dialogs
-                                      ├─ app.setStyleSheet(...)   # everything styled
-                                      └─ observers  ──► the widgets that *paint*
-```
-
-- **`theme.qss` is a template.** Every colour is an `@token`; `build_stylesheet`
-  substitutes the selected palette. A token the palette does not define raises
-  `ConfigurationError` rather than reaching Qt, which would silently drop the
-  whole rule. Adding a colour means adding it to **both** `_DARK` and `_LIGHT`
-  — `tests/test_theme.py` fails if only one gets it.
-- **Style it, don't paint it.** A widget coloured through the QSS follows a
-  theme change for free. Only code that paints — table cell backgrounds, log
-  level foregrounds, LED fills, icon pixmaps, the image viewer's letterbox —
-  needs `theme.color()`/`theme.qcolor()` **and** a `theme.subscribe(...)`
-  callback to re-read them. An inline `setStyleSheet("color: #...")` is the
-  trap: it survives the switch and keeps the old scheme's colour. The five
-  places that legitimately paint are `ui/dashboard/summary_panels.py`,
-  `ui/database/database_page.py`, `ui/logs/logs_page.py`,
-  `ui/widgets/led_indicator.py` and `ui/widgets/image_view.py`.
-- **Three colours deliberately do *not* follow the theme**, because they sit on
-  a photograph rather than on the UI: the image viewer's centre crosshair
-  (`_CENTER_MARK_COLOR`), the calibration point picker's marker, and the ROI
-  editor's accent. They have to stay legible against a washing-machine bottom,
-  not against a page.
-- **The switch is live.** `Application._on_app_config_saved` re-paints when
-  `application.theme` differs from what is in force; every other Settings save
-  is a no-op. Startup reads the file directly (`main._configured_theme`) before
-  the object graph exists, so the first frame is already in the right scheme,
-  and an unreadable or unrecognised value degrades to dark rather than
-  crashing the station.
-- **Who may change it:** developers only, hidden not disabled — see
-  [§12](#12-roles--access). An admin saving Settings preserves the stored
-  choice, because `_load` put it in the (hidden) combo box.
-- `apply_dark_theme` survives as a thin alias for the standalone lab scripts in
-  `scripts/` and `development_files/`, which have no config file to read.

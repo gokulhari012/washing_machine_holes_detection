@@ -2,7 +2,6 @@
 
 from core.utilities.config_manager import ConfigManager
 from core.utilities.enums import (
-    AppTheme,
     CameraDriver,
     ConnectionState,
     DetectorType,
@@ -40,7 +39,6 @@ from core.utilities.exceptions import (
 
 __all__ = [
     "ConfigManager",
-    "AppTheme",
     "CameraDriver",
     "ConnectionState",
     "DetectorType",

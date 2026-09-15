@@ -26,6 +26,38 @@ Capture modes (``app_config.inspection``):
 - ``parallel`` — all cameras grab and detect at once (fastest cycle, needs the
   bandwidth for it).
 
+Strobe lighting
+----------------
+A camera whose ``led_strobe`` is on (Camera page) gets its configured LED
+Controller channel lit only while it is needed for a capture — never left lit
+between cycles, same as the Camera page's own Test Camera / Continuous
+Capture strobing (see ``CameraService.light_on``/``light_off``).
+
+The global trigger (``run_inspection``, both capture modes) lights every
+strobe-enabled, gantry-active camera together in *one* grouped serial command
+(``LedManager.send_multichannel``, the controller's documented multi-channel
+T/F frame) immediately before the cycle's first capture, and turns them all
+off again in one more grouped command immediately after the last capture —
+so in sequential mode all of this cycle's lights stay on together across the
+``camera_delay_ms`` gaps between cameras too, not just each camera's own
+capture window, and in parallel mode this replaces what used to be a loop of
+individual per-channel commands with a single simultaneous write. A channel
+not being toggled this way (a non-strobe camera's steady light) is re-sent at
+its own already-configured brightness rather than left out of the frame,
+because the controller's multi-channel command always sets all 4 channels in
+one write — see ``_channel_states``.
+
+The per-camera trigger (``run_camera_inspection``, register 132+N) is
+unaffected: there is only ever one camera to light there, so it still
+brackets just that camera's own grab with a single-channel command via
+``_strobe_on``/``_strobe_off``.
+
+Best-effort, like every other LED write: a communication failure is logged,
+never raised, so it can never stall or fail an inspection cycle. Skipped
+(gantry-inactive) cameras are never strobed, since they are never captured
+either. ``led_manager`` is optional — a service built without one (tests, or
+a station that hasn't finished the LED integration) simply never strobes.
+
 Every cycle is stamped with the operator and the shift it ran in. The shift
 comes from ``ShiftService`` -- resolved from the configured rota against the
 cycle's own ``started_at``, so a cycle that straddles a handover is filed
@@ -74,11 +106,12 @@ import numpy as np
 
 from core.calibration import CalibrationManager
 from core.camera import CameraManager
+from core.led import LedManager
 from core.logging import get_logger
 from core.plc import PlcManager
 from core.utilities import ConfigManager
 from core.utilities.enums import InspectionResult, LogSource, PlcResultCode
-from core.utilities.exceptions import CameraError, DatabaseError, DetectionError, PlcError
+from core.utilities.exceptions import CameraError, DatabaseError, DetectionError, LedError, PlcError
 from core.vision import DetectionResult, VisionEngine, draw_detection_overlay
 from models.app_state import AppState
 from models.dto import CameraInspectionData, InspectionCycleData
@@ -111,6 +144,7 @@ class InspectionService:
         app_state: AppState,
         config_manager: ConfigManager,
         shift_service: ShiftService,
+        led_manager: LedManager | None = None,
     ) -> None:
         self._cameras = camera_manager
         self._vision = vision_engine
@@ -120,6 +154,7 @@ class InspectionService:
         self._app_state = app_state
         self._config = config_manager
         self._shifts = shift_service
+        self._led = led_manager
 
     # -------------------------------------------------------------- pipeline
     def run_inspection(
@@ -150,15 +185,22 @@ class InspectionService:
         # 0. gantry gating — only the cameras the PLC says are in position
         active, skipped = self._resolve_gantries(enabled)
 
-        # 1.+2. capture and detect, one camera at a time or all at once
+        # 1.+2. capture and detect, one camera at a time or all at once.
+        # All of this cycle's strobe lights go on together in one grouped
+        # command before either path starts, and off together in one more
+        # once it returns — see the module docstring's Strobe lighting note.
         inspection_cfg = app_cfg.get("inspection", {})
         mode = str(
             capture_mode or inspection_cfg.get("capture_mode", SEQUENTIAL_MODE)
         ).lower()
-        if mode == SEQUENTIAL_MODE:
-            camera_results, detection_ms = self._run_sequential(active, inspection_cfg)
-        else:
-            camera_results, detection_ms = self._run_parallel(active)
+        lit = self._strobe_group_on(active)
+        try:
+            if mode == SEQUENTIAL_MODE:
+                camera_results, detection_ms = self._run_sequential(active, inspection_cfg)
+            else:
+                camera_results, detection_ms = self._run_parallel(active)
+        finally:
+            self._strobe_group_off(lit)
 
         # the skipped cameras are recorded and shown, but judged by nobody
         for index in skipped:
@@ -278,10 +320,13 @@ class InspectionService:
         self._app_state.post_status(f"Capturing {camera.name} (single)")
 
         camera_started = time.perf_counter()
+        lit = self._strobe_on([camera_index])
         try:
             frame = self._cameras.capture(camera_index)
         except CameraError:
             frame = None  # already logged and recorded in health by capture()
+        finally:
+            self._strobe_off(lit)
         if frame is not None:
             self._app_state.publish_camera_capture(camera_index, frame)
 
@@ -643,6 +688,140 @@ class InspectionService:
             return None
         dx, dy = self._calibration.screw_offset(camera_index)
         return data.x_mm + dx, data.y_mm + dy
+
+    # ------------------------------------------------------------ strobing
+    def _strobe_on(self, indices: list[int]) -> list[int]:
+        """Light every strobe-enabled camera among *indices*, just before
+        their capture, via a single-channel command per camera. Used only by
+        :meth:`run_camera_inspection` (the per-camera trigger), which only
+        ever has one camera to light — the global trigger uses the grouped
+        :meth:`_strobe_group_on` instead. Returns the subset actually
+        addressed (strobe on, channel configured), so the matching
+        :meth:`_strobe_off` turns off exactly what this turned on rather than
+        re-deriving it from settings that could theoretically change
+        mid-cycle.
+        """
+        if self._led is None:
+            return []
+        lit: list[int] = []
+        for index in indices:
+            settings = self._cameras.get(index).settings
+            if not getattr(settings, "led_strobe", False):
+                continue
+            channel = getattr(settings, "led_channel", 0)
+            if channel <= 0:
+                continue
+            try:
+                self._led.send_channel(channel, settings.brightness)
+            except LedError as exc:
+                logger.warning(
+                    "Camera %d: strobe light-on failed on LED channel %d (%s)",
+                    index, channel, exc,
+                )
+            lit.append(index)
+        return lit
+
+    def _strobe_off(self, indices: list[int]) -> None:
+        """The other half of :meth:`_strobe_on` — always called, capture
+        success or failure, so a strobe channel is never left lit."""
+        if self._led is None or not indices:
+            return
+        for index in indices:
+            settings = self._cameras.get(index).settings
+            channel = getattr(settings, "led_channel", 0)
+            if channel <= 0:
+                continue
+            try:
+                self._led.send_channel(channel, 0)
+            except LedError as exc:
+                logger.warning(
+                    "Camera %d: strobe light-off failed on LED channel %d (%s)",
+                    index, channel, exc,
+                )
+
+    def _strobe_group_on(self, indices: list[int]) -> list[int]:
+        """Light every strobe-enabled camera among *indices* together, in one
+        grouped multi-channel command, before any of this cycle's captures
+        begin. Returns the subset of *indices* actually addressed (strobe on,
+        channel configured), so the matching :meth:`_strobe_group_off` turns
+        off exactly what this turned on.
+        """
+        if self._led is None:
+            return []
+        channel_of: dict[int, int] = {}
+        for index in indices:
+            settings = self._cameras.get(index).settings
+            if not getattr(settings, "led_strobe", False):
+                continue
+            channel = getattr(settings, "led_channel", 0)
+            if channel <= 0:
+                continue
+            channel_of[channel] = index
+        if not channel_of:
+            return []
+        try:
+            self._led.send_multichannel(self._channel_states(channel_of, on=True))
+        except LedError as exc:
+            logger.warning("Grouped strobe light-on failed: %s", exc)
+        return list(channel_of.values())
+
+    def _strobe_group_off(self, indices: list[int]) -> None:
+        """The other half of :meth:`_strobe_group_on` — always called,
+        capture success or failure, so no strobe channel from this cycle is
+        left lit."""
+        if self._led is None or not indices:
+            return
+        channel_of: dict[int, int] = {}
+        for index in indices:
+            channel = getattr(self._cameras.get(index).settings, "led_channel", 0)
+            if channel > 0:
+                channel_of[channel] = index
+        if not channel_of:
+            return
+        try:
+            self._led.send_multichannel(self._channel_states(channel_of, on=False))
+        except LedError as exc:
+            logger.warning("Grouped strobe light-off failed: %s", exc)
+
+    def _channel_states(
+        self, toggled: dict[int, int], *, on: bool
+    ) -> list[tuple[int, bool]]:
+        """Build the 4-channel (brightness, on) frame for
+        :meth:`_strobe_group_on`/:meth:`_strobe_group_off`.
+
+        ``toggled`` maps LED channel -> camera index for the channels this
+        call is switching. The controller's multi-channel command always
+        sets all 4 channels in one write, so every channel *not* in
+        ``toggled`` that belongs to a non-strobe camera is re-sent at its own
+        configured steady brightness (whatever
+        ``CameraService._push_brightness`` last drove it to) instead of being
+        left out of the frame — otherwise a grouped strobe write would blank
+        out that camera's light for the duration of the cycle. A
+        strobe-enabled camera's channel that isn't in ``toggled`` (skipped
+        this cycle, e.g. a parked gantry) is *not* treated as steady — its
+        resting state is off, same as ``_strobe_on``/``_strobe_off`` leave it
+        between cycles — and neither is a channel nothing is wired to; both
+        go out at (0, off). ``send_multichannel`` does not clamp to
+        ``max_brightness`` itself (it also backs the raw hardware tester), so
+        every value here is clamped before sending.
+        """
+        steady = {
+            getattr(camera.settings, "led_channel", 0): camera.settings.brightness
+            for camera in self._cameras.cameras.values()
+            if getattr(camera.settings, "led_channel", 0) > 0
+            and not getattr(camera.settings, "led_strobe", False)
+        }
+        clamp = self._led.settings.clamp
+        states: list[tuple[int, bool]] = []
+        for channel in (1, 2, 3, 4):
+            if channel in toggled:
+                brightness = self._cameras.get(toggled[channel]).settings.brightness if on else 0
+                states.append((clamp(brightness), on))
+            elif channel in steady:
+                states.append((clamp(steady[channel]), True))
+            else:
+                states.append((0, False))
+        return states
 
     # -------------------------------------------------------------- internal
     @staticmethod

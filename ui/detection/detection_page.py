@@ -20,6 +20,13 @@ nothing else would tell it the parameters underneath it just changed.
 into detection.json's ``cameras`` map; "Restore Defaults" resets only the
 selected camera back to its shipped block. "Test" captures a frame from the
 selected camera, runs the engine, and shows the annotated result with timing.
+If that camera's saved ``led_strobe`` is on (Camera page), "Test" brackets
+its capture with ``CameraService.light_on``/``light_off`` on that camera's
+configured channel, the same as the Camera page's own Test Camera — there is
+no strobe checkbox here, since this page has no unsaved camera-settings form
+to read one from; it reads the camera's *live-effective* config instead
+(``CameraService.effective_config``), so a machine-model switch is honoured
+too. A non-strobe camera is untouched, exactly as before.
 
 **Auto Sweep** grid-searches (almost) every gating parameter of the active
 strategy — not just two — against the last "Test on Camera" frame. Drawing an
@@ -704,13 +711,24 @@ class DetectionPage(QWidget):
         camera_index = self._camera_index()
         if camera_index is None:
             return
+        cfg = self._cameras.effective_config(camera_index) or {}
+        strobe = bool(cfg.get("led_strobe", False))
+        if strobe:
+            self._cameras.light_on(camera_index)
         try:
             frame = self._cameras.test_capture(camera_index)
             self._engine.apply_camera_config(camera_index, self._collect())  # test what's on screen
             result = self._engine.detect(frame, camera_index)
         except VisionSystemError as exc:
+            # Turn the light off before the blocking warning dialog, not
+            # after — it must not sit lit for however long the operator
+            # takes to dismiss it (same reasoning as the Camera page).
+            if strobe:
+                self._cameras.light_off(camera_index)
             QMessageBox.warning(self, "Test", str(exc))
             return
+        if strobe:
+            self._cameras.light_off(camera_index)
         self._last_frame = frame
         self._last_result = result
         self._last_camera_index = camera_index

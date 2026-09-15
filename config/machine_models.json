@@ -7,60 +7,60 @@
       "cameras": {
         "1": {
           "roi": {
-            "x": 850,
-            "y": 2048,
-            "width": 2555,
-            "height": 1425
+            "x": 86,
+            "y": 1749,
+            "width": 3500,
+            "height": 2000
           },
-          "exposure_us": 50000,
+          "exposure_us": 70000,
           "gain_db": 0.0,
           "gamma": 1.0,
-          "brightness": 0,
+          "brightness": 255,
           "width": 5496,
           "height": 3672,
           "trigger_mode": "software"
         },
         "2": {
           "roi": {
-            "x": 915,
-            "y": 2160,
-            "width": 2472,
-            "height": 1313
+            "x": 86,
+            "y": 1749,
+            "width": 3500,
+            "height": 2000
           },
-          "exposure_us": 50000,
+          "exposure_us": 70000,
           "gain_db": 0.0,
           "gamma": 1.0,
-          "brightness": 0,
+          "brightness": 255,
           "width": 5496,
           "height": 3672,
           "trigger_mode": "software"
         },
         "3": {
           "roi": {
-            "x": 2221,
-            "y": 1156,
-            "width": 2368,
-            "height": 1371
+            "x": 950,
+            "y": 760,
+            "width": 3500,
+            "height": 2000
           },
-          "exposure_us": 50000,
+          "exposure_us": 70000,
           "gain_db": 0.0,
           "gamma": 1.0,
-          "brightness": 0,
+          "brightness": 255,
           "width": 5496,
           "height": 3672,
           "trigger_mode": "software"
         },
         "4": {
           "roi": {
-            "x": 3760,
-            "y": 1319,
-            "width": 1766,
-            "height": 1070
+            "x": 1250,
+            "y": 150,
+            "width": 3500,
+            "height": 2000
           },
-          "exposure_us": 60000,
+          "exposure_us": 70000,
           "gain_db": 0.0,
           "gamma": 1.0,
-          "brightness": 0,
+          "brightness": 255,
           "width": 5496,
           "height": 3672,
           "trigger_mode": "software"
@@ -71,18 +71,19 @@
           "1": {
             "active_detector": "opencv",
             "common": {
-              "confidence_threshold": 0.4,
+              "confidence_threshold": 0.6,
               "expected_hole_count": 1,
-              "position_tolerance_mm": 50.0
+              "position_tolerance_mm": 50.0,
+              "normalize_image": true
             },
             "opencv": {
-              "detection_threshold": 20,
+              "detection_threshold": 45,
               "adaptive_threshold": false,
               "blur_kernel_size": 3,
               "edge_threshold_low": 50,
               "edge_threshold_high": 150,
               "morphology_operation": "open",
-              "morphology_kernel_size": 3,
+              "morphology_kernel_size": 5,
               "morphology_iterations": 2,
               "min_hole_diameter_px": 106,
               "max_hole_diameter_px": 324,
@@ -116,9 +117,10 @@
           "2": {
             "active_detector": "opencv",
             "common": {
-              "confidence_threshold": 0.4,
+              "confidence_threshold": 0.6,
               "expected_hole_count": 1,
-              "position_tolerance_mm": 50.0
+              "position_tolerance_mm": 50.0,
+              "normalize_image": true
             },
             "opencv": {
               "detection_threshold": 20,
@@ -161,9 +163,10 @@
           "3": {
             "active_detector": "opencv",
             "common": {
-              "confidence_threshold": 0.4,
+              "confidence_threshold": 0.6,
               "expected_hole_count": 1,
-              "position_tolerance_mm": 50.0
+              "position_tolerance_mm": 50.0,
+              "normalize_image": true
             },
             "opencv": {
               "detection_threshold": 45,
@@ -206,23 +209,24 @@
           "4": {
             "active_detector": "opencv",
             "common": {
-              "confidence_threshold": 0.4,
+              "confidence_threshold": 0.6,
               "expected_hole_count": 1,
-              "position_tolerance_mm": 50.0
+              "position_tolerance_mm": 50.0,
+              "normalize_image": true
             },
             "opencv": {
-              "detection_threshold": 21,
+              "detection_threshold": 20,
               "adaptive_threshold": false,
-              "blur_kernel_size": 7,
+              "blur_kernel_size": 1,
               "edge_threshold_low": 50,
               "edge_threshold_high": 150,
               "morphology_operation": "close",
               "morphology_kernel_size": 5,
-              "morphology_iterations": 4,
-              "min_hole_diameter_px": 20,
-              "max_hole_diameter_px": 200,
-              "min_circularity": 0.65,
-              "min_aspect_ratio": 0.35,
+              "morphology_iterations": 2,
+              "min_hole_diameter_px": 65,
+              "max_hole_diameter_px": 222,
+              "min_circularity": 0.3,
+              "min_aspect_ratio": 0.15,
               "contour_retrieval_mode": "external"
             },
             "template_matching": {
@@ -252,12 +256,12 @@
       },
       "created_by": "admin",
       "created_at": "2026-08-25T10:06:50",
-      "updated_at": "2026-09-08T16:42:16",
-      "updated_by": "admin",
+      "updated_at": "2026-09-15T16:10:52",
+      "updated_by": "developer",
       "calibration": {
         "1": {
-          "pixels_per_mm_x": 70.0,
-          "pixels_per_mm_y": 70.0,
+          "pixels_per_mm_x": 71.4286,
+          "pixels_per_mm_y": 71.4286,
           "homography": null,
           "camera_matrix": null,
           "dist_coeffs": null,
@@ -269,8 +273,8 @@
           "calibrated_by": ""
         },
         "2": {
-          "pixels_per_mm_x": 70.0,
-          "pixels_per_mm_y": 70.0,
+          "pixels_per_mm_x": 71.4286,
+          "pixels_per_mm_y": 71.4286,
           "homography": null,
           "camera_matrix": null,
           "dist_coeffs": null,
@@ -282,8 +286,8 @@
           "calibrated_by": ""
         },
         "3": {
-          "pixels_per_mm_x": 70.6091,
-          "pixels_per_mm_y": 70.6091,
+          "pixels_per_mm_x": 71.4286,
+          "pixels_per_mm_y": 71.4286,
           "homography": null,
           "camera_matrix": null,
           "dist_coeffs": null,
@@ -295,8 +299,8 @@
           "calibrated_by": ""
         },
         "4": {
-          "pixels_per_mm_x": 70.6091,
-          "pixels_per_mm_y": 70.6091,
+          "pixels_per_mm_x": 71.4286,
+          "pixels_per_mm_y": 71.4286,
           "homography": null,
           "camera_matrix": null,
           "dist_coeffs": null,
@@ -324,7 +328,7 @@
           "exposure_us": 70000,
           "gain_db": 0.0,
           "gamma": 1.0,
-          "brightness": 0,
+          "brightness": 255,
           "width": 5496,
           "height": 3672,
           "trigger_mode": "software"
@@ -339,7 +343,7 @@
           "exposure_us": 70000,
           "gain_db": 0.0,
           "gamma": 1.0,
-          "brightness": 0,
+          "brightness": 255,
           "width": 5496,
           "height": 3672,
           "trigger_mode": "software"
@@ -354,7 +358,7 @@
           "exposure_us": 70000,
           "gain_db": 0.0,
           "gamma": 1.0,
-          "brightness": 0,
+          "brightness": 255,
           "width": 5496,
           "height": 3672,
           "trigger_mode": "software"
@@ -369,7 +373,7 @@
           "exposure_us": 70000,
           "gain_db": 0.0,
           "gamma": 1.0,
-          "brightness": 0,
+          "brightness": 255,
           "width": 5496,
           "height": 3672,
           "trigger_mode": "software"
@@ -565,7 +569,7 @@
       },
       "created_by": "admin",
       "created_at": "2026-09-02T15:12:23",
-      "updated_at": "2026-09-09T14:34:38",
+      "updated_at": "2026-09-15T11:30:55",
       "calibration": {
         "1": {
           "pixels_per_mm_x": 70.0,

@@ -97,17 +97,10 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self._nav_button)
 
         brand = QLabel("  ◉ WM Hole Detection")
-        # Styled by QSS (#brandLabel) rather than inline so it follows a
-        # theme change; an inline light grey stays light on the light theme.
-        brand.setObjectName("brandLabel")
+        brand.setStyleSheet("font-size: 15px; font-weight: 700; color: #e8ecf2;")
         toolbar.addWidget(brand)
 
         spacer = QWidget()
-        # Named so the stylesheet can make it transparent: a bare QWidget
-        # takes the page background, which sits a shade off the toolbar's own
-        # surface and reads as a stray panel across the whole toolbar - barely
-        # visible on the dark scheme, obvious on the light one.
-        spacer.setObjectName("barSpacer")
         spacer.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         toolbar.addWidget(spacer)
 
@@ -210,7 +203,6 @@ class MainWindow(QMainWindow):
     @staticmethod
     def _space(width: int) -> QWidget:
         spacer = QWidget()
-        spacer.setObjectName("barSpacer")
         spacer.setFixedWidth(width)
         return spacer
 

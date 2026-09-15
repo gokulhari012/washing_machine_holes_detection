@@ -52,9 +52,10 @@ def camera_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
     config["registers"]["camera_triggers"] = {"1": 132, "2": 133}
     config["registers"]["camera_vision_complete"] = {"1": 136, "2": 137}
     config["registers"]["camera_status"] = {"1": 140, "2": 141}
+    # 2 apart, not 1: each axis is a 32-bit (2-register) value.
     config["registers"]["servo_home_positions"] = {
-        "1": {"x": 144, "y": 145},
-        "2": {"x": 146, "y": 147},
+        "1": {"x": 144, "y": 146},
+        "2": {"x": 148, "y": 150},
     }
     rmap = RegisterMap.from_config(config)
     client = SimulatedPlc(register_map=rmap)
@@ -65,8 +66,8 @@ def camera_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
 
 def test_camera_write_touches_only_that_camera(camera_stack) -> None:
     client, manager, rmap = camera_stack
-    client.set_register(144, 30000)  # camera 1 servo home X
-    client.set_register(145, 30000)  # camera 1 servo home Y
+    client.set_register(144, 30000)  # camera 1 servo home X (low word)
+    client.set_register(146, 30000)  # camera 1 servo home Y (low word)
     manager.write_camera_inspection_output(1, (12.3, -4.5), PlcResultCode.GOOD)
 
     x_addr, y_addr = rmap.camera_positions[1]

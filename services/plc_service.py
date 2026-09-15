@@ -109,14 +109,6 @@ class PlcService:
         """Raises PlcError; caller (UI) must gate this behind admin login."""
         self._manager.write_raw_coil(address, value)
 
-    # --------------------------------------------------------- camera light
-    def set_camera_brightness(self, camera_index: int, level: int) -> bool:
-        """Publish camera *camera_index*'s light-brightness level (0-255) so
-        an external PLC-controlled light tracks the camera's configured
-        setting. Returns False (no I/O) when the register isn't configured.
-        Raises PlcError on communication failure."""
-        return self._manager.write_camera_brightness(camera_index, level)
-
     # ---------------------------------------------------------- machine model
     def set_model_select(self, code: int) -> bool:
         """Write the machine-model-select register so a profile applied from

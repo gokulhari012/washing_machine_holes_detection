@@ -341,15 +341,30 @@ class PlcManager:
         them (see :mod:`core.plc.register_map`). Returns ``(0, 0)`` when the
         camera has no servo-home registers configured, which makes the
         encoding fall back to plain ``mm * position_scale``.
+
+        Each axis is a 32-bit value spanning two registers (low word at the
+        configured base address, high word at base+1 — see
+        :meth:`core.plc.register_map.RegisterMap.split_dword`). When X and Y
+        are configured 2 apart (``y_address == x_address + 2``) all four
+        words are read in one transaction; otherwise each axis is its own
+        2-register read.
         """
         addresses = self._map.servo_home_positions.get(camera_index)
         if addresses is None:
             return 0, 0
         x_address, y_address = addresses
-        if y_address == x_address + 1:  # contiguous pair -> one transaction
-            values = self._read(x_address, 2)
-            return values[0], values[1]
-        return self._read(x_address, 1)[0], self._read(y_address, 1)[0]
+        if y_address == x_address + 2:  # contiguous 32-bit pair -> one transaction
+            words = self._read(x_address, 4)
+            return (
+                self._map.join_dword(words[0], words[1]),
+                self._map.join_dword(words[2], words[3]),
+            )
+        x_words = self._read(x_address, 2)
+        y_words = self._read(y_address, 2)
+        return (
+            self._map.join_dword(x_words[0], x_words[1]),
+            self._map.join_dword(y_words[0], y_words[1]),
+        )
 
     def read_gantry_status(self, camera_index: int) -> bool:
         """Whether camera *camera_index*'s gantry is active this cycle.
@@ -387,6 +402,13 @@ class PlcManager:
         :attr:`RegisterMap.NO_HOLE_RAW` to both registers instead — no servo
         read is needed, and none is done. Cameras with no position addresses
         configured are skipped silently.
+
+        Each axis is a 32-bit value split into two register words (low word
+        at the configured base address, high word at base+1 — see
+        :meth:`core.plc.register_map.RegisterMap.split_dword`). When X and Y
+        are configured 2 apart (``y_address == x_address + 2``) all four
+        words go out in one transaction; otherwise each axis is its own
+        2-register write.
         """
         addresses = self._map.camera_positions.get(camera_index)
         if addresses is None:
@@ -399,11 +421,14 @@ class PlcManager:
             x_raw = self._map.encode_position(position[0], x_home)
             y_raw = self._map.encode_position(position[1], y_home)
 
-        if y_address == x_address + 1:  # contiguous pair -> one transaction
-            self._write(x_address, [x_raw, y_raw])
+        x_low, x_high = self._map.split_dword(x_raw)
+        y_low, y_high = self._map.split_dword(y_raw)
+
+        if y_address == x_address + 2:  # contiguous 32-bit pair -> one transaction
+            self._write(x_address, [x_low, x_high, y_low, y_high])
         else:
-            self._write(x_address, [x_raw])
-            self._write(y_address, [y_raw])
+            self._write(x_address, [x_low, x_high])
+            self._write(y_address, [y_low, y_high])
 
     def write_inspection_output(
         self,
@@ -534,29 +559,6 @@ class PlcManager:
 
     def camera_status_configured(self, camera_index: int) -> bool:
         return camera_index in self._map.camera_status
-
-    def write_camera_brightness(self, camera_index: int, level: int) -> bool:
-        """Publish camera *camera_index*'s light-brightness level (0-255) to
-        its register, clamped to that range — this drives an external,
-        PLC-controlled light source, not the camera's own image pipeline.
-
-        Called whenever that camera's settings are applied or saved (see
-        ``CameraService``), so the light tracks the configured level the same
-        way :meth:`write_camera_status` tracks connectivity. Returns False
-        (no I/O) when that camera has no brightness register configured, so
-        the feature is simply inert until one is wired up.
-
-        Raises:
-            PlcError: communication failure.
-        """
-        address = self._map.camera_brightness.get(camera_index)
-        if address is None:
-            return False
-        self._write(address, [max(0, min(255, int(level)))])
-        return True
-
-    def camera_brightness_configured(self, camera_index: int) -> bool:
-        return camera_index in self._map.camera_brightness
 
     # ------------------------------------------------- manual register access
     def read_raw(self, address: int, count: int = 1) -> list[int]:

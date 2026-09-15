@@ -218,11 +218,6 @@ def _build_fields() -> list[_RegisterField]:
                 "PC → PLC: 1 while this camera is connected and grabbing normally, 0 otherwise",
             ),
             _camera_scalar_field(
-                "camera_brightness", camera, f"Camera {camera} Brightness",
-                "PC → PLC: this camera's light-brightness level (0-255), pushed on every "
-                "Camera page Apply/Save — drives an external light, not the camera itself",
-            ),
-            _camera_scalar_field(
                 "gantry_status", camera, f"Camera {camera} Gantry Status", (
                     "PLC → PC: 1 = this camera's gantry is in position, so the camera "
                     "takes part in the cycle. Anything else skips it — no capture, no "

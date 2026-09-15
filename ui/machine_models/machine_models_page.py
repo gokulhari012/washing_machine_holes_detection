@@ -467,7 +467,7 @@ class MachineModelsPage(QWidget):
         else:
             roi = cam.get("roi", {})
             self._leaf(
-                branch, "ROI",
+                branch, "ROI (top-left x, y)",
                 f"({roi.get('x', 0)}, {roi.get('y', 0)}) "
                 f"{roi.get('width', 0)}x{roi.get('height', 0)}",
             )

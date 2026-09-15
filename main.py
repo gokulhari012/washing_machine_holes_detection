@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import itertools
-import json
 import os
 import sys
 import threading
@@ -36,10 +35,11 @@ from PySide6.QtWidgets import QApplication
 from core.calibration import CalibrationManager
 from core.camera import CameraManager
 from core.database import DatabaseEngine
+from core.led import LedManager, build_led_settings, create_led_client
 from core.logging import LogManager, get_logger
 from core.plc import PlcManager, RegisterMap, create_plc_client
 from core.utilities import ConfigManager
-from core.utilities.enums import AppTheme, LogSource, UserRole
+from core.utilities.enums import LogSource, UserRole
 from core.utilities.exceptions import VisionSystemError
 from core.vision import VisionEngine, migrate_legacy_detection_config
 from models import AppState
@@ -50,6 +50,7 @@ from services import (
     DatabaseService,
     ExportService,
     InspectionService,
+    LedService,
     MachineModelService,
     PlcService,
     ShiftService,
@@ -62,7 +63,8 @@ from workers import (
     create_acquisition_workers,
 )
 from ui.dashboard import DashboardPage
-from ui.camera import CameraPage 
+from ui.camera import CameraPage
+from ui.led import LedPage
 from ui.plc import PlcPage
 from ui.detection import DetectionPage
 from ui.calibration import CalibrationPage
@@ -71,7 +73,7 @@ from ui.logs import LogsPage
 from ui.machine_models import MachineModelsPage
 from ui.settings import SettingsPage
 from ui.main_window import MainWindow
-from ui.theme import apply_theme, current_theme
+from ui.theme import apply_dark_theme
 
 MAINTENANCE_INTERVAL_MS = 30 * 60 * 1000  # backup/retention check cadence
 
@@ -79,10 +81,7 @@ MAINTENANCE_INTERVAL_MS = 30 * 60 * 1000  # backup/retention check cadence
 class Application:
     """Owns every long-lived object and the startup/shutdown order."""
 
-    def __init__(self, qt_app: QApplication) -> None:
-        # Held only so a theme change can re-paint at runtime; nothing else
-        # in the graph touches the QApplication.
-        self.qt_app = qt_app
+    def __init__(self) -> None:
         # ------------------------------------------------ config & logging
         self.config = ConfigManager(BASE_DIR / "config")
         app_cfg = self.config.load("app_config")
@@ -134,6 +133,11 @@ class Application:
         self.plc.subscribe_state(self.app_state.update_plc_state)
         self.plc.subscribe_paused(self.app_state.set_plc_paused)
 
+        led_cfg = self.config.load("led")
+        led_client = create_led_client(led_cfg)
+        self.led = LedManager(led_client, build_led_settings(led_cfg))
+        self.led.subscribe_state(self.app_state.update_led_state)
+
         # ------------------------------------------------------- services
         # Built before the inspection service: the pipeline stamps every cycle
         # with whatever shift this resolves at the moment the cycle starts.
@@ -141,11 +145,12 @@ class Application:
         self.inspection = InspectionService(
             self.cameras, self.vision, self.calibration,
             self.plc, self.database, self.app_state, self.config,
-            self.shift_service,
+            self.shift_service, self.led,
         )
         self.plc_service = PlcService(self.plc, self.config, self.database)
+        self.led_service = LedService(self.led, self.config)
         self.camera_service = CameraService(
-            self.cameras, self.config, self.database, self.plc_service
+            self.cameras, self.config, self.database, self.led_service
         )
         self.machine_models = MachineModelService(
             self.config, self.camera_service, self.vision, self.plc_service, self.calibration
@@ -205,6 +210,11 @@ class Application:
             min_role=UserRole.ADMIN,
         )
         self.window.add_page(
+            "LED Controller", "☀",
+            LedPage(self.app_state, self.led_service),
+            min_role=UserRole.ADMIN,
+        )
+        self.window.add_page(
             "Detection", "◎",
             DetectionPage(self.config, self.vision, self.camera_service, self.app_state),
             min_role=UserRole.ADMIN,
@@ -237,6 +247,7 @@ class Application:
         # -------------------------------------------------- cross-cutting
         self.config.subscribe("camera", self._on_camera_config_saved)
         self.config.subscribe("plc", self._on_plc_config_saved)
+        self.config.subscribe("led", self._on_led_config_saved)
         # Saving on an engineering page lands in the machine model the station
         # is running straight away, rather than waiting for someone to press
         # "Update Selected from Current" on the Machine Models page — see
@@ -246,7 +257,6 @@ class Application:
         # rebuilt manager, not the one the save just replaced.
         self.config.subscribe("camera", self._on_camera_settings_saved)
         self.config.subscribe("detection", self._on_detection_settings_saved)
-        self.config.subscribe("app_config", self._on_app_config_saved)
         self.calibration.subscribe(self._on_calibration_saved)
         self._maintenance_timer = QTimer(self.window)
         self._maintenance_timer.timeout.connect(self._run_maintenance_async)
@@ -267,6 +277,11 @@ class Application:
         errors = self.cameras.connect_all()
         for index, message in errors.items():
             self.app_state.raise_alarm("warning", f"Camera {index}: {message}")
+
+        try:
+            self.led.connect()
+        except VisionSystemError as exc:
+            self.app_state.raise_alarm("warning", f"LED Controller: {exc}")
 
         counts = self.database.daily_counts()
         self.app_state.set_counters(counts.total, counts.good, counts.ng)
@@ -302,6 +317,7 @@ class Application:
             worker.stop()
         self.inspection_worker.stop()                 # let in-flight cycle finish
         self.plc.disconnect()
+        self.led.disconnect()
         self.db_worker.stop()                         # final log flush
         self.db.dispose()
         self.log_manager.shutdown()
@@ -363,21 +379,6 @@ class Application:
 
     def _on_calibration_saved(self, _calibration) -> None:
         self._sync_active_machine_model("calibration")
-
-    def _on_app_config_saved(self, app_cfg: dict) -> None:
-        """Re-paint the UI if the Settings page changed the colour scheme.
-
-        The page writes the preference and nothing else — repainting is the
-        composition root's job because it owns the QApplication. Comparing
-        against the theme already in force keeps every *other* settings save
-        (rota, retention, operator name) from pointlessly re-rendering the
-        stylesheet and re-running the theme observers.
-        """
-        theme = AppTheme.from_value(app_cfg.get("application", {}).get("theme"))
-        if theme is current_theme():
-            return
-        apply_theme(self.qt_app, theme)
-        self.logger.info("Theme changed to %s", theme.value)
 
     def _sync_active_machine_model(self, domain: str) -> None:
         """Fold a just-saved settings domain into the active machine model.
@@ -452,6 +453,32 @@ class Application:
         self.poll_worker = self._build_poll_worker(connection_cfg)
         self.poll_worker.start()
 
+    def _on_led_config_saved(self, led_cfg: dict) -> None:
+        """Rebuild the LED controller client/settings after a save (runs on
+        the UI thread — configuration saves originate from the LED
+        Controller page).
+
+        Mirrors ``_on_plc_config_saved`` minus the poll-worker dance: this
+        link has no poll loop, so after ``LedManager.rebuild`` drops the
+        connection back to DISCONNECTED, this reconnects immediately with the
+        new settings — the same auto-connect behaviour as startup — instead
+        of leaving the operator to press Connect.
+        """
+        self.logger.info("LED controller configuration changed — rebuilding connection")
+        try:
+            client = create_led_client(led_cfg)
+            settings = build_led_settings(led_cfg)
+        except VisionSystemError as exc:
+            message = f"LED controller configuration rebuild failed: {exc}"
+            self.logger.error(message)
+            self.app_state.raise_alarm("error", message)
+            return
+        self.led.rebuild(client, settings)
+        try:
+            self.led.connect()
+        except VisionSystemError as exc:
+            self.app_state.raise_alarm("warning", f"LED Controller: {exc}")
+
     def _on_machine_model_changed(self, code: int) -> None:
         """PLC reported a new model_select value (runs on the UI thread via
         the queued Qt signal from PlcPollWorker's thread)."""
@@ -493,22 +520,6 @@ class Application:
         sys.excepthook = hook
 
 
-def _configured_theme() -> AppTheme:
-    """``application.theme`` from config/app_config.json, defaulting to dark.
-
-    Deliberately standalone: this runs before the object graph is built, and
-    a missing or malformed config file must still leave a themed, usable
-    window rather than crash the station on start.
-    """
-    try:
-        document = json.loads(
-            (BASE_DIR / "config" / "app_config.json").read_text(encoding="utf-8")
-        )
-        return AppTheme.from_value(document.get("application", {}).get("theme"))
-    except (OSError, ValueError, AttributeError):
-        return AppTheme.DARK
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(description="Washing Machine Bottom Hole Detection")
     parser.add_argument(
@@ -522,13 +533,9 @@ def main() -> int:
 
     qt_app = QApplication(sys.argv)
     qt_app.setApplicationName("WM Hole Detection")
-    # Painted before the window exists so the first frame is already in the
-    # right scheme. Read straight from the file rather than through the
-    # Application's ConfigManager, which does not exist yet; an unreadable or
-    # unrecognised value degrades to dark (AppTheme.from_value).
-    apply_theme(qt_app, _configured_theme())
+    apply_dark_theme(qt_app)
 
-    application = Application(qt_app)
+    application = Application()
     if args.selftest > 0:
         application.window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen, True)
     application.start()

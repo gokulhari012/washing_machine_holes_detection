@@ -94,12 +94,31 @@ class CameraSettings:
     exposure_us: int = 10000
     gain_db: float = 0.0
     gamma: float = 1.0
-    # 0-255 light-brightness level for an external, PLC-controlled light
-    # source — not an in-camera image adjustment. No driver applies this to
-    # the device or the captured image; CameraService pushes it to that
-    # camera's PLC brightness register on every apply/save instead (see
-    # core.plc.register_map.RegisterMap.camera_brightness).
+    # 0-255 light-brightness level for an external LED light source — not an
+    # in-camera image adjustment. No driver applies this to the device or the
+    # captured image; CameraService pushes it to the LED Controller channel
+    # named by led_channel on every apply/save instead (see
+    # services.camera_service.CameraService._push_brightness).
     brightness: int = 0
+    # Which of the LED Controller's 4 channels (1-4) drives this camera's
+    # light. 0 means "not wired to a channel" — brightness is then just a
+    # stored number with nothing to push it to, the same "0 = not configured"
+    # convention core.plc.register_map uses for its optional per-camera
+    # registers. A rig/wiring fact, not a per-part tuning value, so it is
+    # deliberately excluded from machine-model profiles' tunable fields (see
+    # services.machine_model_service._TUNABLE_CAMERA_FIELDS) the same way
+    # driver/connection_id are.
+    led_channel: int = 0
+    # Strobe mode: when True, the LED channel is switched on immediately
+    # before a capture and off immediately after, instead of sitting at
+    # `brightness` all the time. A *continuous* capture (Camera page's
+    # Continuous Capture) turns it on once at the start and leaves it on for
+    # every frame in the run, off only when the run stops — not a per-frame
+    # blink (see ui.camera.camera_page). Meaningless with led_channel == 0.
+    # CameraService._push_brightness deliberately does *not* push brightness
+    # on apply/save while this is on, so Save/Apply Live can't leave the
+    # light lit outside an actual capture.
+    led_strobe: bool = False
     # Frames per second requested from this camera by every *continuous*
     # viewing mode — live preview, the Camera page's Continuous Capture and
     # the Calibration page's Auto Calibrate scan all pace themselves by this
@@ -141,6 +160,8 @@ class CameraSettings:
                 gain_db=float(cfg.get("gain_db", 0.0)),
                 gamma=float(cfg.get("gamma", 1.0)),
                 brightness=int(cfg.get("brightness", 0)),
+                led_channel=int(cfg.get("led_channel", 0)),
+                led_strobe=bool(cfg.get("led_strobe", False)),
                 fps=float(cfg.get("fps", DEFAULT_VIEW_FPS)),
                 rotation=_validated_rotation(cfg.get("rotation", 0)),
                 width=int(cfg.get("width", 1280)),
@@ -183,6 +204,8 @@ class CameraSettings:
                 "gain_db": self.gain_db,
                 "gamma": self.gamma,
                 "brightness": self.brightness,
+                "led_channel": self.led_channel,
+                "led_strobe": self.led_strobe,
                 "fps": self.fps,
                 "rotation": self.rotation,
                 "width": self.width,

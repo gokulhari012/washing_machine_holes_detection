@@ -11,6 +11,10 @@ numpy>=1.26,<3.0
 # PLC communication (Modbus TCP)
 pymodbus>=3.7,<4.0
 
+# LED Controller communication (RS232) — optional, only needed for the
+# "serial" driver; the "simulated" driver needs no third-party package
+pyserial>=3.5,<4.0
+
 # Database ORM
 SQLAlchemy>=2.0,<3.0
 

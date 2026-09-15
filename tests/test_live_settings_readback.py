@@ -14,10 +14,12 @@ import json
 from core.calibration import CameraCalibration
 from core.camera import CameraManager
 from core.camera.camera_base import CameraSettings
+from core.led import LedControllerSettings, LedManager, SimulatedLedClient
 from core.plc import PlcManager, RegisterMap, SimulatedPlc
 from core.utilities.config_manager import ConfigManager
 from core.vision import VisionEngine
 from services.camera_service import CameraService
+from services.led_service import LedService
 from services.machine_model_service import MachineModelService
 from services.plc_service import PlcService
 
@@ -26,7 +28,7 @@ CAMERA_DOC = {
         {
             "index": 1, "name": "Cam 1", "driver": "simulated", "connection_id": "",
             "enabled": True, "exposure_us": 10000, "gain_db": 0.0, "gamma": 1.0,
-            "brightness": 10, "fps": 4.0, "rotation": 0,
+            "brightness": 10, "led_channel": 0, "led_strobe": False, "fps": 4.0, "rotation": 0,
             "width": 1280, "height": 1024, "trigger_mode": "software",
             "roi": {"x": 0, "y": 0, "width": 0, "height": 0},
             "simulation": {"hole_radius_px": 30},
@@ -108,8 +110,10 @@ def _build(tmp_path):
     plc_manager = PlcManager(SimulatedPlc(register_map=register_map), register_map)
     plc_manager.connect()
     plc_service = PlcService(plc_manager, config, database)
+    led_manager = LedManager(SimulatedLedClient(), LedControllerSettings())
+    led_service = LedService(led_manager, config)
     manager = CameraManager(CAMERA_DOC["cameras"])
-    camera_service = CameraService(manager, config, database, plc_service)
+    camera_service = CameraService(manager, config, database, led_service)
     engine = VisionEngine(DETECTION_DOC)
     calibration = FakeCalibrationManager()
     models = MachineModelService(config, camera_service, engine, plc_service, calibration)

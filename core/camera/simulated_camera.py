@@ -13,8 +13,8 @@ Two modes:
 
 Exposure, gain and gamma all affect the rendered image so the Camera
 Configuration page sliders give visible feedback. ``brightness`` does not —
-it is a 0-255 light-brightness level for an external, PLC-controlled light
-source, not an image adjustment (see ``CameraSettings.brightness``).
+it is a 0-255 light-brightness level for an external LED light source, not
+an image adjustment (see ``CameraSettings.brightness``).
 """
 
 from __future__ import annotations

@@ -166,8 +166,8 @@ class ImageFileCamera(CameraBase):
         """Gamma curve, so that form field still acts on the picture.
 
         ``brightness`` is deliberately not applied here — it is a 0-255
-        light-brightness level for an external, PLC-controlled light source,
-        not a post-capture adjustment to an already-taken picture.
+        light-brightness level for an external LED light source, not a
+        post-capture adjustment to an already-taken picture.
         """
         s = self._settings
         if abs(s.gamma - 1.0) > 1e-3:

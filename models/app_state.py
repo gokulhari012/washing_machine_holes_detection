@@ -26,6 +26,7 @@ class AppState(QObject):
     # connection / hardware
     plc_state_changed = Signal(str)            # ConnectionState value
     plc_paused_changed = Signal(bool)          # True while PLC writes are suspended
+    led_state_changed = Signal(str)            # ConnectionState value (LED controller)
     camera_state_changed = Signal(int, str)    # camera index, ConnectionState value
     # profile name, PLC code - also the "your settings just changed" notice
     # the engineering pages reload on (see set_active_machine_model)
@@ -51,6 +52,7 @@ class AppState(QObject):
         self._lock = threading.Lock()
         self._plc_state = ConnectionState.DISCONNECTED
         self._plc_paused = False
+        self._led_state = ConnectionState.DISCONNECTED
         self._camera_states: dict[int, ConnectionState] = {}
         self._total = 0
         self._good = 0
@@ -74,6 +76,14 @@ class AppState(QObject):
         with self._lock:
             self._plc_paused = paused
         self.plc_paused_changed.emit(paused)
+
+    def update_led_state(self, state: ConnectionState) -> None:
+        """Reflect the LED controller's connection state - pushed via
+        ``LedManager.subscribe_state`` in the composition root, the same
+        wiring ``update_plc_state`` uses for the PLC link."""
+        with self._lock:
+            self._led_state = state
+        self.led_state_changed.emit(state.value)
 
     def update_camera_state(self, camera_index: int, state: ConnectionState) -> None:
         with self._lock:

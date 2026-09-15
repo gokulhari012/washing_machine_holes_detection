@@ -112,6 +112,8 @@ class CameraConfiguration(Base):
     gain_db: Mapped[float] = mapped_column(Float, default=0.0)
     gamma: Mapped[float] = mapped_column(Float, default=1.0)
     brightness: Mapped[int] = mapped_column(Integer, default=0)
+    led_channel: Mapped[int] = mapped_column(Integer, default=0)  # 0 = not wired
+    led_strobe: Mapped[bool] = mapped_column(Boolean, default=False)
     fps: Mapped[float] = mapped_column(Float, default=0.0)  # 0 = not configured
     rotation: Mapped[int] = mapped_column(Integer, default=0)  # degrees clockwise
     width: Mapped[int] = mapped_column(Integer, default=1280)

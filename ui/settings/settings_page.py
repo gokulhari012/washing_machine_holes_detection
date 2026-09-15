@@ -1,5 +1,4 @@
-"""Settings page: general options, shift rota, appearance, storage/backup,
-change password.
+"""Settings page: general options, shift rota, storage/backup, change password.
 
 Reachable only after an administrator (or a developer, whose role covers
 admin) logs in via the toolbar — the page is registered with
@@ -9,14 +8,6 @@ for the general and backup groups. When
 ``security.settings_password_protected`` is disabled, editing is allowed
 without that session too. First run ships default ``admin``/``admin`` and
 ``developer``/``developer`` accounts — change them here.
-
-The Appearance group holds the one setting on this page that is *not* admin
-work: the dark/light colour scheme. It is visible to developers only, and
-hidden rather than greyed out, because the scheme is commissioning-time
-judgement about the screen and the light the station stands in rather than
-something to change between shifts. The page only records the choice;
-repainting is done by the composition root, which owns the QApplication, off
-its ``app_config`` subscription.
 
 The Shift Schedule group configures the three-shift rota. With "set the shift
 automatically" ticked — the shipped setting — the shift stamped on every
@@ -69,12 +60,12 @@ from PySide6.QtWidgets import (
 )
 
 from core.utilities import ConfigManager
-from core.utilities.enums import AppTheme, UserRole
 from core.utilities.exceptions import ConfigurationError, VisionSystemError
 from core.utilities.shift_schedule import Shift, ShiftSchedule, format_clock
 from services.auth_service import AuthService
 from services.backup_service import BackupService
 from services.shift_service import ShiftService
+from ui.theme import COLOR_WARN
 
 
 def _to_qtime(value) -> QTime:
@@ -205,7 +196,6 @@ class SettingsPage(QWidget):
         left.addWidget(self._general_box)
 
         left.addWidget(self._build_shift_box())
-        left.addWidget(self._build_appearance_box())
 
         self._storage_box = QGroupBox("Storage && Backup")
         storage = QFormLayout(self._storage_box)
@@ -280,49 +270,8 @@ class SettingsPage(QWidget):
         columns.addLayout(right)
         columns.addStretch()
 
-        self._auth.subscribe(self._refresh_access)
-        self._refresh_access()
         self._load()
         self._apply_protection()
-
-    # ----------------------------------------------------------- appearance
-    def _build_appearance_box(self) -> QGroupBox:
-        """Colour-scheme picker — developer-only, and hidden rather than
-        greyed out.
-
-        Developer-only because the scheme is a commissioning decision about
-        the station's screen and the light it stands in (a bright shop floor
-        reads better light, a dark cell better dark), not a per-shift
-        preference: an operator switching it mid-run changes the colours
-        every verdict on the line is read by. Hidden rather than disabled
-        follows the manual-trigger controls, which are gated the same way —
-        a control nobody in the room can use is better absent than teasing.
-        """
-        self._appearance_box = QGroupBox("Appearance")
-        form = QFormLayout(self._appearance_box)
-        self._theme = QComboBox()
-        for theme in AppTheme:
-            self._theme.addItem(theme.label, theme.value)
-        self._theme.setToolTip(
-            "Colour scheme for the whole application. Applied the moment "
-            "Settings are saved — no restart."
-        )
-        form.addRow("Theme", self._theme)
-        form.addRow("", self._note(
-            "Applies to every page at once. Dark is the shipped scheme and "
-            "the one the station was commissioned against; Light suits a "
-            "brightly lit line where the screen washes out."
-        ))
-        return self._appearance_box
-
-    def _refresh_access(self) -> None:
-        """Show the Appearance group to developers only.
-
-        A page outlives a login, so this is re-run from ``AuthService``'s
-        subscription on every login and logout as well as at construction —
-        the same arrangement the Dashboard's trigger bar uses.
-        """
-        self._appearance_box.setVisible(self._auth.has_role(UserRole.DEVELOPER))
 
     # ----------------------------------------------------------- shift rota
     def _build_shift_box(self) -> QGroupBox:
@@ -380,10 +329,7 @@ class SettingsPage(QWidget):
         # particular used to pass completely unremarked.
         self._shift_warnings = QLabel()
         self._shift_warnings.setWordWrap(True)
-        # Amber via the stylesheet's "warn" class, not an inline colour: an
-        # inline one would keep the dark palette's amber after a switch to
-        # the light theme, where it is unreadable on a white group box.
-        self._shift_warnings.setProperty("class", "warn")
+        self._shift_warnings.setStyleSheet(f"color: {COLOR_WARN};")
         layout.addWidget(self._shift_warnings)
         return self._shift_box
 
@@ -544,7 +490,6 @@ class SettingsPage(QWidget):
         session state and the enabled/disabled boxes every time an admin
         navigates here, instead of only once at construction."""
         super().showEvent(event)
-        self._refresh_access()
         self._apply_protection()
 
     # ------------------------------------------------------------ load/save
@@ -556,8 +501,6 @@ class SettingsPage(QWidget):
         self._factory.setText(application.get("factory_name", ""))
         self._operator.setText(application.get("operator_name", ""))
         self._serial_prefix.setText(application.get("serial_prefix", ""))
-        theme = AppTheme.from_value(application.get("theme"))
-        self._theme.setCurrentIndex(self._theme.findData(theme.value))
 
         # The rota must be in the form before the dropdown is filled from it.
         schedule = self._shifts.schedule()
@@ -597,11 +540,6 @@ class SettingsPage(QWidget):
                 "operator_name": self._operator.text().strip(),
                 "shift": self._shift.currentText(),
                 "serial_prefix": self._serial_prefix.text(),
-                # Persisted whether or not the picker is on screen: an admin
-                # saving Settings must not silently reset a developer's
-                # choice, and _load() has already put the stored value in the
-                # (hidden) combo box for exactly that reason.
-                "theme": str(self._theme.currentData()),
             }
         )
         cfg["shifts"] = schedule.to_config()
@@ -661,12 +599,7 @@ class SettingsPage(QWidget):
 
     def _apply_protection(self) -> None:
         allowed = self._auth.is_admin or not self._protection_enabled()
-        for box in (
-            self._general_box,
-            self._shift_box,
-            self._appearance_box,
-            self._storage_box,
-        ):
+        for box in (self._general_box, self._shift_box, self._storage_box):
             box.setEnabled(allowed)
         self._save_btn.setEnabled(allowed)
         user = self._auth.current_user

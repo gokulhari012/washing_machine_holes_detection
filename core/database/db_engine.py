@@ -116,6 +116,13 @@ class DatabaseEngine:
         # Per-camera frame rotation, added with the Camera page's Rotation
         # setting (a camera mounted on its side).
         ("camera_configurations", "rotation", "INTEGER"),
+        # Which LED Controller channel (1-4) drives this camera's light,
+        # added when camera brightness was rewired from a PLC register to
+        # the RS232 LED Controller (see core.led / services.led_service).
+        ("camera_configurations", "led_channel", "INTEGER"),
+        # Strobe mode: light on only for the duration of a capture, off the
+        # rest of the time (see CameraSettings.led_strobe).
+        ("camera_configurations", "led_strobe", "BOOLEAN"),
     )
 
     def _add_missing_columns(self) -> None:

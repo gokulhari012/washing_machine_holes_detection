@@ -43,28 +43,20 @@ from core.utilities.exceptions import VisionSystemError
 from services.database_service import DatabaseService
 from services.export_service import ExportService
 from services.shift_service import ShiftService
-from ui import theme
+from ui.theme import COLOR_DIM, COLOR_GOOD, COLOR_NG, COLOR_WARN
 
 logger = get_logger(LogSource.UI)
 
 PAGE_SIZE = 50
 EXPORT_CAP = 5000
 
-# Verdict -> palette token, resolved per repaint rather than captured at
-# import: the hex behind each token changes with the theme, and a table built
-# before a switch would otherwise keep the old scheme's colours.
-_RESULT_TOKENS = {
-    "GOOD": "good",
-    "NG": "ng",
-    "ERROR": "warn",
+_RESULT_COLORS = {
+    "GOOD": COLOR_GOOD,
+    "NG": COLOR_NG,
+    "ERROR": COLOR_WARN,
     # SKIPPED is not a verdict — dimmed so it reads as "no judgement"
-    "SKIPPED": "text-dim",
+    "SKIPPED": COLOR_DIM,
 }
-
-
-def _result_color(value: str) -> QColor:
-    """Colour for a result cell in the theme currently painted."""
-    return theme.qcolor(_RESULT_TOKENS.get(value, "text-dim"))
 
 COLUMNS = [
     "ID", "Date", "Time", "Machine", "Serial",
@@ -168,7 +160,6 @@ class DatabasePage(QWidget):
         root.addLayout(bottom)
 
         self._on_quick_changed(self._quick.currentText())
-        theme.subscribe(self._restyle_rows)
         # No initial query here: showEvent fills the table before the page can
         # ever be seen, so a station that never opens this tab never pays for it.
 
@@ -280,23 +271,9 @@ class DatabasePage(QWidget):
                 item = QTableWidgetItem(value)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
                 if column == RESULT_COLUMN:
-                    item.setForeground(_result_color(value))
+                    item.setForeground(QColor(_RESULT_COLORS.get(value, COLOR_DIM)))
                 self._table.setItem(row_index, column, item)
         self._table.setSortingEnabled(True)
-
-    def _restyle_rows(self, _theme) -> None:
-        """Re-colour the verdict column after a theme change.
-
-        showEvent re-runs the query anyway, so this only matters for a page
-        left populated behind the one the theme was switched on - but the
-        alternative is a stale palette surviving until the next navigation,
-        which is exactly the kind of half-repainted UI a theme switch is
-        judged on.
-        """
-        for row in range(self._table.rowCount()):
-            item = self._table.item(row, RESULT_COLUMN)
-            if item is not None:
-                item.setForeground(_result_color(item.text()))
 
     # --------------------------------------------------------------- export
     def _export_rows(self) -> list[Inspection]:

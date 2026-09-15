@@ -21,9 +21,10 @@ def stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
 @pytest.fixture()
 def servo_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
     config = make_config()
+    # 2 apart, not 1: each axis is a 32-bit (2-register) value.
     config["registers"]["servo_home_positions"] = {
-        "1": {"x": 144, "y": 145},
-        "2": {"x": 146, "y": 147},
+        "1": {"x": 144, "y": 146},
+        "2": {"x": 148, "y": 150},
     }
     config["scaling"]["position_scale"] = 100
     rmap = RegisterMap.from_config(config)
@@ -37,17 +38,6 @@ def servo_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
 def results_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
     config = make_config()
     config["registers"]["camera_results"] = {"1": 128, "2": 129}
-    rmap = RegisterMap.from_config(config)
-    client = SimulatedPlc(register_map=rmap)
-    manager = PlcManager(client, rmap)
-    manager.connect()
-    return client, manager, rmap
-
-
-@pytest.fixture()
-def brightness_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
-    config = make_config()
-    config["registers"]["camera_brightness"] = {"1": 156, "2": 157}
     rmap = RegisterMap.from_config(config)
     client = SimulatedPlc(register_map=rmap)
     manager = PlcManager(client, rmap)
@@ -127,62 +117,91 @@ def test_write_inspection_output(stack) -> None:
     )
     # No servo-home registers in this fixture, so home is 0 and the raw value
     # is just mm x scale. Negatives clamp at 0 without a home to sit below.
-    assert client.get_register(110) == 125
-    assert client.get_register(111) == 0
-    assert client.get_register(112) == 0  # no-hole sentinel
+    # Every value here fits in 16 bits, so the high word (base+1) stays 0.
+    x1, y1 = rmap.camera_positions[1]
+    assert client.get_register(x1) == 125
+    assert client.get_register(x1 + 1) == 0  # X high word
+    assert client.get_register(y1) == 0
+    x2, _y2 = rmap.camera_positions[2]
+    assert client.get_register(x2) == 0  # no-hole sentinel
     assert client.get_register(rmap.result) == int(PlcResultCode.NG)
     assert client.get_register(rmap.vision_complete) == 1
 
 
 def test_position_is_written_relative_to_servo_home(servo_stack) -> None:
     """home 6000 + 2.0 mm x scale 100 -> 6200; the negative axis lands below home."""
-    client, manager, _rmap = servo_stack
-    client.set_register(144, 6000)  # camera 1 X home
-    client.set_register(145, 4000)  # camera 1 Y home
+    client, manager, rmap = servo_stack
+    client.set_register(144, 6000)  # camera 1 X home, low word (high word 0)
+    client.set_register(146, 4000)  # camera 1 Y home, low word (high word 0)
 
     manager.write_inspection_output(
         {1: (2.0, -3.5)}, {1: PlcResultCode.GOOD}, PlcResultCode.GOOD
     )
-    assert client.get_register(110) == 6200
-    assert client.get_register(111) == 3650
+    x1, y1 = rmap.camera_positions[1]
+    assert client.get_register(x1) == 6200
+    assert client.get_register(y1) == 3650
 
 
 def test_servo_home_is_re_read_for_every_write(servo_stack) -> None:
     """The PLC may move the axis between cycles, so home is never cached."""
-    client, manager, _rmap = servo_stack
+    client, manager, rmap = servo_stack
     client.set_register(144, 6000)
-    client.set_register(145, 6000)
+    client.set_register(146, 6000)
     manager.write_inspection_output(
         {1: (1.0, 1.0)}, {1: PlcResultCode.GOOD}, PlcResultCode.GOOD
     )
-    assert client.get_register(110) == 6100
+    x1, _y1 = rmap.camera_positions[1]
+    assert client.get_register(x1) == 6100
 
     client.set_register(144, 9000)
     manager.write_inspection_output(
         {1: (1.0, 1.0)}, {1: PlcResultCode.GOOD}, PlcResultCode.GOOD
     )
-    assert client.get_register(110) == 9100
+    assert client.get_register(x1) == 9100
 
 
 def test_no_hole_writes_the_sentinel_not_servo_home(servo_stack) -> None:
     """A camera that found nothing must not look like a hole sitting at home."""
-    client, manager, _rmap = servo_stack
+    client, manager, rmap = servo_stack
     client.set_register(144, 6000)
-    client.set_register(145, 6000)
+    client.set_register(146, 6000)
     manager.write_inspection_output({1: None}, {1: PlcResultCode.NG}, PlcResultCode.NG)
-    assert client.get_register(110) == RegisterMap.NO_HOLE_RAW
-    assert client.get_register(111) == RegisterMap.NO_HOLE_RAW
+    x1, y1 = rmap.camera_positions[1]
+    assert client.get_register(x1) == RegisterMap.NO_HOLE_RAW
+    assert client.get_register(y1) == RegisterMap.NO_HOLE_RAW
 
 
 def test_read_servo_home_is_zero_when_unconfigured(stack) -> None:
     """No servo-home block: encoding falls back to plain scaled millimetres."""
-    client, manager, _rmap = stack
+    client, manager, rmap = stack
     assert manager.read_servo_home(1) == (0, 0)
     manager.write_inspection_output(
         {1: (12.5, 3.2)}, {1: PlcResultCode.GOOD}, PlcResultCode.GOOD
     )
-    assert client.get_register(110) == 125
-    assert client.get_register(111) == 32
+    x1, y1 = rmap.camera_positions[1]
+    assert client.get_register(x1) == 125
+    assert client.get_register(y1) == 32
+
+
+def test_position_beyond_16_bits_splits_across_low_and_high_words(servo_stack) -> None:
+    """The whole point of the 32-bit conversion: a raw value beyond 65535
+    must not wrap, and must decode back correctly by combining both words."""
+    client, manager, rmap = servo_stack
+    client.set_register(144, 0)  # camera 1 X home low word
+    client.set_register(145, 1)  # camera 1 X home high word -> home = 65536
+    assert manager.read_servo_home(1) == (65536, 0)
+
+    manager.write_inspection_output(
+        {1: (10.0, 0.0)}, {1: PlcResultCode.GOOD}, PlcResultCode.GOOD
+    )
+    # home 65536 + 10.0 * 100 -> raw 66536 = (high 1, low 1000)
+    x1, _y1 = rmap.camera_positions[1]
+    assert client.get_register(x1) == 1000       # low word
+    assert client.get_register(x1 + 1) == 1       # high word
+    assert rmap.decode_position(
+        RegisterMap.join_dword(client.get_register(x1), client.get_register(x1 + 1)),
+        65536,
+    ) == pytest.approx(10.0)
 
 
 def test_write_inspection_output_writes_per_camera_results(results_stack) -> None:
@@ -229,32 +248,6 @@ def test_clear_camera_trigger_is_inert_when_unconfigured(stack) -> None:
     """No trigger register for that camera means no I/O, not an error."""
     _client, manager, _rmap = stack
     assert manager.clear_camera_trigger(1) is False
-
-
-def test_write_camera_brightness_is_inert_when_unconfigured(stack) -> None:
-    _client, manager, _rmap = stack
-    assert manager.write_camera_brightness(1, 180) is False
-
-
-def test_write_camera_brightness_writes_the_configured_register(brightness_stack) -> None:
-    client, manager, _rmap = brightness_stack
-    assert manager.write_camera_brightness(1, 180) is True
-    assert client.get_register(156) == 180
-    assert client.get_register(157) == 0  # camera 2 untouched
-
-
-def test_write_camera_brightness_clamps_to_uint8_range(brightness_stack) -> None:
-    client, manager, _rmap = brightness_stack
-    manager.write_camera_brightness(1, -10)
-    assert client.get_register(156) == 0
-    manager.write_camera_brightness(1, 999)
-    assert client.get_register(156) == 255
-
-
-def test_camera_brightness_configured(brightness_stack, stack) -> None:
-    assert brightness_stack[1].camera_brightness_configured(1) is True
-    assert brightness_stack[1].camera_brightness_configured(9) is False
-    assert stack[1].camera_brightness_configured(1) is False
 
 
 def test_read_model_select_returns_none_when_unconfigured(stack) -> None:

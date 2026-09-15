@@ -6,6 +6,7 @@ from services.camera_service import CameraService
 from services.database_service import DatabaseService
 from services.export_service import ExportService
 from services.inspection_service import InspectionService
+from services.led_service import LedService
 from services.machine_model_service import MachineModelService
 from services.plc_service import PlcService
 from services.shift_service import ShiftService
@@ -17,6 +18,7 @@ __all__ = [
     "DatabaseService",
     "ExportService",
     "InspectionService",
+    "LedService",
     "MachineModelService",
     "PlcService",
     "ShiftService",

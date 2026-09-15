@@ -6,6 +6,13 @@ light brightness/frame rate/rotation/resolution/trigger/ROI). Right: live previe
 :class:`RoiEditor` — "Draw ROI" lets the operator drag the region directly
 on the image and the spin boxes follow.
 
+The ROI spin boxes edit **centre X/Y**, not the top-left corner — so raising W
+or H grows the region evenly outward from a fixed centre instead of shifting
+it down-right. `RoiEditor` and `roi` in `camera.json`/`CameraBase` still use
+top-left `x, y, w, h` (that format is shared with calibration, detection and
+the machine-model snapshots); this page converts at its own boundary
+(`_corner_to_center`/`_center_to_corner`) so nothing downstream changes.
+
 "Frame Rate (fps)" paces every *continuous* viewing mode for this camera —
 the live preview/video workers, "Continuous Capture" below, and the
 Calibration page's Auto Calibrate board scan all size their loop from it
@@ -24,9 +31,21 @@ also makes an existing ROI and calibration meaningless once the rotation
 changes: re-draw the ROI and re-run the calibration for that camera.
 
 "Light Brightness" (0-255) is not an in-camera setting — it is the level
-pushed to that camera's PLC register (CameraService._push_brightness),
-driving an external, PLC-controlled light source, whenever settings are
-applied or saved.
+pushed to the LED Controller channel named by "LED Channel" below
+(CameraService._push_brightness), whenever settings are applied or saved.
+"LED Channel" (1-4, or "Not used") is which of the LED Controller's four
+channels drives this camera's light; a camera left at "Not used" simply
+never pushes brightness anywhere.
+
+"Strobe" (only meaningful with an LED Channel set) switches that channel to
+an on-only-during-capture model instead of sitting at Light Brightness all
+the time: "Test Camera" turns the channel on, grabs one frame, then turns it
+off; "Continuous Capture" turns it on once when started and leaves it on for
+every frame in the run — off only when the run stops, never per frame (see
+:meth:`_on_test`, :meth:`_on_continuous_toggled`). While Strobe is checked,
+Apply Live/Save deliberately do not touch the light
+(``CameraService._push_brightness``), so tweaking an unrelated setting can't
+leave it lit at rest.
 
 "Continuous Capture" repeatedly re-captures the selected camera into the
 preview so the operator can watch each change take effect instead of clicking
@@ -44,7 +63,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -97,6 +116,11 @@ class CameraPage(QWidget):
         self._svc = camera_service
         self._row_indexes: list[int] = []  # list row -> camera index
         self._loading = False
+        # Camera whose light Continuous Capture switched on for strobe mode -
+        # tracked separately from _current_index() because the list selection
+        # (and therefore _current_index()) may already have moved to a
+        # different camera by the time the run stops (see _on_select).
+        self._continuous_strobe_index: int | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
@@ -189,8 +213,22 @@ class CameraPage(QWidget):
         self._brightness = QSpinBox()
         self._brightness.setRange(0, 255)
         self._brightness.setToolTip(
-            "Light-brightness level pushed to this camera's PLC register "
-            "(not an in-camera setting) — takes effect on Apply/Save"
+            "Light-brightness level pushed to this camera's LED Controller "
+            "channel (not an in-camera setting) — takes effect on Apply/Save"
+        )
+        self._led_channel = QSpinBox()
+        self._led_channel.setRange(0, 4)
+        self._led_channel.setSpecialValueText("Not used")
+        self._led_channel.setToolTip(
+            "Which LED Controller channel (1-4) drives this camera's light. "
+            "\"Not used\" means Light Brightness is never pushed anywhere."
+        )
+        self._led_strobe = QCheckBox("Strobe (light only during capture)")
+        self._led_strobe.setToolTip(
+            "Instead of sitting at Light Brightness all the time: Test Camera "
+            "turns the channel on, grabs a frame, then off. Continuous Capture "
+            "turns it on once at the start and off once at the end, not per "
+            "frame. Apply/Save skip pushing brightness while this is checked."
         )
         self._fps = QDoubleSpinBox()
         self._fps.setRange(0.1, 120.0)
@@ -249,7 +287,9 @@ class CameraPage(QWidget):
         form.addRow("Exposure", self._exposure)
         form.addRow("Gain", self._gain)
         form.addRow("Gamma", self._gamma)
-        form.addRow("Light Brightness (PLC)", self._brightness)
+        form.addRow("Light Brightness", self._brightness)
+        form.addRow("LED Channel", self._led_channel)
+        form.addRow("", self._led_strobe)
         form.addRow("Frame Rate", self._fps)
         form.addRow("Rotation", self._rotation)
         form.addRow("Width", self._width)
@@ -262,23 +302,33 @@ class CameraPage(QWidget):
         form.addRow("", detect_res_btn)
         form.addRow("Trigger Mode", self._trigger)
 
-        # ROI block -- 2x2 table: X/Y on the first row, W/H on the second
+        # ROI block -- 2x2 table: centre X/Y on the first row, W/H on the
+        # second. X/Y name the ROI's centre point, not its top-left corner,
+        # so dialling W/H up or down grows/shrinks the box evenly around a
+        # fixed centre (see the module docstring).
         self._roi_spins = []
         roi_grid = QGridLayout()
         roi_grid.setContentsMargins(0, 0, 0, 0)
         roi_grid.setHorizontalSpacing(6)
-        for position, caption in enumerate(("X", "Y", "W", "H")):
+        roi_grid.setVerticalSpacing(4)
+        roi_captions = ("X", "Y", "W", "H")
+        for position, caption in enumerate(roi_captions):
             spin = QSpinBox()
             spin.setRange(0, 8192)
-            spin.setToolTip(f"ROI {caption}")
+            spin.setMinimumWidth(70)
+            spin.setToolTip(f"ROI centre {caption}" if caption in ("X", "Y") else f"ROI {caption}")
             spin.valueChanged.connect(self._on_roi_spins_changed)
             self._roi_spins.append(spin)
             row, col = divmod(position, 2)
-            roi_grid.addWidget(QLabel(caption), row, col * 2)
+            label = QLabel(caption)
+            label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            roi_grid.addWidget(label, row, col * 2)
             roi_grid.addWidget(spin, row, col * 2 + 1)
+        roi_grid.setColumnStretch(1, 1)
+        roi_grid.setColumnStretch(3, 1)
         roi_widget = QWidget()
         roi_widget.setLayout(roi_grid)
-        form.addRow("ROI x/y/w/h", roi_widget)
+        form.addRow("ROI (centre x/y)", roi_widget)
 
         roi_buttons = QHBoxLayout()
         self._draw_roi = QPushButton("Draw ROI")
@@ -399,16 +449,23 @@ class CameraPage(QWidget):
             self._gain.setValue(float(cfg.get("gain_db", 0.0)))
             self._gamma.setValue(float(cfg.get("gamma", 1.0)))
             self._brightness.setValue(int(cfg.get("brightness", 0)))
+            self._led_channel.setValue(int(cfg.get("led_channel", 0)))
+            self._led_strobe.setChecked(bool(cfg.get("led_strobe", False)))
             self._fps.setValue(float(cfg.get("fps", DEFAULT_VIEW_FPS)))
             self._rotation.setCurrentText(f"{int(cfg.get('rotation', 0))}°")
             self._width.setValue(int(cfg.get("width", 1280)))
             self._height.setValue(int(cfg.get("height", 1024)))
             self._trigger.setCurrentText(cfg.get("trigger_mode", "software"))
             roi = cfg.get("roi", {})
-            values = (roi.get("x", 0), roi.get("y", 0), roi.get("width", 0), roi.get("height", 0))
-            for spin, value in zip(self._roi_spins, values):
-                spin.setValue(int(value))
-            self._preview.set_roi(*values)
+            corner = (
+                int(roi.get("x", 0)),
+                int(roi.get("y", 0)),
+                int(roi.get("width", 0)),
+                int(roi.get("height", 0)),
+            )
+            for spin, value in zip(self._roi_spins, self._corner_to_center(*corner)):
+                spin.setValue(value)
+            self._preview.set_roi(*corner)
         finally:
             self._loading = False
         self._refresh_health()
@@ -429,17 +486,19 @@ class CameraPage(QWidget):
                 "gain_db": self._gain.value(),
                 "gamma": self._gamma.value(),
                 "brightness": self._brightness.value(),
+                "led_channel": self._led_channel.value(),
+                "led_strobe": self._led_strobe.isChecked(),
                 "fps": self._fps.value(),
                 "rotation": self._current_rotation(),
                 "width": self._width.value(),
                 "height": self._height.value(),
                 "trigger_mode": self._trigger.currentText(),
-                "roi": {
-                    "x": self._roi_spins[0].value(),
-                    "y": self._roi_spins[1].value(),
-                    "width": self._roi_spins[2].value(),
-                    "height": self._roi_spins[3].value(),
-                },
+                "roi": dict(
+                    zip(
+                        ("x", "y", "width", "height"),
+                        self._center_to_corner(*(spin.value() for spin in self._roi_spins)),
+                    )
+                ),
             }
         )
         image_source = self._image_source.text().strip()
@@ -555,21 +614,38 @@ class CameraPage(QWidget):
         index = self._current_index()
         if index is None:
             return
+        strobe = self._led_strobe.isChecked()
+        if strobe:
+            self._svc.light_on(index)
         try:
             frame = self._svc.test_capture(index)
         except VisionSystemError as exc:
+            # Turn the light off before the blocking warning dialog, not after
+            # - it must not sit lit for however long the operator takes to
+            # dismiss it.
+            if strobe:
+                self._svc.light_off(index)
             QMessageBox.warning(self, "Test Camera", str(exc))
             return
+        if strobe:
+            self._svc.light_off(index)
         self._preview.set_frame(frame)
 
     def _on_continuous_toggled(self, checked: bool) -> None:
         if not checked:
             self._continuous_timer.stop()
             self._stop_blink()
+            if self._continuous_strobe_index is not None:
+                self._svc.light_off(self._continuous_strobe_index)
+                self._continuous_strobe_index = None
             return
-        if self._current_index() is None:
+        index = self._current_index()
+        if index is None:
             self._continuous_btn.setChecked(False)
             return
+        if self._led_strobe.isChecked():
+            self._svc.light_on(index)
+            self._continuous_strobe_index = index
         self._apply_continuous_interval()
         self._continuous_timer.start()
         self._start_blink()
@@ -669,20 +745,32 @@ class CameraPage(QWidget):
         self._height.setValue(height)
 
     # ------------------------------------------------------------------ ROI
+    @staticmethod
+    def _corner_to_center(x: int, y: int, w: int, h: int) -> tuple[int, int, int, int]:
+        """Top-left ``x, y, w, h`` (storage/RoiEditor format) -> centre ``x, y, w, h``."""
+        return x + w // 2, y + h // 2, w, h
+
+    @staticmethod
+    def _center_to_corner(cx: int, cy: int, w: int, h: int) -> tuple[int, int, int, int]:
+        """Centre ``x, y, w, h`` (spin box format) -> top-left ``x, y, w, h``."""
+        return cx - w // 2, cy - h // 2, w, h
+
     def _on_draw_toggled(self, checked: bool) -> None:
         self._preview.set_roi_mode(checked)
 
     def _on_roi_drawn(self, x: int, y: int, w: int, h: int) -> None:
+        # RoiEditor emits top-left corner coordinates from the drag; the spin
+        # boxes show the equivalent centre point.
         self._loading = True
         try:
-            for spin, value in zip(self._roi_spins, (x, y, w, h)):
+            for spin, value in zip(self._roi_spins, self._corner_to_center(x, y, w, h)):
                 spin.setValue(value)
         finally:
             self._loading = False
 
     def _on_roi_spins_changed(self) -> None:
         if not self._loading:
-            values = [spin.value() for spin in self._roi_spins]
+            values = self._center_to_corner(*(spin.value() for spin in self._roi_spins))
             self._preview.set_roi(*values)
 
     def _on_clear_roi(self) -> None:
