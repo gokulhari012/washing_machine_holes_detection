@@ -56,6 +56,7 @@ from services import (
     PlcService,
     ShiftService,
 )
+from services.auth_service import DEFAULT_DEVELOPER_PASSWORD, DEFAULT_DEVELOPER_USER
 from services.shift_service import POLL_INTERVAL_MS as SHIFT_POLL_INTERVAL_MS
 from workers import (
     DatabaseWorker,
@@ -163,6 +164,7 @@ class Application:
         self.backup_service = BackupService(self.db, self.database, self.config)
         self.auth_service = AuthService(self.database)
         self.auth_service.ensure_default_accounts()
+        self._auto_login_developer(app_cfg)
 
         # -------------------------------------------------------- workers
         self.inspection_worker = InspectionWorker(self.inspection)
@@ -421,6 +423,37 @@ class Application:
             self.logger.info(
                 "Machine model %r updated from saved %s settings", profile["name"], domain
             )
+
+    def _auto_login_developer(self, app_cfg: dict) -> None:
+        """Log the developer account in at startup — development convenience only.
+
+        Set ``security.auto_login_developer`` to ``true`` in
+        ``config/app_config.json`` to start with every page (including the
+        commissioning consoles) already visible, instead of pressing Log in on
+        each run. It is **deliberately inert in a frozen (PyInstaller) build**:
+        a shipped station must always start logged out, so the flag is read
+        only when running from source. It is also not exposed on the Settings
+        page for the same reason.
+
+        Best-effort: it authenticates with the *default* developer password, so
+        a station whose developer password has been changed simply stays logged
+        out with a warning rather than gaining a password bypass. Called before
+        ``MainWindow`` is built so the first frame already shows the right nav.
+        """
+        if getattr(sys, "frozen", False):
+            return
+        if not bool(app_cfg.get("security", {}).get("auto_login_developer", False)):
+            return
+        try:
+            self.auth_service.login(DEFAULT_DEVELOPER_USER, DEFAULT_DEVELOPER_PASSWORD)
+        except VisionSystemError as exc:
+            self.logger.warning("security.auto_login_developer is set but login failed: %s", exc)
+            return
+        self.logger.warning(
+            "Started logged in as %r (security.auto_login_developer) — "
+            "development convenience, ignored in frozen builds",
+            DEFAULT_DEVELOPER_USER,
+        )
 
     def _current_username(self) -> str:
         user = self.auth_service.current_user

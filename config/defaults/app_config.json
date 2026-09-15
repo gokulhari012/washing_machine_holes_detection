@@ -51,7 +51,8 @@
   },
   "security": {
     "settings_password_protected": true,
-    "session_timeout_minutes": 30
+    "session_timeout_minutes": 30,
+    "auto_login_developer": false
   },
   "ui": {
     "live_preview_fps": 0,

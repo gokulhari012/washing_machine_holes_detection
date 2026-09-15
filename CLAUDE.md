@@ -1152,6 +1152,16 @@ UserRole.covers()  ←  AuthService.has_role(role)  ←  MainWindow.add_page(min
 - There is **no account-management UI**: accounts are the two defaults, and Settings
   → Change Password only ever changes the password of whoever is logged in.
   `AuthService.create_user` exists and is admin-gated, but nothing calls it.
+- **`security.auto_login_developer` (app_config.json, default `false`) starts the
+  app already logged in as `developer`** — a development convenience so every
+  page is visible without pressing Log in on each run
+  (`Application._auto_login_developer`, called before `MainWindow` is built so the
+  first frame has the right nav). It is **ignored when `sys.frozen` is set**, so a
+  PyInstaller build always starts logged out no matter what the shipped JSON says,
+  and it is deliberately absent from the Settings page. It logs in with the
+  *default* developer password rather than bypassing the password check, so a
+  station whose developer password was changed just stays logged out with a
+  warning.
 
 
 ---
