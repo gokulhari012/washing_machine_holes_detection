@@ -21,13 +21,21 @@ over Ethernet; every cycle is stored in SQLite with an annotated PNG.
 ```bash
 python main.py                # normal start
 python main.py --selftest 8   # start hidden, run 8 s, save logs/selftest.png, exit 0
-pytest                        # 414 tests, ~7 s, all passing as of 2026-09-10
+pytest                        # 426 tests, ~7 s (as of 2026-09-15; 1 failing, see below)
 python tools/hole_debug.py path/to/images/   # detector tuner; --camera N applies that camera's ROI
 python scripts/build_exe.py   # PyInstaller onedir -> dist/WMHoleDetection/
 ```
 
 `--selftest` is the fastest end-to-end smoke check after a change — it builds the
 whole object graph, runs live cycles and exits non-zero on a startup crash.
+
+**Known failure:** `test_gantry_status.py::test_the_shipped_configs_parse_and_stay_in_lockstep`
+fails because the live `config/plc.json` has had its whole `gantry_status` block
+removed (`config/defaults/plc.json` still has 160–163). Every camera is therefore
+always inspected on this station — the documented "no register configured" path, not
+a code fault. Restore the block to `plc.json` (addresses confirmed against the PLC
+program) to make it pass; the test is checking the lockstep rule in
+[§9](#9-gotchas--traps), and it is right to complain.
 
 ---
 
@@ -62,7 +70,7 @@ Workers own **threads only** — zero business logic. Business logic lives in se
 | [core/led/](core/led/) | `protocol.py` (KDC-24V60W-4T wire format), `LedClientBase`, Serial/Simulated adapters, `LedManager` | LED Controller (per-camera light) work |
 | [core/camera/](core/camera/) | `CameraBase`, 5 drivers, `CameraManager` | camera driver work |
 | [core/vision/](core/vision/) | `HoleDetector` ABC, 4 detectors, `VisionEngine`, overlay drawing | detection algorithm work |
-| [core/calibration/](core/calibration/) | px→mm scale / homography, reference point | coordinate math |
+| [core/calibration/](core/calibration/) | px→mm scale / homography, reference point, per-camera axis signs | coordinate math |
 | [core/database/](core/database/) | SQLAlchemy engine (WAL), ORM models, repositories | schema/query work |
 | [models/](models/) | `AppState` (observable QObject) + frozen DTOs | new cross-thread signal or payload field |
 | [services/](services/) | orchestration; `InspectionService` is the pipeline, `ShiftService` the rota | business rules |
@@ -220,6 +228,20 @@ reports a negative `y_mm`. X needs no flip (right is positive either way).
 The tolerance judgement (`deviation_mm`) is computed *before* re-basing (and before
 the flip), so neither shifts the GOOD/NG verdict. See `CalibrationManager.evaluate`.
 
+**Per-camera axis signs** (`CameraCalibration.invert_x`/`invert_y`, Calibration page
+→ "Step 4 — Axis direction") flip each axis *again*, after the re-base and the Y
+flip, in the same `evaluate` call. They exist because the four gantries do not share
+a home corner — camera 1 homes top-left, 2 bottom-left, 3 top-right, 4 bottom-right —
+and each servo counts positive away from *its own* home, so "toward the part's
+centre" cannot be positive on all four while every camera reports in the image's
+right-and-up frame. Nothing optical: they flip the **reported** coordinate (PLC
+position register, dashboard, database) and, being applied after `deviation_mm`,
+never the GOOD/NG verdict. A call to `evaluate` without image dimensions
+(`_select_hole`'s ranking helper) asks for the calibration's own frame and is
+deliberately left unflipped. They ride the `calibrations` table but **not**
+`CameraCalibration.to_dict`, so a machine model never carries them — see
+[§8](#8-config-system).
+
 **Uncalibrated fallback:** identity mapping, 1 px = 1 mm, `deviation_mm=None`,
 tolerance check disabled. The system runs out of the box.
 
@@ -283,7 +305,7 @@ memory map must address the same registers the same way.
 | 132–135 | PLC→PC | **`camera_triggers`** — inspect camera N alone (0→1 edge; PC writes 0 back **at end of cycle**) |
 | 136–139 | PC→PLC | **`camera_vision_complete`** — camera N's own completion handshake |
 | 140–143 | PC→PLC | **`camera_status`** — 1 = camera N usable, 0 = disconnected/failing |
-| 159–161, 6058 | PLC→PC | **`gantry_status`** — 1 = camera N's gantry is in position and that camera is inspected; anything else skips it entirely (see below) |
+| 159–161, 6058 | PLC→PC | **`gantry_status`** — 1 = camera N's gantry is in position and that camera is inspected; anything else skips it entirely (see below). **Absent from the live `plc.json`** — the gate is currently inert |
 | 200–215 | PC→PLC | Camera 1–4 hole X/Y as a servo target (encoded as above) — **32-bit**, 2 registers per axis (see above) |
 | 220–235 | PLC→PC | **`servo_home_positions`** — servo 1–4 home X/Y, the datum for 200–215 — **32-bit**, 2 registers per axis |
 
@@ -647,6 +669,14 @@ to that camera's *configured* `led_channel` on every call (via `LedService`), so
 applying a machine model also re-lights each camera for free, with no code here
 even aware of it (see [LED Controller](#led-controller-rs232-independent-of-the-plc)).
 
+**A calibration's axis signs are the one thing a profile does not capture.**
+`CameraCalibration.to_dict` omits `invert_x`/`invert_y` and `CalibrationManager.apply_live`
+carries the live ones across a switch, for the same reason `led_channel` and `rotation`
+are outside `_TUNABLE_CAMERA_FIELDS`: which corner a gantry homes at is a fact about
+the rig, not the part. Carrying them would let a profile captured before the setting
+existed push "not inverted" onto a station that needs them — and a gantry driven the
+wrong way is a worse failure than a stale scale. See [§5](#5-the-inspection-cycle-end-to-end).
+
 Camera and calibration application are both **best-effort** (missing camera, or a
 calibration a camera rejects → warning, skipped); detection is **all-or-nothing**
 (malformed block raises — it's one atomic hot-swap of every camera's strategy at once).
@@ -795,8 +825,11 @@ since detection parameters are per-camera, each camera's Detection-page block ca
 there is no "keep all four consistent" constraint anymore.
 
 **`config/defaults/` must be updated in lockstep.** Adding a config key without adding
-it to `defaults/` means "Restore Defaults" silently drops the feature. (Defaults are
-currently in sync, including `model_select`, `camera_results` and `gantry_status`.)
+it to `defaults/` means "Restore Defaults" silently drops the feature. (`defaults/`
+currently carries every key, including `model_select`, `camera_results` and
+`gantry_status` — but the drift now runs the *other* way: the live `config/plc.json`
+has had its `gantry_status` block deleted, so all four gantry gates are inert on this
+station. See [Commands](#commands).)
 
 **Camera `brightness` is not an in-camera setting.** It used to be (a -100..+100 ISP
 offset, real only on some Basler models via `BslBrightness`, or a pure pixel-offset

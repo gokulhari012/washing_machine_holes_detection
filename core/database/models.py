@@ -185,6 +185,11 @@ class Calibration(Base):
     dist_coeffs_json: Mapped[str | None] = mapped_column(Text, default=None)  # 1x5 row-major
     ref_point_x_mm: Mapped[float] = mapped_column(Float, default=0.0)
     ref_point_y_mm: Mapped[float] = mapped_column(Float, default=0.0)
+    # Per-camera gantry axis signs: flip the reported (image-centre relative)
+    # X/Y so "toward the part's centre" reads positive on a gantry that homes
+    # at the opposite corner. See CameraCalibration's class docstring.
+    invert_x: Mapped[bool] = mapped_column(Boolean, default=False)
+    invert_y: Mapped[bool] = mapped_column(Boolean, default=False)
     rms_error: Mapped[float] = mapped_column(Float, default=0.0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     calibrated_by: Mapped[str] = mapped_column(String(64), default="")

@@ -24,6 +24,11 @@ correspondences.
 
 The *reference point* is the nominal hole position in mm; ``deviation_mm``
 against it drives the position-tolerance judgement.
+
+``invert_x``/``invert_y`` are the camera's **axis signs** — see
+:class:`CameraCalibration` and ``CalibrationManager.evaluate``. They describe
+where that camera's gantry homes, not anything optical, so they are the one
+part of a calibration a machine-model profile never carries (:meth:`to_dict`).
 """
 
 from __future__ import annotations
@@ -63,7 +68,21 @@ class LensCalibrationResult:
 
 @dataclass
 class CameraCalibration:
-    """In-memory calibration for one camera."""
+    """In-memory calibration for one camera.
+
+    ``invert_x``/``invert_y`` flip the sign of the *reported* (image-centre
+    relative) coordinate for this camera — the number that reaches the PLC
+    position registers, the dashboard and the database. They exist because the
+    four gantries do not share a home corner: camera 1 homes top-left, camera 2
+    bottom-left, camera 3 top-right, camera 4 bottom-right, and each servo
+    counts positive *away from its own home*. Moving toward the part's centre
+    must therefore read positive on all four, which it cannot while every
+    camera reports in the image's own right-and-up frame.
+
+    Applied by ``CalibrationManager.evaluate`` at the same point as the Y flip,
+    i.e. *after* ``deviation_mm`` has been computed — a sign convention never
+    shifts the GOOD/NG verdict, only which way the servo is told to travel.
+    """
 
     camera_index: int
     pixels_per_mm_x: float = 1.0
@@ -72,6 +91,8 @@ class CameraCalibration:
     camera_matrix: np.ndarray | None = None  # 3x3 intrinsics, from calibrate_lens
     dist_coeffs: np.ndarray | None = None  # paired with camera_matrix
     ref_point_mm: tuple[float, float] = (0.0, 0.0)
+    invert_x: bool = False  # gantry axis sign, not optics — see class docstring
+    invert_y: bool = False
     rms_error: float = 0.0
     calibrated_by: str = field(default="", compare=False)
 
@@ -399,6 +420,10 @@ class CameraCalibration:
             camera_matrix=camera_matrix,
             dist_coeffs=dist_coeffs,
             ref_point_mm=(row.ref_point_x_mm, row.ref_point_y_mm),
+            # Retro-fitted columns: a row written before axis signs existed
+            # reads NULL, which is "not inverted" — the behaviour it had.
+            invert_x=bool(row.invert_x),
+            invert_y=bool(row.invert_y),
             rms_error=row.rms_error,
             calibrated_by=row.calibrated_by,
         )
@@ -421,6 +446,8 @@ class CameraCalibration:
             ),
             ref_point_x_mm=self.ref_point_mm[0],
             ref_point_y_mm=self.ref_point_mm[1],
+            invert_x=self.invert_x,
+            invert_y=self.invert_y,
             rms_error=self.rms_error,
             calibrated_by=self.calibrated_by,
         )
@@ -428,7 +455,17 @@ class CameraCalibration:
     def to_dict(self) -> dict[str, Any]:
         """Plain-JSON-safe representation (nested lists, not the DB row's
         JSON-*strings*) — for embedding into a non-DB document, e.g. a
-        machine-model profile snapshot (see ``MachineModelService``)."""
+        machine-model profile snapshot (see ``MachineModelService``).
+
+        ``invert_x``/``invert_y`` are deliberately **left out**: they describe
+        which corner this camera's gantry homes at, which is a fact about the
+        rig and not about the part being made — the same reason ``led_channel``
+        and ``rotation`` are excluded from ``_TUNABLE_CAMERA_FIELDS``. Carrying
+        them here would mean a profile captured before the setting existed
+        pushed "not inverted" onto a station that needs them, and sending a
+        gantry the wrong way is a worse failure than a stale scale.
+        ``CalibrationManager.apply_live`` keeps the live signs for that reason.
+        """
         return {
             "pixels_per_mm_x": self.pixels_per_mm_x,
             "pixels_per_mm_y": self.pixels_per_mm_y,
@@ -445,6 +482,10 @@ class CameraCalibration:
     @classmethod
     def from_dict(cls, camera_index: int, data: dict[str, Any]) -> "CameraCalibration":
         """Inverse of :meth:`to_dict`.
+
+        The axis signs are absent from that representation on purpose, so the
+        object this returns always carries the defaults — see :meth:`to_dict`
+        and ``CalibrationManager.apply_live``, which restores the live ones.
 
         Raises:
             CalibrationError: a matrix field has the wrong shape.

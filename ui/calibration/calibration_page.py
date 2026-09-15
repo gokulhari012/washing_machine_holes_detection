@@ -39,8 +39,13 @@ Workflow (per camera):
 3. Optional **perspective**: enter 4 pixel↔mm point pairs and "Compute
    Homography" (RMS shown; replaces plain scaling in the hot path) — or let
    Auto Calibrate fill this in from the checkerboard instead of typing points.
-4. **Save Calibration** persists as the camera's active calibration.
-5. **Live Test** captures + detects + evaluates through the saved model.
+4. **Axis direction** — tick "Invert X"/"Invert Y" for the cameras whose
+   gantry homes at the far corner, so "toward the part's centre" is positive
+   on every servo. Nothing optical: it flips the sign of the reported X/Y
+   (PLC register, dashboard, database) and never the GOOD/NG verdict. See
+   :class:`~core.calibration.calibration_model.CameraCalibration`.
+5. **Save Calibration** persists as the camera's active calibration.
+6. **Live Test** captures + detects + evaluates through the saved model.
 """
 
 from __future__ import annotations
@@ -48,6 +53,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QFormLayout,
@@ -280,6 +286,28 @@ class CalibrationPage(QWidget):
         self._dist_coeffs: np.ndarray | None = None
         self._rms = 0.0
 
+        axis_box = QGroupBox("Step 4 — Axis direction (this camera's gantry)")
+        axis_layout = QVBoxLayout(axis_box)
+        axis_row = QHBoxLayout()
+        self._invert_x = QCheckBox("Invert X")
+        self._invert_y = QCheckBox("Invert Y")
+        axis_row.addWidget(self._invert_x)
+        axis_row.addWidget(self._invert_y)
+        axis_row.addStretch()
+        axis_layout.addLayout(axis_row)
+        axis_hint = QLabel(
+            "Each servo counts positive away from its own home corner, and the "
+            "four gantries do not share one — so a camera whose home is on the "
+            "far side of the part needs that axis flipped for \"toward the "
+            "centre\" to read positive. Flips the reported X/Y only (PLC "
+            "position register, dashboard, database); the measured hole and "
+            "the GOOD/NG tolerance judgement are unchanged."
+        )
+        axis_hint.setWordWrap(True)
+        axis_hint.setProperty("class", "dim")
+        axis_layout.addWidget(axis_hint)
+        left.addWidget(axis_box)
+
         action_row = QHBoxLayout()
         save_btn = QPushButton("Save Calibration")
         save_btn.setProperty("class", "primary")
@@ -359,12 +387,19 @@ class CalibrationPage(QWidget):
             self._homography = None
             self._camera_matrix = None
             self._dist_coeffs = None
+            # Unlike the scale boxes, a stale tick here would be actively
+            # dangerous: saved against the wrong camera it drives that gantry
+            # the wrong way, so the axis signs always reset with the selection.
+            self._invert_x.setChecked(False)
+            self._invert_y.setChecked(False)
             self._hom_status.setText("not set")
             return
         self._ppmm_x.setValue(calibration.pixels_per_mm_x)
         self._ppmm_y.setValue(calibration.pixels_per_mm_y)
         self._ref_x.setValue(calibration.ref_point_mm[0])
         self._ref_y.setValue(calibration.ref_point_mm[1])
+        self._invert_x.setChecked(calibration.invert_x)
+        self._invert_y.setChecked(calibration.invert_y)
         self._homography = calibration.homography
         self._camera_matrix = calibration.camera_matrix
         self._dist_coeffs = calibration.dist_coeffs
@@ -671,6 +706,8 @@ class CalibrationPage(QWidget):
             camera_matrix=self._camera_matrix,
             dist_coeffs=self._dist_coeffs,
             ref_point_mm=(self._ref_x.value(), self._ref_y.value()),
+            invert_x=self._invert_x.isChecked(),
+            invert_y=self._invert_y.isChecked(),
             rms_error=self._rms,
         )
 
@@ -688,7 +725,13 @@ class CalibrationPage(QWidget):
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Save Calibration", str(exc))
             return
-        self._status.setText(f"Calibration saved for camera {index}")
+        inverted = [
+            axis
+            for axis, box in (("X", self._invert_x), ("Y", self._invert_y))
+            if box.isChecked()
+        ]
+        axis_note = f" (reported {'/'.join(inverted)} inverted)" if inverted else ""
+        self._status.setText(f"Calibration saved for camera {index}{axis_note}")
 
     # --------------------------------------------------------------- events
     def hideEvent(self, event) -> None:  # noqa: N802

@@ -260,6 +260,50 @@ def test_row_round_trip() -> None:
     assert restored.ref_point_mm == original.ref_point_mm
 
 
+# ------------------------------------------------------------------ axis signs
+# invert_x/invert_y say which corner this camera's gantry homes at. They ride
+# the DB row (so a station keeps them across restarts) but deliberately *not*
+# to_dict/from_dict, which is the machine-model profile representation — see
+# CameraCalibration.to_dict.
+
+
+def test_row_round_trip_carries_the_axis_signs() -> None:
+    original = CameraCalibration(camera_index=2, invert_x=True, invert_y=False)
+    restored = CameraCalibration.from_row(original.to_row())
+    assert (restored.invert_x, restored.invert_y) == (True, False)
+
+
+def test_row_written_before_axis_signs_existed_reads_as_not_inverted() -> None:
+    """The retro-fitted columns are added as nullable (db_engine._ADDED_COLUMNS),
+    so an older row reads NULL — which must mean "not inverted", the behaviour
+    that row was recorded under."""
+    row = CameraCalibration(camera_index=2).to_row()
+    row.invert_x = None
+    row.invert_y = None
+    restored = CameraCalibration.from_row(row)
+    assert (restored.invert_x, restored.invert_y) == (False, False)
+
+
+def test_axis_signs_never_travel_in_a_machine_model_profile() -> None:
+    original = CameraCalibration(camera_index=2, invert_x=True, invert_y=True)
+    data = original.to_dict()
+    assert "invert_x" not in data and "invert_y" not in data
+    restored = CameraCalibration.from_dict(2, data)
+    assert (restored.invert_x, restored.invert_y) == (False, False)
+
+
+def test_axis_signs_do_not_touch_pixel_to_mm() -> None:
+    """The flip belongs to the centre-relative report (CalibrationManager.
+    evaluate), not to the calibration's own coordinate frame — the reference
+    point captured on the Calibration page goes through pixel_to_mm."""
+    plain = CameraCalibration(camera_index=1, pixels_per_mm_x=10.0, pixels_per_mm_y=10.0)
+    inverted = CameraCalibration(
+        camera_index=1, pixels_per_mm_x=10.0, pixels_per_mm_y=10.0,
+        invert_x=True, invert_y=True,
+    )
+    assert inverted.pixel_to_mm(400.0, 300.0) == pytest.approx(plain.pixel_to_mm(400.0, 300.0))
+
+
 def test_find_checkerboard_downscaled_search_matches_full_resolution() -> None:
     """A downscaled *search* must still yield full-resolution correspondences.
 

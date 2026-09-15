@@ -72,6 +72,94 @@ def test_evaluate_uncalibrated_camera_falls_back_to_identity_rebased_to_center()
     assert deviation is None
 
 
+# --------------------------------------------------------------- axis signs
+# The four gantries home at four different corners, so "toward the part's
+# centre" is a different sign per camera. invert_x/invert_y flip the reported
+# (centre-relative) coordinate to make it positive on all four.
+
+
+def _inverted(invert_x: bool, invert_y: bool) -> CalibrationManager:
+    return make_manager(
+        CameraCalibration(
+            camera_index=1, pixels_per_mm_x=10.0, pixels_per_mm_y=10.0,
+            invert_x=invert_x, invert_y=invert_y,
+        )
+    )
+
+
+def test_evaluate_applies_the_axis_signs_to_the_rebased_coordinate() -> None:
+    # 1000x800 image, hole 100 px right / 80 px below centre -> (+10, -8) plain
+    both = _inverted(True, True).evaluate(1, 600.0, 480.0, image_width=1000, image_height=800)
+    assert both[:2] == pytest.approx((-10.0, 8.0))
+
+    x_only = _inverted(True, False).evaluate(1, 600.0, 480.0, image_width=1000, image_height=800)
+    assert x_only[:2] == pytest.approx((-10.0, -8.0))
+
+    y_only = _inverted(False, True).evaluate(1, 600.0, 480.0, image_width=1000, image_height=800)
+    assert y_only[:2] == pytest.approx((10.0, 8.0))
+
+
+def test_evaluate_centre_hole_is_still_zero_when_inverted() -> None:
+    """-0.0 would read back fine but must not be a surprise: a hole dead centre
+    is the sentinel-adjacent case the PLC encoding cares most about."""
+    x_mm, y_mm, _ = _inverted(True, True).evaluate(
+        1, 500.0, 400.0, image_width=1000, image_height=800
+    )
+    assert (x_mm, y_mm) == pytest.approx((0.0, 0.0))
+
+
+def test_axis_signs_do_not_shift_deviation_or_the_tolerance_judgement() -> None:
+    """The verdict is judged in the calibration's own frame, before re-basing —
+    an axis sign says which way the servo travels, never whether the part
+    passed."""
+    plain = make_manager(
+        CameraCalibration(camera_index=1, pixels_per_mm_x=10.0, pixels_per_mm_y=10.0)
+    )
+    flipped = _inverted(True, True)
+    args = (1, 600.0, 480.0)
+    kwargs = {"image_width": 1000, "image_height": 800}
+    assert flipped.evaluate(*args, **kwargs)[2] == pytest.approx(
+        plain.evaluate(*args, **kwargs)[2]
+    )
+
+
+def test_evaluate_without_image_dims_ignores_the_axis_signs() -> None:
+    """That call is InspectionService._select_hole's ranking helper, which reads
+    only the deviation — it asks for the calibration's own frame, not a report."""
+    assert _inverted(True, True).evaluate(1, 500.0, 400.0)[:2] == pytest.approx((50.0, 40.0))
+
+
+def test_apply_live_keeps_the_cameras_axis_signs() -> None:
+    """A machine-model profile carries no axis signs (CameraCalibration.to_dict),
+    so a switch must not reset them — the gantry's home corner is a fact about
+    the rig that no model changes."""
+    manager = make_manager(
+        CameraCalibration(camera_index=1, pixels_per_mm_x=10.0, invert_x=True, invert_y=True)
+    )
+    manager.apply_live(CameraCalibration(camera_index=1, pixels_per_mm_x=20.0))
+    live = manager.get(1)
+    assert (live.invert_x, live.invert_y) == (True, True)
+    assert live.pixels_per_mm_x == 20.0  # ...everything else still swapped
+
+
+def test_apply_live_on_an_uncalibrated_camera_takes_the_incoming_signs() -> None:
+    manager = make_manager(None)
+    manager.apply_live(CameraCalibration(camera_index=1, invert_x=True))
+    assert manager.get(1).invert_x is True
+
+
+def test_save_persists_the_axis_signs_rather_than_inheriting_them() -> None:
+    """The Calibration page's Save is the one place the signs are *set*, so
+    unlike apply_live it must take the incoming values verbatim."""
+    manager = _saving_manager()
+    manager._calibrations[1] = CameraCalibration(
+        camera_index=1, invert_x=True, invert_y=True
+    )
+    manager.save(CameraCalibration(camera_index=1, invert_x=False, invert_y=True))
+    live = manager.get(1)
+    assert (live.invert_x, live.invert_y) == (False, True)
+
+
 def test_apply_live_updates_cache_without_touching_repository() -> None:
     """Used when a machine-model profile switches (MachineModelService):
     the new calibration must be visible immediately, but never written to

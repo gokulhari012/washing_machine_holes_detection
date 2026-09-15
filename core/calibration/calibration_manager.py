@@ -9,7 +9,8 @@ a real calibration exists.
 
 ``evaluate`` reports position relative to the analysed image's own centre
 (pass ``image_width``/``image_height``) rather than the calibration's raw
-coordinate frame — see its docstring.
+coordinate frame, with each camera's configured axis signs applied — see its
+docstring.
 
 ``save`` also fans out to plain-callable observers (:meth:`subscribe`), the
 same Qt-free notification ``ConfigManager`` uses for a settings file, so the
@@ -85,8 +86,20 @@ class CalibrationManager:
         ``MachineModelService.apply_profile``), so the manually-tuned
         Calibration-page baseline in the database is never overwritten by an
         automatic model switch.
+
+        The camera's **axis signs** survive the swap: they say which corner
+        that gantry homes at, which no machine model can change, and a profile
+        snapshot does not carry them (``CameraCalibration.to_dict``). Taking
+        *calibration*'s defaults instead would quietly un-invert an axis on
+        every model switch and drive the servo the wrong way. *calibration* is
+        updated in place, so callers that keep a reference see the same signs
+        the cache does — ``apply_profile`` builds a fresh object per switch.
         """
         with self._lock:
+            previous = self._calibrations.get(calibration.camera_index)
+            if previous is not None:
+                calibration.invert_x = previous.invert_x
+                calibration.invert_y = previous.invert_y
             self._calibrations[calibration.camera_index] = calibration
         logger.info(
             "Calibration applied live for camera %d (not persisted)", calibration.camera_index
@@ -178,10 +191,21 @@ class CalibrationManager:
         positive, so a hole below the image centre reports a *negative* y_mm.
         X is untouched (rightward is positive in both conventions).
 
+        On top of that, the camera's own ``invert_x``/``invert_y`` flags flip
+        each axis again, so a station whose four gantries home at four
+        different corners can make "toward the part's centre" read positive on
+        all of them (Calibration page → Axis direction; see
+        :class:`~core.calibration.calibration_model.CameraCalibration`). Both
+        flips belong to the *centre-relative report*, which is why they are
+        applied here and not in ``pixel_to_mm``: a call without image
+        dimensions asks for the calibration's own frame — it is the internal
+        hole-ranking helper (``InspectionService._select_hole``), not something
+        anyone reads a sign off — and is left alone.
+
         The tolerance judgement (``deviation_mm``) is computed *before* that
         re-basing, against the reference point in the calibration's own
-        (uncentred, image-oriented) frame, so re-basing never shifts the
-        GOOD/NG verdict.
+        (uncentred, image-oriented) frame, so neither re-basing nor an axis
+        sign ever shifts the GOOD/NG verdict.
 
         Returns:
             ``(x_mm, y_mm, deviation_mm)`` — ``deviation_mm`` is ``None`` when
@@ -201,4 +225,8 @@ class CalibrationManager:
             center_x_mm, center_y_mm = calibration.pixel_to_mm(image_width / 2, image_height / 2)
             x_mm -= center_x_mm
             y_mm = center_y_mm - y_mm
+            if calibration.invert_x:
+                x_mm = -x_mm
+            if calibration.invert_y:
+                y_mm = -y_mm
         return x_mm, y_mm, deviation
