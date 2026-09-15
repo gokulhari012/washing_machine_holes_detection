@@ -17,12 +17,12 @@
     ]
   },
   "registers": {
-    "trigger": 6040,
+    "trigger": 6080,
     "machine_number": 101,
     "heartbeat": 102,
     "model_select": 103,
-    "result": 118,
-    "vision_complete": 6042,
+    "result": 6092,
+    "vision_complete": 6090,
     "camera_positions": {
       "1": {
         "x": 6012,
@@ -62,18 +62,18 @@
     "camera_results": {
       "1": 6000,
       "2": 6020,
-      "3": 6040,
+      "3": 6540,
       "4": 6060
     },
     "camera_triggers": {
-      "1": 6520,
-      "2": 6500,
-      "3": 6540,
-      "4": 6560
+      "1": 7000,
+      "2": 7000,
+      "3": 7000,
+      "4": 7000
     },
     "camera_vision_complete": {
       "1": 6002,
-      "2": 6022,
+      "2": 6021,
       "3": 6042,
       "4": 6062
     },
@@ -89,7 +89,13 @@
       "3": 6056,
       "4": 158
     },
-    "serial_number": 12
+    "serial_number": 12,
+    "gantry_status": {
+      "1": 6082,
+      "2": 6084,
+      "3": 6086,
+      "4": 6088
+    }
   },
   "scaling": {
     "position_scale": 100

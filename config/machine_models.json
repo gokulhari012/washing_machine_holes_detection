@@ -256,7 +256,7 @@
       },
       "created_by": "admin",
       "created_at": "2026-08-25T10:06:50",
-      "updated_at": "2026-09-15T16:10:52",
+      "updated_at": "2026-09-15T18:07:11",
       "updated_by": "developer",
       "calibration": {
         "1": {
@@ -310,6 +310,27 @@
           ],
           "rms_error": 0.0,
           "calibrated_by": ""
+        }
+      },
+      "screw_driver_compensation": {
+        "enabled": true,
+        "positions": {
+          "1": {
+            "x_mm": -20.0,
+            "y_mm": 200.0
+          },
+          "2": {
+            "x_mm": 0.0,
+            "y_mm": 0.0
+          },
+          "3": {
+            "x_mm": 0.0,
+            "y_mm": 0.0
+          },
+          "4": {
+            "x_mm": 0.0,
+            "y_mm": 0.0
+          }
         }
       }
     },

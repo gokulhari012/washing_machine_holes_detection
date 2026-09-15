@@ -4,7 +4,15 @@ Left: connection settings + the position-scale scalar (not a register — it
 has no PLC address of its own), with Test/Save/Reconnect. Right: one
 table listing every named PLC register this application knows about — its
 configured address (an embedded, editable spin box) and its current live
-value (auto-refreshed while the page is visible). Saving connection or
+value (auto-refreshed while the page is visible), plus a per-row write
+shortcut — a "Set Value" spin box with a **Set** button, and a **0** button
+that zeroes the register outright. Both are the same live, admin-gated write
+as Manual Write below the table (a coil row writes the coil address space
+instead), just without retyping the address; both refresh the Live Value
+column straight after, and both refuse a row whose address reads "Not used".
+Like the Live Value column, they address the *single* configured address, so
+on a 32-bit positional register they touch only the low word — use Manual
+Write for base+1. Saving connection or
 register-address changes takes effect immediately, without an application
 restart: ``Application._on_plc_config_saved`` (main.py) stops the poll
 worker, rebuilds ``PlcManager`` in place via ``PlcManager.rebuild`` — every
@@ -412,9 +420,17 @@ class PlcPage(QWidget):
         controls.addStretch()
         table_layout.addLayout(controls)
 
-        self._table = QTableWidget(len(self._fields), 4)
+        self._table = QTableWidget(len(self._fields), 7)
         self._table.setHorizontalHeaderLabels(
-            ["Register Name", "Type", "Register Number", "Live Value"]
+            [
+                "Register Name",
+                "Type",
+                "Register Number",
+                "Live Value",
+                "Set Value",
+                "",
+                "",
+            ]
         )
         self._table.verticalHeader().setVisible(False)
         # Zebra striping: 40-odd rows of near-identical numbers are easy to
@@ -429,11 +445,18 @@ class PlcPage(QWidget):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
         header.resizeSection(1, 80)
         header.resizeSection(2, 130)
         header.resizeSection(3, 100)
+        header.resizeSection(4, 120)
+        header.resizeSection(5, 60)
+        header.resizeSection(6, 60)
 
         self._row_spins: list[QSpinBox] = []
+        self._row_value_spins: list[QSpinBox] = []
         for row, field in enumerate(self._fields):
             name_item = QTableWidgetItem(field.name)
             name_item.setToolTip(field.tooltip)
@@ -451,6 +474,35 @@ class PlcPage(QWidget):
             value_item = QTableWidgetItem("—")
             value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(row, 3, value_item)
+
+            value_spin = _reg_spin()
+            value_spin.setMinimumWidth(100)
+            value_spin.setToolTip(
+                f"Value to write into {field.name}'s register when Set is pressed."
+            )
+            self._table.setCellWidget(row, 4, value_spin)
+            self._row_value_spins.append(value_spin)
+
+            set_btn = QPushButton("Set")
+            set_btn.setProperty("class", "danger")
+            set_btn.setToolTip(
+                f"Write the Set Value into {field.name}'s register now "
+                "(admin login required)."
+            )
+            set_btn.clicked.connect(
+                lambda _checked=False, row=row: self._on_row_set(row)
+            )
+            self._table.setCellWidget(row, 5, set_btn)
+
+            zero_btn = QPushButton("0")
+            zero_btn.setProperty("class", "danger")
+            zero_btn.setToolTip(
+                f"Write 0 into {field.name}'s register now (admin login required)."
+            )
+            zero_btn.clicked.connect(
+                lambda _checked=False, row=row: self._on_row_write(row, 0)
+            )
+            self._table.setCellWidget(row, 6, zero_btn)
         table_layout.addWidget(self._table, stretch=1)
         right.addWidget(table_box, stretch=1)
         body.addLayout(right, stretch=1)
@@ -551,6 +603,47 @@ class PlcPage(QWidget):
             self._svc.write_register(self._write_addr.value(), self._write_value.value())
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Manual Write", str(exc))
+
+    # ------------------------------------------------------ per-row writes
+    def _on_row_set(self, row: int) -> None:
+        self._on_row_write(row, self._row_value_spins[row].value())
+
+    def _on_row_write(self, row: int, value: int) -> None:
+        """Write *value* straight into the register the row's address spin box
+        names. Same danger and the same admin gate as Manual Write below the
+        table — this is only a shortcut that saves retyping the address.
+
+        Two limits worth knowing, both shared with the Live Value column:
+        a 32-bit positional register's row names only its *low* word, so this
+        writes the low 16 bits and leaves base+1 alone (use Manual Write for
+        the high word); and a row whose address is the "Not used" sentinel has
+        no register to write at all, so it is refused rather than writing to
+        address 0."""
+        field = self._fields[row]
+        if not self._auth.is_admin:
+            QMessageBox.warning(
+                self,
+                "Write Register",
+                "Administrator or developer login required (toolbar Login button).",
+            )
+            return
+        address = self._row_spins[row].value()
+        if field.optional and address == 0:
+            QMessageBox.warning(
+                self,
+                "Write Register",
+                f"{field.name} is set to \"Not used\" — there is no register to write.",
+            )
+            return
+        try:
+            if field.kind == "coil":
+                self._svc.write_coil(address, bool(value))
+            else:
+                self._svc.write_register(address, value)
+        except VisionSystemError as exc:
+            QMessageBox.warning(self, "Write Register", str(exc))
+            return
+        self._refresh_viewer()
 
     def _on_manual_coil_write(self, value: bool) -> None:
         if not self._auth.is_admin:
