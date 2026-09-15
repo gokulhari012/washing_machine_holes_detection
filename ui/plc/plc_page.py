@@ -207,11 +207,11 @@ def _build_fields() -> list[_RegisterField]:
                 "PC → PLC: this camera's own GOOD/NG/ERROR verdict",
             ),
             _camera_pair_field(
-                "servo_home_positions", camera, "x", f"Camera {camera} Servo Home X",
+                "servo_home_positions", camera, "x", f"Camera {camera} Camera Home X",
                 "PLC → PC: this axis's servo home — the datum camera positions are measured from",
             ),
             _camera_pair_field(
-                "servo_home_positions", camera, "y", f"Camera {camera} Servo Home Y",
+                "servo_home_positions", camera, "y", f"Camera {camera} Camera Home Y",
                 "PLC → PC: this axis's servo home — the datum camera positions are measured from",
             ),
             _camera_scalar_field(
