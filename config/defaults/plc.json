@@ -92,6 +92,7 @@
     }
   },
   "scaling": {
-    "position_scale": 10
+    "position_scale_x": 10,
+    "position_scale_y": 10
   }
 }

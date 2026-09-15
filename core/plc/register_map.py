@@ -16,14 +16,23 @@ target per axis, in the servo's own units, with no sign handling and no
 arithmetic to undo — and because home is read live rather than baked into a
 config offset, moving the axis needs no change on the PC side.
 
+**The scale is per axis**: ``scaling.position_scale_x`` and
+``scaling.position_scale_y`` in ``plc.json`` are independent, because the two
+servos on a gantry need not count in the same units (one may be geared
+differently, or run in 0.01 mm steps while the other runs in 0.1 mm). Every
+encode/decode therefore names the axis it is working on — see
+:meth:`RegisterMap.encode_position`. A file carrying only the older single
+``position_scale`` key is read as "both axes at that scale", so an existing
+plc.json keeps encoding exactly as it did.
+
 Raw ``0`` remains the **no-hole sentinel** (see :attr:`RegisterMap.NO_HOLE_RAW`).
 An axis whose home position sits at or very near 0 would make that sentinel
 ambiguous with a real measurement; every servo home in this station is far
 from zero, which is what makes the sentinel safe.
 
 A camera with no servo-home registers configured falls back to a home of 0,
-i.e. plain ``mm * position_scale``, and can then only express positions on the
-positive side of centre.
+i.e. plain ``mm * that axis's position scale``, and can then only express
+positions on the positive side of centre.
 
 32-bit (double-word) registers
 -------------------------------
@@ -63,10 +72,31 @@ always inspected, so an existing plc.json keeps behaving as before.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from core.utilities.exceptions import ConfigurationError
 
 UINT32_MAX = 0xFFFFFFFF
+
+#: Which of a camera's two position axes a scale or an encode/decode applies
+#: to. The axes are scaled independently, so nothing here takes "the" scale.
+Axis = Literal["x", "y"]
+
+#: Scale used when neither the per-axis key nor the legacy shared one is
+#: configured (one decimal place of a millimetre).
+DEFAULT_POSITION_SCALE = 10
+
+
+def axis_scale(scaling: dict, axis: Axis) -> int:
+    """Read one axis's position scale out of the ``scaling`` config block.
+
+    ``position_scale_x``/``position_scale_y`` are the current keys. A file
+    written before the axes were split carries a single ``position_scale``
+    instead, which stands in for both — so an older plc.json (and the
+    "Restore Defaults" copy of one) keeps encoding exactly as it did.
+    """
+    shared = scaling.get("position_scale", DEFAULT_POSITION_SCALE)
+    return int(scaling.get(f"position_scale_{axis}", shared))
 
 
 @dataclass(frozen=True)
@@ -129,7 +159,12 @@ class RegisterMap:
     # always inspected, which is exactly what every station did before this
     # register existed.
     gantry_status: dict[int, int] = field(default_factory=dict)
-    position_scale: int = 10
+    # Millimetres-to-register-units scale, independent per axis: the two
+    # servos behind a camera's X and Y need not count in the same units.
+    # ``from_config`` fills both from the legacy single ``position_scale``
+    # key when the per-axis keys are absent.
+    position_scale_x: int = 10
+    position_scale_y: int = 10
     # Machine-model select register: which part/model is mounted, written by
     # the PLC. Optional — None means the feature is inert (no address wired
     # up yet), never a config error, so existing plc.json files keep working.
@@ -196,7 +231,8 @@ class RegisterMap:
                 camera_vision_complete=camera_vision_complete,
                 camera_status=camera_status,
                 gantry_status=gantry_status,
-                position_scale=int(scaling.get("position_scale", 10)),
+                position_scale_x=axis_scale(scaling, "x"),
+                position_scale_y=axis_scale(scaling, "y"),
                 model_select=int(model_select) if model_select is not None else None,
                 serial_number=int(serial_number) if serial_number is not None else None,
             )
@@ -204,7 +240,19 @@ class RegisterMap:
             raise ConfigurationError(f"Invalid PLC register configuration: {exc}") from exc
 
     # ----------------------------------------------------------------- codec
-    def encode_position(self, mm: float, servo_home: int = 0) -> int:
+    def scale_for(self, axis: Axis) -> int:
+        """The millimetre scale for *axis* (``"x"`` or ``"y"``).
+
+        Raises:
+            ValueError: *axis* is neither ``"x"`` nor ``"y"``.
+        """
+        if axis == "x":
+            return self.position_scale_x
+        if axis == "y":
+            return self.position_scale_y
+        raise ValueError(f"Unknown axis {axis!r}: expected 'x' or 'y'")
+
+    def encode_position(self, mm: float, servo_home: int = 0, *, axis: Axis) -> int:
         """Millimetres from image centre → raw 32-bit register value.
 
         *servo_home* is the value just read from that axis's servo home
@@ -214,17 +262,22 @@ class RegisterMap:
         returned here is the *combined* 32-bit number — see
         :meth:`split_dword` for how it becomes the two register words
         actually written to the PLC.
+
+        *axis* selects which of the two configured scales applies and is
+        keyword-only and **required**: the axes may be scaled differently, so
+        a call that forgot to say which one it meant would silently encode a
+        Y measurement in X units.
         """
-        raw = servo_home + round(mm * self.position_scale)
+        raw = servo_home + round(mm * self.scale_for(axis))
         return max(0, min(UINT32_MAX, raw))
 
-    def decode_position(self, raw: int, servo_home: int = 0) -> float:
+    def decode_position(self, raw: int, servo_home: int = 0, *, axis: Axis) -> float:
         """Raw (combined 32-bit) register value → millimetres from image centre.
 
         The inverse of :meth:`encode_position`, and it needs the same
-        *servo_home* the value was written against.
+        *servo_home* and *axis* the value was written against.
         """
-        return (raw - servo_home) / self.position_scale
+        return (raw - servo_home) / self.scale_for(axis)
 
     @staticmethod
     def split_dword(raw: int) -> tuple[int, int]:

@@ -9,7 +9,7 @@ and reconnect requests.
 from __future__ import annotations
 
 from core.logging import get_logger
-from core.plc import PlcManager, RegisterMap, create_plc_client
+from core.plc import PlcManager, RegisterMap, axis_scale, create_plc_client
 from core.utilities import ConfigManager
 from core.utilities.enums import ConnectionState, LogSource
 from core.utilities.exceptions import ConfigurationError, PlcError
@@ -135,7 +135,8 @@ class PlcService:
             "heartbeat_register": int(registers.get("heartbeat", 0)),
             "result_register": int(registers.get("result", 0)),
             "vision_complete_register": int(registers.get("vision_complete", 0)),
-            "position_scale": int(scaling.get("position_scale", 10)),
+            "position_scale_x": axis_scale(scaling, "x"),
+            "position_scale_y": axis_scale(scaling, "y"),
         }
         for index in (1, 2, 3, 4):
             addresses = camera_positions.get(str(index), {})

@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.plc import axis_scale
 from core.utilities.exceptions import VisionSystemError
 from models.app_state import AppState
 from services.auth_service import AuthService
@@ -374,12 +375,17 @@ class PlcPage(QWidget):
 
         scale_box = QGroupBox("Scaling")
         scale_form = QFormLayout(scale_box)
-        self._scale = _reg_spin(10)
-        self._scale.setToolTip(
-            "Millimetres are multiplied by this before being added to the "
-            "servo home position (10 = one decimal place)"
-        )
-        scale_form.addRow("Position Scale", self._scale)
+        self._scale_x = _reg_spin(10)
+        self._scale_y = _reg_spin(10)
+        for spin, axis in ((self._scale_x, "X"), (self._scale_y, "Y")):
+            spin.setToolTip(
+                f"{axis} millimetres are multiplied by this before being added "
+                f"to the {axis} servo home position (10 = one decimal place). "
+                "The two axes are independent — set each to the units its own "
+                "servo counts in."
+            )
+        scale_form.addRow("Position Scale X", self._scale_x)
+        scale_form.addRow("Position Scale Y", self._scale_y)
         left.addWidget(scale_box)
 
         buttons = QHBoxLayout()
@@ -528,7 +534,8 @@ class PlcPage(QWidget):
         self._unit.setValue(int(connection.get("unit_id", 1)))
         self._timeout.setValue(int(connection.get("timeout_ms", 1000)))
         self._poll.setValue(int(connection.get("poll_interval_ms", 50)))
-        self._scale.setValue(int(scaling.get("position_scale", 10)))
+        self._scale_x.setValue(axis_scale(scaling, "x"))
+        self._scale_y.setValue(axis_scale(scaling, "y"))
         for field, spin in zip(self._fields, self._row_spins):
             spin.setValue(int(field.get(cfg) or 0))
         self._on_protocol_changed(self._protocol.currentText())
@@ -556,7 +563,13 @@ class PlcPage(QWidget):
                     field.clear(cfg)
                 continue
             field.set(cfg, value)
-        cfg["scaling"] = {"position_scale": self._scale.value()}
+        # Written without the legacy shared ``position_scale`` key: the two
+        # per-axis keys fully replace it, and leaving a stale one behind
+        # would be a value nothing reads.
+        cfg["scaling"] = {
+            "position_scale_x": self._scale_x.value(),
+            "position_scale_y": self._scale_y.value(),
+        }
         return cfg
 
     # -------------------------------------------------------------- actions

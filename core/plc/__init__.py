@@ -2,7 +2,7 @@
 
 from core.plc.plc_client_base import PlcClientBase
 from core.plc.plc_manager import PlcManager, PositionMap
-from core.plc.register_map import RegisterMap
+from core.plc.register_map import RegisterMap, axis_scale
 from core.plc.simulated_plc import SimulatedPlc
 
 __all__ = [
@@ -11,6 +11,7 @@ __all__ = [
     "PositionMap",
     "RegisterMap",
     "SimulatedPlc",
+    "axis_scale",
     "create_plc_client",
 ]
 

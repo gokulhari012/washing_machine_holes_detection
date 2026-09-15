@@ -264,12 +264,26 @@ e.g. home 6000, hole 2.0 mm right of centre, scale 100 → 6200; 2.0 mm the othe
 sign handling and nothing to undo. There is **no `position_offset`** — it was
 replaced by this live per-axis datum, so moving an axis needs no PC-side change.
 
+**The scale is per axis.** `scaling.position_scale_x` and
+`scaling.position_scale_y` in `plc.json` are independent (PLC page → Scaling →
+"Position Scale X" / "Position Scale Y"), because a gantry's two servos need not
+count in the same units. Every encode/decode names the axis it means —
+`RegisterMap.encode_position(mm, home, axis="x")`, keyword-only and **required**,
+so a call that forgot would not silently scale a Y measurement in X units;
+`RegisterMap.scale_for(axis)` is the accessor. A file carrying only the older
+single `position_scale` key is read as "both axes at that scale"
+(`core.plc.axis_scale`), so an older `plc.json` — or one restored from a build
+that predates the split — keeps encoding exactly as it did; the PLC page writes
+only the two new keys on Save. The audit mirror's `plc_configurations` column
+split the same way (`position_scale_x`/`position_scale_y`, with the old column
+dropped by `DatabaseEngine._LEGACY_COLUMNS`).
+
 **Raw `0` is the no-hole sentinel** (`RegisterMap.NO_HOLE_RAW`), written to both
 position registers with no servo read at all. That stays unambiguous only because
 every servo home sits far from 0; an axis homed at ~0 would break it.
 
 A camera with no `servo_home_positions` entry encodes against a home of `0`
-(plain `mm × position_scale`) and can then only express the positive side of
+(plain `mm × that axis's scale`) and can then only express the positive side of
 centre — `PlcManager.read_servo_home` returns `(0, 0)` rather than failing.
 
 **Every positional register is 32-bit, not 16-bit** — both `camera_positions`

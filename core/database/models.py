@@ -151,7 +151,8 @@ class PlcConfiguration(Base):
     cam4_y_register: Mapped[int] = mapped_column(Integer, default=117)
     result_register: Mapped[int] = mapped_column(Integer, default=118)
     vision_complete_register: Mapped[int] = mapped_column(Integer, default=119)
-    position_scale: Mapped[int] = mapped_column(Integer, default=10)
+    position_scale_x: Mapped[int] = mapped_column(Integer, default=10)
+    position_scale_y: Mapped[int] = mapped_column(Integer, default=10)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_local, onupdate=now_local)
 
 

@@ -93,7 +93,9 @@ pytest
    144–151 immediately before each write and sends
    `home + mm × position_scale`: with home `6000`, a hole `2.0` mm off centre
    and scale `100`, register 110 gets `6200`; `−2.0` mm gets `5800`. A camera
-   that found no hole writes `0` instead.
+   that found no hole writes `0` instead. X and Y have their own scales
+   (**Position Scale X** / **Position Scale Y** in the PLC page's Scaling group),
+   since the two servos on a gantry need not count in the same units.
 
    The PC toggles the heartbeat so the PLC can watchdog it; on any vision
    fault the PC writes result 3 (ERROR) so the PLC never dead-waits.

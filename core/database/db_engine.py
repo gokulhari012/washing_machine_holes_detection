@@ -86,6 +86,9 @@ class DatabaseEngine:
         # Positions used to be biased by a fixed offset; the sign now travels
         # in its own register instead (see core/plc/register_map.py).
         ("plc_configurations", "position_offset"),
+        # One shared millimetre scale became one per axis
+        # (position_scale_x/position_scale_y, added below).
+        ("plc_configurations", "position_scale"),
     )
 
     def _drop_legacy_columns(self) -> None:
@@ -128,6 +131,11 @@ class DatabaseEngine:
         # Strobe mode: light on only for the duration of a capture, off the
         # rest of the time (see CameraSettings.led_strobe).
         ("camera_configurations", "led_strobe", "BOOLEAN"),
+        # Per-axis millimetre scale, replacing the single position_scale
+        # dropped above: a camera's two servos need not count in the same
+        # units (see core.plc.register_map).
+        ("plc_configurations", "position_scale_x", "INTEGER"),
+        ("plc_configurations", "position_scale_y", "INTEGER"),
     )
 
     def _add_missing_columns(self) -> None:

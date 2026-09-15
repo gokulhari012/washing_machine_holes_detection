@@ -98,7 +98,8 @@
     }
   },
   "scaling": {
-    "position_scale": 100
+    "position_scale_x": 100,
+    "position_scale_y": 100
   },
   "camera_jog": {
     "step": 10,

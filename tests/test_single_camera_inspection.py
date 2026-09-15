@@ -73,10 +73,10 @@ def test_camera_write_touches_only_that_camera(camera_stack) -> None:
     x_addr, y_addr = rmap.camera_positions[1]
     x_home, y_home = manager.read_servo_home(1)
     assert rmap.decode_position(
-        client.read_registers(x_addr, 1)[0], x_home
+        client.read_registers(x_addr, 1)[0], x_home, axis="x"
     ) == pytest.approx(12.3)
     assert rmap.decode_position(
-        client.read_registers(y_addr, 1)[0], y_home
+        client.read_registers(y_addr, 1)[0], y_home, axis="y"
     ) == pytest.approx(-4.5)
     assert client.read_registers(128, 1)[0] == int(PlcResultCode.GOOD)
     assert client.read_registers(136, 1)[0] == 1  # this camera's completion flag

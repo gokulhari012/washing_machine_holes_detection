@@ -340,7 +340,7 @@ class PlcManager:
         The PLC owns these values; a hole position is written relative to
         them (see :mod:`core.plc.register_map`). Returns ``(0, 0)`` when the
         camera has no servo-home registers configured, which makes the
-        encoding fall back to plain ``mm * position_scale``.
+        encoding fall back to plain ``mm * that axis's position scale``.
 
         Each axis is a 32-bit value spanning two registers (low word at the
         configured base address, high word at base+1 — see
@@ -397,7 +397,8 @@ class PlcManager:
         """Write one camera's X/Y, biased by its servo home position.
 
         Reads the servo home registers first, so the value the PLC receives is
-        an absolute servo target: ``home + mm * position_scale``. ``position``
+        an absolute servo target: ``home + mm * position_scale``, each axis
+        scaled by its own ``position_scale_x``/``position_scale_y``. ``position``
         of ``None`` is the no-hole case and writes
         :attr:`RegisterMap.NO_HOLE_RAW` to both registers instead — no servo
         read is needed, and none is done. Cameras with no position addresses
@@ -418,8 +419,8 @@ class PlcManager:
             x_raw = y_raw = RegisterMap.NO_HOLE_RAW
         else:
             x_home, y_home = self.read_servo_home(camera_index)
-            x_raw = self._map.encode_position(position[0], x_home)
-            y_raw = self._map.encode_position(position[1], y_home)
+            x_raw = self._map.encode_position(position[0], x_home, axis="x")
+            y_raw = self._map.encode_position(position[1], y_home, axis="y")
 
         x_low, x_high = self._map.split_dword(x_raw)
         y_low, y_high = self._map.split_dword(y_raw)

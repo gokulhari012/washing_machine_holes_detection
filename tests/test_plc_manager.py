@@ -26,7 +26,8 @@ def servo_stack() -> tuple[SimulatedPlc, PlcManager, RegisterMap]:
         "1": {"x": 144, "y": 146},
         "2": {"x": 148, "y": 150},
     }
-    config["scaling"]["position_scale"] = 100
+    config["scaling"]["position_scale_x"] = 100
+    config["scaling"]["position_scale_y"] = 100
     rmap = RegisterMap.from_config(config)
     client = SimulatedPlc(register_map=rmap)
     manager = PlcManager(client, rmap)
@@ -201,6 +202,7 @@ def test_position_beyond_16_bits_splits_across_low_and_high_words(servo_stack) -
     assert rmap.decode_position(
         RegisterMap.join_dword(client.get_register(x1), client.get_register(x1 + 1)),
         65536,
+        axis="x",
     ) == pytest.approx(10.0)
 
 
@@ -358,3 +360,21 @@ def test_pause_notifies_subscribers(stack) -> None:
     manager.resume()
 
     assert seen == [True, False]
+
+
+def test_write_position_scales_each_axis_by_its_own_key() -> None:
+    """End to end: an X/Y pair written with different per-axis scales must
+    reach the registers scaled independently, not both by the X scale."""
+    config = make_config()
+    config["scaling"] = {"position_scale_x": 100, "position_scale_y": 10}
+    rmap = RegisterMap.from_config(config)
+    client = SimulatedPlc(register_map=rmap)
+    manager = PlcManager(client, rmap)
+    manager.connect()
+
+    manager.write_inspection_output(
+        {1: (12.5, 12.5)}, {1: PlcResultCode.GOOD}, PlcResultCode.GOOD
+    )
+    x1, y1 = rmap.camera_positions[1]
+    assert client.get_register(x1) == 1250  # 12.5 * 100
+    assert client.get_register(y1) == 125   # 12.5 * 10
