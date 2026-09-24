@@ -21,7 +21,7 @@ over Ethernet; every cycle is stored in SQLite with an annotated PNG.
 ```bash
 python main.py                # normal start
 python main.py --selftest 8   # start hidden, run 8 s, save logs/selftest.png, exit 0
-pytest                        # 426 tests, ~7 s (as of 2026-09-15; 1 failing, see below)
+pytest                        # 492 tests, ~16 s (as of 2026-09-17; all passing)
 python tools/hole_debug.py path/to/images/   # detector tuner; --camera N applies that camera's ROI
 python scripts/build_exe.py   # PyInstaller onedir -> dist/WMHoleDetection/
 ```
@@ -29,13 +29,13 @@ python scripts/build_exe.py   # PyInstaller onedir -> dist/WMHoleDetection/
 `--selftest` is the fastest end-to-end smoke check after a change — it builds the
 whole object graph, runs live cycles and exits non-zero on a startup crash.
 
-**Known failure:** `test_gantry_status.py::test_the_shipped_configs_parse_and_stay_in_lockstep`
-fails because the live `config/plc.json` has had its whole `gantry_status` block
-removed (`config/defaults/plc.json` still has 160–163). Every camera is therefore
-always inspected on this station — the documented "no register configured" path, not
-a code fault. Restore the block to `plc.json` (addresses confirmed against the PLC
-program) to make it pass; the test is checking the lockstep rule in
-[§9](#9-gotchas--traps), and it is right to complain.
+**Previously known failure, now fixed:**
+`test_gantry_status.py::test_the_shipped_configs_parse_and_stay_in_lockstep`
+used to fail because the live `config/plc.json` had had its whole
+`gantry_status` block deleted, leaving all four gantry gates inert. The block
+is back (6082–6088 on the live file), so the gate is live again and the test
+passes — a camera whose PLC reports it parked is now genuinely skipped on this
+station. The test is enforcing the lockstep rule in [§9](#9-gotchas--traps).
 
 ---
 
@@ -358,12 +358,24 @@ settings were applied/saved. That path now goes to the RS232 LED Controller inst
 registers carry nothing; confirm with whoever maintains the PLC program before
 reusing them, the same as 120–127/152–155.
 
-The live `config/plc.json` wires cameras 1/2/4 at the same 200–215/220–235
-addresses as the table above; camera 3 sits in its own 6000s range instead
-(6100–6103 for its position X/Y, 6104–6107 for its servo-home X/Y), matching
-every other per-camera block that camera already uses a different range for
-(`camera_triggers`, `camera_vision_complete`, `camera_status`, `camera_results`)
-— see `config/plc.json` directly for the live addresses, not this table.
+**The table above is the `config/defaults/plc.json` layout.** The live
+`config/plc.json` has since moved almost everything into a per-camera 6000s
+range — camera N gets a ~20-register band (camera 1 at 6000, 2 at 6020, 3 at
+6040, 4 at 6060) holding that camera's result, vision-complete, servo home
+X/Y and position X/Y, with `trigger` at 6080, `gantry_status` at 6082–6088,
+`vision_complete` at 6090 and `result` at 6092. Only `machine_number` (101),
+`heartbeat` (102), `model_select` (103) and three of the four `camera_status`
+entries still sit in the original low range. **Read `config/plc.json` directly
+for live addresses, never this table.** The 32-bit pairs there are all spaced
+2 apart and collision-free (so every X/Y pair batches into one transaction),
+but three live entries look like typos rather than decisions and are worth
+confirming against the PLC program before trusting them:
+`camera_triggers` has **all four cameras pointing at 7000**, so one per-camera
+trigger edge would fire every camera's gate at once; `camera_results.3` is
+6540 where the pattern wants 6040 (which is free); and `serial_number` is 12
+rather than a 6000s or 104-style address. A stale `camera_brightness` block
+also survives in the file — harmless, since `RegisterMap` no longer reads it
+(the feature moved to the RS232 LED Controller).
 
 Bolded rows are **newer than [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)**, which documents only 100–119.
 
@@ -421,14 +433,54 @@ it). Nothing in the PC application reads or writes them now; confirm with
 whoever maintains the PLC program before reusing them.
 
 Write order in `write_inspection_output` matters: positions → per-camera results →
-overall result → `vision_complete=1` last, because the PLC may read the moment
-`vision_complete` goes high. Cameras named in its `skipped` argument are stepped
+overall result → **settle delay** → `vision_complete=1` last, because the PLC may
+read the moment `vision_complete` goes high.
+
+**`connection.vision_complete_delay_ms` (default 50 ms)** is that settle delay:
+a pause taken between the last data register of a cycle and the completion flag
+that tells the PLC to read it. Ordering the writes is not by itself enough —
+each write is its own transaction and the CPU refreshes device memory on its own
+scan, so a flag landing immediately behind the data can be seen on the same scan
+as a position the program has not picked up yet. Rules:
+- it is taken on the **inspection thread holding no lock**, so the poll thread
+  keeps toggling the heartbeat straight through it and the PLC's watchdog never
+  sees the pause (`tests/test_plc_manager.py` pins that);
+- the **per-camera path takes it too**, just before `camera_vision_complete`
+  (after the trigger release), for the same reason;
+- `write_camera_skipped_output` deliberately **does not** — it writes no
+  position and no result, so there is nothing in flight to settle;
+- `0` disables it and is distinct from the key being absent, which takes the
+  default (`PlcManager._delay_seconds`);
+- it costs one delay per cycle, so raising it to hundreds of ms lengthens every
+  cycle the PLC waits on.
+
+Cameras named in `write_inspection_output`'s `skipped` argument are stepped
 over in both loops — deliberately unlike a camera merely *absent* from
 `camera_results`, which still gets ERROR: a gantry-skip is not a fault, and
 overwriting a stale-but-valid position with the no-hole sentinel would tell the
 PLC something the vision system never measured. A contiguous X/Y pair (2 apart,
 per the 32-bit spacing above) writes all 4 register words in one transaction.
 Each position write is preceded by a servo-home *read* on the same thread.
+
+**Every position write is logged at INFO with its full derivation**
+(`PlcManager._write_position`/`_describe_axis`, source `wmhd.plc`, so it lands
+on the Logs page like everything else) — one line per camera per cycle:
+
+```
+Camera 1 position -> X +2.000 mm: raw = home 6000 + (+2.000 x 100) = 6200 -> [200]=6200 [201]=0 | Y -1.000 mm: raw = home 6000 + (-1.000 x 100) = 5900 -> [202]=5900 [203]=0
+Camera 2 position -> no hole: sentinel 0 to X[204,205] and Y[206,207]
+```
+
+A position is the only value on this link that is *computed* rather than
+copied, so the line carries every input — millimetres, the servo home it was
+measured from, that axis's scale, the combined raw target and the two words
+actually written — and a gantry that drives somewhere unexpected can be
+diagnosed from the log without re-running the cycle. Two things to preserve if
+you touch it: the no-hole case says **"no hole: sentinel"** and deliberately
+carries no `mm` figure, because it is not a measurement; and the line prints
+**both words**, since a target above 65535 is meaningless as a low word alone.
+`tests/test_plc_manager.py` pins all of that. Note it is 4 lines per cycle at
+INFO, and logs are batched to SQLite by `DatabaseWorker`.
 
 ### Fault policy
 Heartbeat loss lets the PLC stop the line. On any vision fault the PC writes
@@ -444,13 +496,41 @@ purpose:**
 
 | Register | Cleared by | When | So a `1` means |
 |---|---|---|---|
-| 100 (global) | `PlcPollWorker` → `PlcManager.clear_trigger` | the 50 ms tick that detects the edge, *before* the cycle runs | not yet seen |
+| 100 (global) | `PlcPollWorker` → `PlcManager.clear_trigger` | the 50 ms tick that detects the edge, *before* the cycle runs — **then twice more after the cycle**, see below | not yet seen, *or* the PLC is still driving it |
 | 132–135 (per camera) | `PlcManager.write_camera_inspection_output` → `clear_camera_trigger` | end of that camera's cycle, just before its vision_complete | that camera is **mid-inspection** |
 
 For the global trigger, **0 means *received*, not *finished*** — wait on 119. For a
 camera trigger, 0 does mean that camera finished, but 136+N is still the signal to
 read results on, because it is written last and the PLC may read the instant it
 goes high.
+
+**The global trigger is re-zeroed after every full cycle, twice.** The
+edge-detection clear above is written *before* the cycle runs, so a PLC that
+drives the trigger high until it sees `vision_complete` overwrites it and 100
+sits at 1 for the whole cycle. `InspectionWorker.inspection_finished` →
+`Application._on_inspection_finished` → `PlcPollWorker.notify_cycle_finished`
+therefore arms two more clears of that register: one on the **next poll tick**
+(end of cycle) and one **`connection.trigger_clear_delay_ms` later — 1000 ms by
+default** (`config/plc.json`, file-only like `heartbeat_interval_ms`; `0`
+keeps only the end-of-cycle one). Both are written on the poll thread, using
+the trigger value that tick already read, so neither costs an extra round
+trip. Rules that make it safe, and that a change here must preserve:
+- a clear is written **only when the trigger reads 1 *and* was baselined at
+  1** — still high, and the same 1 this worker already acted on. A trigger
+  already at 0 is left alone rather than re-zeroed;
+- a **fresh rising edge is never swallowed**: the edge branch runs first on
+  every tick and claims that 1 (starting its cycle and clearing it itself), so
+  a trigger raised inside the delay window cannot be zeroed out from under the
+  cycle it belongs to. A new cycle just re-arms both clears when *it* finishes;
+- **only full cycles arm it.** A single-camera cycle answers on its own camera
+  trigger and must not touch 100 — a global trigger raised while it was
+  running may not have been seen as an edge yet
+  (`Application._on_inspection_finished` gates on `cycle.partial`);
+- a pending clear is **dropped on link loss**, because writing 0 after a
+  reconnect would fake a handshake that never happened — the same rule as a
+  trigger found frozen high at connect.
+
+`tests/test_trigger_post_cycle_clear.py` pins all four.
 
 Two consequences that are easy to break:
 - **Both** kinds of trigger baseline the edge state on the **1 actually read**, never
@@ -863,9 +943,13 @@ there is no "keep all four consistent" constraint anymore.
 **`config/defaults/` must be updated in lockstep.** Adding a config key without adding
 it to `defaults/` means "Restore Defaults" silently drops the feature. (`defaults/`
 currently carries every key, including `model_select`, `camera_results` and
-`gantry_status` — but the drift now runs the *other* way: the live `config/plc.json`
-has had its `gantry_status` block deleted, so all four gantry gates are inert on this
-station. See [Commands](#commands).)
+`gantry_status`, and the live `config/plc.json` now carries them too — the
+`gantry_status` block that had been deleted from it is back, so the gates are
+live again. The remaining drift is in the *addresses*, not the keys: the live
+file has moved almost every register into per-camera 6000s bands while
+`defaults/` keeps the documented 100–235 layout, so "Restore Defaults" on the
+PLC page would re-point this station at addresses its PLC program does not
+use. See [§6](#6-plc-contract).)
 
 **Camera `brightness` is not an in-camera setting.** It used to be (a -100..+100 ISP
 offset, real only on some Basler models via `BslBrightness`, or a pure pixel-offset
@@ -952,18 +1036,23 @@ message tells the operator.
 `dict(cfg)` — the *whole* raw entry, so driver-specific blocks (`basler`, `simulation`,
 `image_source`) reach the driver through it.
 
-**The PLC page's manual register table shows only the low word of a 32-bit
-positional register.** The "Live Value" column reads whatever single address is
-configured for that row (`PlcService.read_register`), which for `camera_positions`/
-`servo_home_positions` is the *base* address — the low 16 bits. If the combined
-32-bit value ever exceeds 65535 (a real possibility now that the ceiling is
-~4.29 billion instead of 65535), that column under-reports it; the high word
-lives at base+1, one row below where a "Camera N X" row would be if you added
-one for it, but the table has no such row. This is a display gap only — the
-actual read/write path (`PlcManager._write_position`/`read_servo_home`) always
-combines both words correctly. Don't "fix" a Live Value cell that looks smaller
-than expected without checking base+1 by hand (Manual Write's Register field
-accepts it) first.
+**The PLC page's register table knows each row's *width*, and only the
+positional rows are 32-bit.** `_RegisterField.width` is 2 for
+`camera_positions`/`servo_home_positions` and 1 for everything else (and every
+coil). A width-2 row reads base **and** base+1 and shows them combined
+(`RegisterMap.join_dword`), so the "Live Value" column reports the real servo
+target rather than its low 16 bits; its "Set" writes the whole double word as
+one low/high transaction (`PlcService.write_dword_register` →
+`PlcManager.write_raw_dword`), so the PLC never sees a half-updated target.
+Those rows read "Holding 32-bit" in the Type column, whose tooltip names the
+two registers the row actually occupies and follows the base as it is edited.
+The extra word costs **no extra round trip** — base+1 is adjacent, so
+`_read_clusters` was already reading it. Two limits remain: the Set Value spin
+box tops out at 2147483647 (`DWORD_SPIN_MAX`, QSpinBox is a signed 32-bit int)
+where the register holds a full uint32, and **Manual Write below the table is
+still a single-register write** — it addresses one 16-bit word, which is what
+makes it the escape hatch for a value above the spin box's ceiling. Pinned by
+`tests/test_plc_page_dword.py`.
 
 ### Doc drift
 

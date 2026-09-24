@@ -72,6 +72,26 @@ def rotate_frame(frame: np.ndarray, rotation: int) -> np.ndarray:
     return np.ascontiguousarray(np.rot90(frame, k=-(rotation // 90)))
 
 
+def crop_roi(frame: np.ndarray, roi: tuple[int, int, int, int]) -> np.ndarray:
+    """Crop ``roi`` (``x, y, w, h``, top-left corner) out of *frame*.
+
+    ``w``/``h`` <= 0 means "no ROI" and returns *frame* unchanged. A region
+    that runs off the frame is clamped to it rather than rejected, and at
+    least one pixel always survives. The single definition of what "the ROI
+    crop" means — :meth:`CameraBase.capture` and the Camera page's ROI view
+    both use it, so the view shows exactly what detection will be given.
+    """
+    x, y, w, h = roi
+    if w <= 0 or h <= 0:
+        return frame
+    frame_h, frame_w = frame.shape[:2]
+    x0 = max(0, min(x, frame_w - 1))
+    y0 = max(0, min(y, frame_h - 1))
+    x1 = max(x0 + 1, min(x + w, frame_w))
+    y1 = max(y0 + 1, min(y + h, frame_h))
+    return frame[y0:y1, x0:x1]
+
+
 def _validated_rotation(value: Any) -> int:
     """Normalise a configured rotation, rejecting anything but a quarter turn."""
     rotation = int(value) % 360
@@ -275,8 +295,12 @@ class CameraBase(ABC):
             self._connected = False
             logger.info("%s disconnected", self.name)
 
-    def capture(self) -> np.ndarray:
+    def capture(self, *, apply_roi: bool = True) -> np.ndarray:
         """Grab one frame (BGR or mono ndarray), rotated and ROI-cropped.
+
+        ``apply_roi=False`` returns the whole rotated frame instead — the
+        Camera page shows that with the ROI drawn on top, so the operator can
+        see where the region sits. Everything that *inspects* keeps the default.
 
         Raises:
             CameraConnectionError: camera not connected.
@@ -298,7 +322,8 @@ class CameraBase(ABC):
             raise CameraCaptureError(f"{self.name}: empty frame")
         # Rotation first: the ROI is expressed in the frame the operator sees
         # and draws on, not in the sensor's own orientation.
-        return self._crop_roi(rotate_frame(frame, self._settings.rotation))
+        frame = rotate_frame(frame, self._settings.rotation)
+        return self._crop_roi(frame) if apply_roi else frame
 
     def apply_settings(self, settings: CameraSettings) -> None:
         """Adopt new settings; pushed to the device immediately when connected.
@@ -350,12 +375,4 @@ class CameraBase(ABC):
     # -------------------------------------------------------------- internal
     def _crop_roi(self, frame: np.ndarray) -> np.ndarray:
         """Software ROI crop (drivers with hardware ROI may pre-crop instead)."""
-        x, y, w, h = self._settings.roi
-        if w <= 0 or h <= 0:
-            return frame
-        frame_h, frame_w = frame.shape[:2]
-        x0 = max(0, min(x, frame_w - 1))
-        y0 = max(0, min(y, frame_h - 1))
-        x1 = max(x0 + 1, min(x + w, frame_w))
-        y1 = max(y0 + 1, min(y + h, frame_h))
-        return frame[y0:y1, x0:x1]
+        return crop_roi(frame, self._settings.roi)

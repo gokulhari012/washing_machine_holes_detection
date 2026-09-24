@@ -99,6 +99,13 @@ class PlcService:
         """Raises PlcError; caller (UI) must gate this behind admin login."""
         self._manager.write_raw(address, value)
 
+    def write_dword_register(self, address: int, value: int) -> None:
+        """Write a 32-bit positional register (camera_positions /
+        servo_home_positions) as one two-word transaction, *address* being
+        the pair's base. Raises PlcError; caller (UI) must gate this behind
+        admin login."""
+        self._manager.write_raw_dword(address, value)
+
     def read_coil(self, address: int, count: int = 1) -> list[bool]:
         """Raises PlcError when the link is down or the read is rejected.
         Coils are a separate address space from holding registers — see

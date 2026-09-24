@@ -145,6 +145,40 @@ def _resolve_capture_mode(value: object) -> str:
         PARALLEL_MODE,
     )
     return SEQUENTIAL_MODE
+
+
+def select_hole(
+    calibration: CalibrationManager, camera_index: int, detection: DetectionResult
+) -> None:
+    """Reorder ``detection.holes`` so the candidate the pipeline should
+    judge is first (:attr:`DetectionResult.best`), so it is also the one
+    drawn as the primary (green) circle by ``draw_detection_overlay``.
+
+    A station may legitimately have more than one real hole in frame —
+    without a calibrated reference point there is no way to tell them
+    apart, so an uncalibrated camera keeps the previous behaviour
+    (highest confidence, already ``holes[0]``). A calibrated camera picks
+    whichever accepted candidate lands closest to the reference point
+    instead: the highest-confidence candidate is not necessarily the
+    *right* hole for that station, and letting it win anyway is what
+    produces jumpy X/Y readings and spurious NG results when several real
+    holes score similarly.
+
+    Module-level so the Detection page's "Test on Camera" judges the same
+    candidate a real cycle would.
+    """
+    holes = detection.holes
+    if len(holes) < 2 or not calibration.has(camera_index):
+        return
+    nearest = min(
+        holes,
+        key=lambda hole: calibration.evaluate(camera_index, hole.x_px, hole.y_px)[2],
+    )
+    if nearest is not holes[0]:
+        holes.remove(nearest)
+        holes.insert(0, nearest)
+
+
 DEFAULT_CAMERA_DELAY_MS = 500
 
 _RESULT_TO_PLC = {
@@ -669,30 +703,8 @@ class InspectionService:
         )
 
     def _select_hole(self, camera_index: int, detection: DetectionResult) -> None:
-        """Reorder ``detection.holes`` so the candidate the pipeline should
-        judge is first (:attr:`DetectionResult.best`), so it is also the one
-        drawn as the primary (green) circle by ``draw_detection_overlay``.
-
-        A station may legitimately have more than one real hole in frame —
-        without a calibrated reference point there is no way to tell them
-        apart, so an uncalibrated camera keeps the previous behaviour
-        (highest confidence, already ``holes[0]``). A calibrated camera picks
-        whichever accepted candidate lands closest to the reference point
-        instead: the highest-confidence candidate is not necessarily the
-        *right* hole for that station, and letting it win anyway is what
-        produces jumpy X/Y readings and spurious NG results when several real
-        holes score similarly.
-        """
-        holes = detection.holes
-        if len(holes) < 2 or not self._calibration.has(camera_index):
-            return
-        nearest = min(
-            holes,
-            key=lambda hole: self._calibration.evaluate(camera_index, hole.x_px, hole.y_px)[2],
-        )
-        if nearest is not holes[0]:
-            holes.remove(nearest)
-            holes.insert(0, nearest)
+        """See :func:`select_hole`."""
+        select_hole(self._calibration, camera_index, detection)
 
     def _plc_position(
         self, camera_index: int, data: CameraInspectionData

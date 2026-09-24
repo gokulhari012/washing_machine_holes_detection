@@ -233,6 +233,46 @@ class VisionEngine:
 _GREEN = (80, 220, 80)
 _YELLOW = (60, 200, 240)
 _RED = (70, 70, 230)
+_WHITE = (235, 235, 235)
+_OUTLINE = (0, 0, 0)
+
+# Annotation size is proportional to the frame, not fixed in pixels: the
+# station's 12-20 MP frames are shown fitted into a few-hundred-pixel panel
+# (and saved as full-resolution PNGs), so a fixed 1-2 px stroke and a 0.55
+# font shrink to invisible. _OVERLAY_REFERENCE_PX is the shorter image side
+# at which the base sizes below are drawn 1:1; larger frames scale up.
+_OVERLAY_REFERENCE_PX = 480.0
+_BASE_STROKE = 3
+_BASE_FONT = 0.6
+
+
+def _overlay_scale(image: np.ndarray) -> float:
+    return max(1.0, min(image.shape[:2]) / _OVERLAY_REFERENCE_PX)
+
+
+def _put_outlined_text(
+    image: np.ndarray,
+    text: str,
+    origin: tuple[int, int],
+    color: tuple[int, int, int],
+    font_scale: float,
+    thickness: int,
+) -> None:
+    """Text with a dark outline, so it stays legible on bright and dark metal alike.
+
+    *origin* is the baseline-left point, clamped so the text never runs off
+    the frame (a hole near an edge would otherwise lose its label).
+    """
+    (width, height), baseline = cv2.getTextSize(
+        text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness
+    )
+    margin = thickness + 2
+    x = min(max(margin, origin[0]), max(margin, image.shape[1] - width - margin))
+    y = min(max(height + margin, origin[1]), max(height + margin, image.shape[0] - baseline - margin))
+    for stroke, ink in ((thickness + max(2, thickness), _OUTLINE), (thickness, color)):
+        cv2.putText(
+            image, text, (x, y), cv2.FONT_HERSHEY_SIMPLEX, font_scale, ink, stroke, cv2.LINE_AA
+        )
 
 
 def draw_detection_overlay(
@@ -240,38 +280,60 @@ def draw_detection_overlay(
     result: DetectionResult | None,
     label: str = "",
 ) -> np.ndarray:
-    """Return a BGR copy of *frame* annotated with the detection outcome."""
+    """Return a BGR copy of *frame* annotated with the detection outcome.
+
+    Every candidate carries its confidence: the judged hole (green) as
+    ``conf 0.87`` above its pixel position, secondary candidates (yellow) as
+    the bare value — so an operator can see *why* one hole won over another.
+    Stroke width and text size follow the frame size (see
+    :data:`_OVERLAY_REFERENCE_PX`).
+    """
     out = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) if frame.ndim == 2 else frame.copy()
+    scale = _overlay_scale(out)
+    stroke = max(_BASE_STROKE, round(_BASE_STROKE * scale))
+    font = _BASE_FONT * scale
+    text_stroke = max(1, round(scale))
+    line_gap = int(28 * scale)
 
     if result is not None:
         for hole in result.holes[1:]:  # secondary candidates
-            cv2.circle(
-                out, (int(hole.x_px), int(hole.y_px)),
-                max(3, int(hole.diameter_px / 2)), _YELLOW, 1,
+            cx, cy = int(hole.x_px), int(hole.y_px)
+            radius = max(3, int(hole.diameter_px / 2))
+            cv2.circle(out, (cx, cy), radius, _YELLOW, max(2, stroke * 2 // 3), cv2.LINE_AA)
+            # Below the circle: the judged hole's label sits above its own, so
+            # two nearby candidates don't write over each other.
+            _put_outlined_text(
+                out, f"{hole.confidence:.2f}", (cx - radius, cy + radius + stroke + line_gap),
+                _YELLOW, font * 0.9, text_stroke,
             )
         best = result.best
         if best is not None:
             cx, cy = int(best.x_px), int(best.y_px)
             radius = max(4, int(best.diameter_px / 2))
-            cv2.circle(out, (cx, cy), radius, _GREEN, 2)
-            cv2.line(out, (cx - radius - 8, cy), (cx + radius + 8, cy), _GREEN, 1)
-            cv2.line(out, (cx, cy - radius - 8), (cx, cy + radius + 8), _GREEN, 1)
-            cv2.putText(
-                out,
-                f"({best.x_px:.1f}, {best.y_px:.1f})  conf {best.confidence:.2f}",
-                (max(4, cx - radius), max(18, cy - radius - 10)),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.55, _GREEN, 1, cv2.LINE_AA,
+            arm = radius + int(12 * scale)
+            cv2.circle(out, (cx, cy), radius, _GREEN, stroke, cv2.LINE_AA)
+            cv2.line(out, (cx - arm, cy), (cx + arm, cy), _GREEN, max(2, stroke // 2), cv2.LINE_AA)
+            cv2.line(out, (cx, cy - arm), (cx, cy + arm), _GREEN, max(2, stroke // 2), cv2.LINE_AA)
+            text_x = cx - radius
+            text_y = cy - radius - stroke - int(10 * scale)
+            _put_outlined_text(
+                out, f"conf {best.confidence:.2f}", (text_x, text_y - line_gap),
+                _GREEN, font * 1.15, text_stroke + 1,
+            )
+            _put_outlined_text(
+                out, f"({best.x_px:.1f}, {best.y_px:.1f}) px", (text_x, text_y),
+                _GREEN, font, text_stroke,
             )
         else:
-            cv2.putText(
-                out, "NO HOLE", (12, 32),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.9, _RED, 2, cv2.LINE_AA,
+            _put_outlined_text(
+                out, "NO HOLE", (int(12 * scale), int(40 * scale)),
+                _RED, font * 1.6, text_stroke + 1,
             )
 
     if label:
-        cv2.putText(
-            out, label, (12, out.shape[0] - 12),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (235, 235, 235), 1, cv2.LINE_AA,
+        _put_outlined_text(
+            out, label, (int(12 * scale), out.shape[0] - int(12 * scale)),
+            _WHITE, font, text_stroke,
         )
     return out
 
@@ -291,6 +353,10 @@ def draw_debug_overlay(frame: np.ndarray, stages: dict[str, np.ndarray]) -> np.n
     """
     out = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) if frame.ndim == 2 else frame.copy()
 
+    scale = _overlay_scale(out)
+    font = _BASE_FONT * scale
+    text_stroke = max(1, round(scale))
+
     edges = stages.get("edges")
     if edges is not None:
         out[edges > 0] = _EDGE_CYAN
@@ -299,17 +365,17 @@ def draw_debug_overlay(frame: np.ndarray, stages: dict[str, np.ndarray]) -> np.n
     contour_count = 0
     if mask is not None:
         contours, _ = cv2.findContours(mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
-        cv2.drawContours(out, contours, -1, _CONTOUR_ORANGE, 1)
+        cv2.drawContours(out, contours, -1, _CONTOUR_ORANGE, max(1, round(scale)))
         contour_count = len(contours)
 
     if mask is None and edges is None:
-        cv2.putText(
-            out, "No debug view for this strategy", (12, 32),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (210, 210, 210), 1, cv2.LINE_AA,
+        _put_outlined_text(
+            out, "No debug view for this strategy", (int(12 * scale), int(40 * scale)),
+            (210, 210, 210), font, text_stroke,
         )
     else:
-        cv2.putText(
-            out, f"{contour_count} contour(s)", (12, out.shape[0] - 12),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.55, (235, 235, 235), 1, cv2.LINE_AA,
+        _put_outlined_text(
+            out, f"{contour_count} contour(s)", (int(12 * scale), out.shape[0] - int(12 * scale)),
+            _WHITE, font, text_stroke,
         )
     return out

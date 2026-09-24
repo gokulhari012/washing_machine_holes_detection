@@ -12,6 +12,9 @@
   viewer on the PLC page,
 - :meth:`pause`/:meth:`resume` to suspend every outgoing register/coil write
   except the heartbeat — see their docstrings,
+- a configurable settle delay held off just before every ``vision_complete``
+  is raised, so the PLC has the data before it is told to read it (see
+  :data:`DEFAULT_VISION_COMPLETE_DELAY_MS`),
 - :meth:`rebuild` to swap in a new client/register map in place after a PLC
   configuration save, so the connection and register addresses take effect
   live instead of requiring an application restart.
@@ -48,6 +51,31 @@ PositionMap = dict[int, tuple[float, float] | None]
 
 DEFAULT_BACKOFF_MS = (1000, 2000, 5000, 10000)
 
+#: Pause between the last data register of a cycle and the ``vision_complete``
+#: that tells the PLC to read it, in milliseconds
+#: (``connection.vision_complete_delay_ms`` in plc.json).
+#:
+#: The write order already guarantees the positions and results are *sent*
+#: first, but "sent" is not "visible to the PLC program": each write is a
+#: separate transaction, and the CPU refreshes its device memory on its own
+#: scan cycle, so a completion flag landing immediately behind the data can be
+#: seen on the same scan as a position the program has not picked up yet. This
+#: delay is the margin for that. It costs one delay per cycle and runs on the
+#: inspection thread, so it never touches the poll loop's heartbeat cadence.
+#: 0 disables it.
+DEFAULT_VISION_COMPLETE_DELAY_MS = 50
+
+
+def _delay_seconds(vision_complete_delay_ms: int | None) -> float:
+    """Normalise the configured settle delay to seconds, never negative.
+
+    ``None`` means "not configured" and takes the default; ``0`` is a real
+    choice and disables the delay, so the two cannot be collapsed.
+    """
+    if vision_complete_delay_ms is None:
+        vision_complete_delay_ms = DEFAULT_VISION_COMPLETE_DELAY_MS
+    return max(0.0, int(vision_complete_delay_ms) / 1000.0)
+
 
 class PlcManager:
     """Owns the PLC connection state and translates workflow intents to registers."""
@@ -57,10 +85,12 @@ class PlcManager:
         client: PlcClientBase,
         register_map: RegisterMap,
         reconnect_backoff_ms: list[int] | None = None,
+        vision_complete_delay_ms: int | None = None,
     ) -> None:
         self._client = client
         self._map = register_map
         self._backoff_ms = list(reconnect_backoff_ms or DEFAULT_BACKOFF_MS)
+        self._vision_complete_delay_s = _delay_seconds(vision_complete_delay_ms)
         self._state = ConnectionState.DISCONNECTED
         self._state_lock = threading.Lock()
         self._callbacks: list[StateCallback] = []
@@ -187,6 +217,7 @@ class PlcManager:
         client: PlcClientBase,
         register_map: RegisterMap,
         reconnect_backoff_ms: list[int] | None = None,
+        vision_complete_delay_ms: int | None = None,
     ) -> None:
         """Swap in a new client and register map without replacing this
         ``PlcManager`` instance, so every holder of it (PlcService,
@@ -213,6 +244,7 @@ class PlcManager:
         self._client = client
         self._map = register_map
         self._backoff_ms = list(reconnect_backoff_ms or DEFAULT_BACKOFF_MS)
+        self._vision_complete_delay_s = _delay_seconds(vision_complete_delay_ms)
         self._backoff_index = 0
         self._next_attempt_monotonic = 0.0
         self._set_state(ConnectionState.DISCONNECTED)
@@ -410,6 +442,14 @@ class PlcManager:
         are configured 2 apart (``y_address == x_address + 2``) all four
         words go out in one transaction; otherwise each axis is its own
         2-register write.
+
+        Every write is logged at INFO with the whole derivation — millimetres,
+        the servo home it was measured from, the scale applied, the combined
+        raw target and the two words that actually go on the wire. A position
+        is the one value on this link that is *computed* rather than copied,
+        so when a gantry drives somewhere unexpected the log has to be able to
+        say whether the vision measurement, the calibration, the servo home or
+        the scaling was responsible, without re-running the cycle.
         """
         addresses = self._map.camera_positions.get(camera_index)
         if addresses is None:
@@ -417,6 +457,7 @@ class PlcManager:
         x_address, y_address = addresses
         if position is None:
             x_raw = y_raw = RegisterMap.NO_HOLE_RAW
+            x_home = y_home = 0
         else:
             x_home, y_home = self.read_servo_home(camera_index)
             x_raw = self._map.encode_position(position[0], x_home, axis="x")
@@ -431,6 +472,56 @@ class PlcManager:
             self._write(x_address, [x_low, x_high])
             self._write(y_address, [y_low, y_high])
 
+        if position is None:
+            logger.info(
+                "Camera %d position -> no hole: sentinel %d to X[%d,%d] and Y[%d,%d]",
+                camera_index,
+                RegisterMap.NO_HOLE_RAW,
+                x_address,
+                x_address + 1,
+                y_address,
+                y_address + 1,
+            )
+        else:
+            logger.info(
+                "Camera %d position -> %s | %s",
+                camera_index,
+                self._describe_axis("X", position[0], x_home, x_raw, x_address, "x"),
+                self._describe_axis("Y", position[1], y_home, y_raw, y_address, "y"),
+            )
+
+    def _describe_axis(
+        self, label: str, mm: float, home: int, raw: int, address: int, axis: str
+    ) -> str:
+        """One axis of a position write, spelled out for the log.
+
+        Shows the arithmetic the PLC never sees — ``home + mm * scale = raw`` —
+        and the low/high word split that raw becomes on the wire, so a wrong
+        gantry target can be traced to its input from the log alone.
+        """
+        low, high = self._map.split_dword(raw)
+        return (
+            f"{label} {mm:+.3f} mm: raw = home {home} + ({mm:+.3f} x "
+            f"{self._map.scale_for(axis)}) = {raw} -> "
+            f"[{address}]={low} [{address + 1}]={high}"
+        )
+
+    def _settle_before_vision_complete(self) -> None:
+        """Hold off just long enough for the data writes to be visible to the
+        PLC program before the completion flag tells it to read them.
+
+        Called on the inspection thread only, between the last data register
+        of a cycle and its ``vision_complete``. It deliberately holds **no
+        lock** — the poll thread keeps toggling the heartbeat straight
+        through it, so the PLC's watchdog never sees the pause.
+
+        Deliberately *not* used by :meth:`write_camera_skipped_output`: that
+        one writes no position and no result, so there is nothing in flight
+        for the PLC to miss and nothing to settle.
+        """
+        if self._vision_complete_delay_s > 0:
+            time.sleep(self._vision_complete_delay_s)
+
     def write_inspection_output(
         self,
         positions: PositionMap,
@@ -444,8 +535,10 @@ class PlcManager:
         *positions* holds ``None``), then each camera's own GOOD/NG/ERROR
         verdict (``ERROR`` where *camera_results* holds nothing for that
         camera — not inspected this cycle), then the overall result code,
-        then raises vision_complete — order matters: the PLC may read results
-        the moment vision_complete goes high.
+        waits ``vision_complete_delay_ms``, then raises vision_complete —
+        order matters: the PLC may read results the moment vision_complete
+        goes high, and the delay gives its scan cycle time to have picked the
+        data up first (see :data:`DEFAULT_VISION_COMPLETE_DELAY_MS`).
 
         *skipped* names the cameras whose gantry the PLC reported inactive
         (see :meth:`read_gantry_status`). Their position **and** result
@@ -469,6 +562,7 @@ class PlcManager:
             self._write(result_address, [int(camera_result)])
 
         self._write(self._map.result, [int(result)])
+        self._settle_before_vision_complete()
         self._write(self._map.vision_complete, [1])
         logger.info("Inspection output written to PLC (result=%s)", result.name)
 
@@ -488,14 +582,15 @@ class PlcManager:
         the other cameras were not inspected this cycle and their last values
         still stand.
 
-        Write order: position → result → **trigger back to 0** →
-        vision_complete. The trigger is released here, at the end of the
-        cycle, rather than when the poll loop first saw it, so a camera
+        Write order: position → result → **trigger back to 0** → settle
+        delay → vision_complete. The trigger is released here, at the end of
+        the cycle, rather than when the poll loop first saw it, so a camera
         trigger sitting high means "this camera is still being inspected".
         It is cleared just *before* vision_complete so that by the moment the
         PLC is told the results are ready, the trigger it raised is already
         released — vision_complete stays strictly last, because the PLC may
-        read everything the instant it goes high.
+        read everything the instant it goes high, and it is held off by
+        ``vision_complete_delay_ms`` for the same reason as the global one.
 
         Registers this camera has not been given are skipped silently, the
         same way :meth:`write_inspection_output` skips absent entries.
@@ -510,6 +605,7 @@ class PlcManager:
 
         complete_address = self._map.camera_vision_complete.get(camera_index)
         if complete_address is not None:
+            self._settle_before_vision_complete()
             self._write(complete_address, [1])
         logger.info(
             "Camera %d inspection output written to PLC (result=%s)",
@@ -570,6 +666,24 @@ class PlcManager:
         """Manual register write (PLC Configuration page, admin only)."""
         self._write(address, [int(value)])
         logger.info("Manual register write: [%d] = %d", address, value)
+
+    def write_raw_dword(self, address: int, value: int) -> None:
+        """Manual write of a 32-bit positional register (PLC Configuration
+        page, admin only).
+
+        *address* is the pair's **base**: the low word goes there and the high
+        word to base+1, the same low-word-first order
+        :meth:`_write_position` uses. Both words go out in **one** transaction
+        so the PLC never sees a half-updated servo target — writing them as
+        two separate single-register writes would briefly publish a value that
+        is neither the old one nor the new one.
+        """
+        low, high = RegisterMap.split_dword(int(value))
+        self._write(address, [low, high])
+        time.sleep(0.1)
+        logger.info(
+            "Manual 32-bit register write: [%d,%d] = %d", address, address + 1, value
+        )
 
     def read_raw_coils(self, address: int, count: int = 1) -> list[bool]:
         """Live register table read for a coil row (PLC Configuration page)."""

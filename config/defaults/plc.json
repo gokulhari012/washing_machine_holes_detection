@@ -9,6 +9,8 @@
     "poll_interval_ms": 50,
     "heartbeat_interval_ms": 500,
     "model_poll_interval_ms": 1000,
+    "trigger_clear_delay_ms": 1000,
+    "vision_complete_delay_ms": 50,
     "reconnect_backoff_ms": [
       1000,
       2000,

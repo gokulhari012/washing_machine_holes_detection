@@ -70,7 +70,7 @@ class MainWindow(QMainWindow):
         self._pages: list[tuple[QListWidgetItem, UserRole | None]] = []
         self._simulate_action = None  # set by _build_toolbar
 
-        self.setWindowTitle("Washing Machine Bottom Hole Detection System")
+        self.setWindowTitle("Washing Machine Back Plate Hole Detection System")
         self.resize(1440, 900)
 
         self._build_toolbar()

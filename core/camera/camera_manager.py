@@ -109,11 +109,14 @@ class CameraManager:
             self.disconnect(index)
 
     # -------------------------------------------------------------- capture
-    def capture(self, index: int) -> np.ndarray:
-        """Grab one frame from one camera; updates health; re-raises CameraError."""
+    def capture(self, index: int, *, apply_roi: bool = True) -> np.ndarray:
+        """Grab one frame from one camera; updates health; re-raises CameraError.
+
+        ``apply_roi=False`` skips the ROI crop (see :meth:`CameraBase.capture`).
+        """
         camera = self.get(index)
         try:
-            frame = camera.capture()
+            frame = camera.capture(apply_roi=apply_roi)
         except CameraError as exc:
             self._record_failure(index, str(exc))
             raise

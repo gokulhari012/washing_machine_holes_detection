@@ -5,6 +5,7 @@ from core.camera.camera_base import (
     CameraBase,
     VALID_ROTATIONS,
     CameraSettings,
+    crop_roi,
     frame_interval_ms,
     rotate_frame,
 )
@@ -19,6 +20,7 @@ from core.utilities.exceptions import ConfigurationError
 __all__ = [
     "CameraBase",
     "CameraSettings",
+    "crop_roi",
     "frame_interval_ms",
     "rotate_frame",
     "DEFAULT_VIEW_FPS",

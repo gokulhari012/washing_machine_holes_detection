@@ -10,9 +10,13 @@ that zeroes the register outright. Both are the same live, admin-gated write
 as Manual Write below the table (a coil row writes the coil address space
 instead), just without retyping the address; both refresh the Live Value
 column straight after, and both refuse a row whose address reads "Not used".
-Like the Live Value column, they address the *single* configured address, so
-on a 32-bit positional register they touch only the low word — use Manual
-Write for base+1. Saving connection or
+Like the Live Value column, they follow the row's register *width*: the
+32-bit positional rows (camera positions and servo home positions) read and
+write the full double word — low word at the configured base address, high
+word at base+1, in one transaction — so the column shows the real servo
+target rather than its low 16 bits, and Set writes a whole target rather
+than half of one. Every other row is a plain 16-bit holding register or a
+coil. Saving connection or
 register-address changes takes effect immediately, without an application
 restart: ``Application._on_plc_config_saved`` (main.py) stops the poll
 worker, rebuilds ``PlcManager`` in place via ``PlcManager.rebuild`` — every
@@ -58,7 +62,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from core.plc import axis_scale
+from core.plc import RegisterMap, axis_scale
 from core.utilities.exceptions import VisionSystemError
 from models.app_state import AppState
 from services.auth_service import AuthService
@@ -73,10 +77,25 @@ CAMERAS = (1, 2, 3, 4)
 MAX_READ_GAP = 4
 
 
+#: Ceiling of the Set Value spin box on a 32-bit row. The registers hold a
+#: full uint32 (4_294_967_295), but QSpinBox is backed by a signed 32-bit int
+#: and cannot go higher than this. No servo target on this station comes near
+#: it; a value above it has to go through Manual Write, one word at a time.
+DWORD_SPIN_MAX = 2_147_483_647
+
+
 def _reg_spin(value: int = 0) -> QSpinBox:
     spin = QSpinBox()
     spin.setRange(0, 65535)
     spin.setValue(value)
+    return spin
+
+
+def _value_spin(width: int) -> QSpinBox:
+    """Set Value spin box sized to the row's register width — one word for a
+    normal row, the combined double word for a positional one."""
+    spin = QSpinBox()
+    spin.setRange(0, DWORD_SPIN_MAX if width == 2 else 65535)
     return spin
 
 
@@ -92,6 +111,12 @@ class _RegisterField:
     set: Callable[[dict, int], None]
     clear: Callable[[dict], None] | None = None  # only ever called when optional
     kind: str = "holding"  # "holding" or "coil" — a completely separate address space
+    # Register width in words. 1 for every 16-bit register and every coil;
+    # 2 for the positional blocks (camera_positions, servo_home_positions),
+    # whose configured address is the *base* of a low-word-first pair — see
+    # core.plc.register_map. The live-value read and the per-row write both
+    # span the pair, so nothing on this page reports or writes half a value.
+    width: int = 1
 
 
 def _core_field(key: str, name: str, tooltip: str) -> _RegisterField:
@@ -103,7 +128,14 @@ def _core_field(key: str, name: str, tooltip: str) -> _RegisterField:
 
 
 def _camera_pair_field(block: str, camera: int, axis: str, name: str, tooltip: str) -> _RegisterField:
+    """One axis of a positional block — always a 32-bit pair (width 2), so
+    the address configured here is the base and base+1 carries the high
+    word."""
     idx = str(camera)
+    tooltip = (
+        f"{tooltip}. 32-bit: this address holds the low word and the next "
+        "address the high word; Live Value and Set both use the combined value."
+    )
     return _RegisterField(
         name, tooltip, False,
         get=lambda cfg, block=block, idx=idx, axis=axis: int(
@@ -112,6 +144,7 @@ def _camera_pair_field(block: str, camera: int, axis: str, name: str, tooltip: s
         set=lambda cfg, v, block=block, idx=idx, axis=axis: (
             cfg["registers"].setdefault(block, {}).setdefault(idx, {}).__setitem__(axis, v)
         ),
+        width=2,
     )
 
 
@@ -454,9 +487,9 @@ class PlcPage(QWidget):
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.Fixed)
-        header.resizeSection(1, 80)
+        header.resizeSection(1, 105)
         header.resizeSection(2, 130)
-        header.resizeSection(3, 100)
+        header.resizeSection(3, 120)
         header.resizeSection(4, 120)
         header.resizeSection(5, 60)
         header.resizeSection(6, 60)
@@ -467,7 +500,15 @@ class PlcPage(QWidget):
             name_item = QTableWidgetItem(field.name)
             name_item.setToolTip(field.tooltip)
             self._table.setItem(row, 0, name_item)
-            type_item = QTableWidgetItem("Coil" if field.kind == "coil" else "Holding")
+            if field.kind == "coil":
+                type_label = "Coil"
+            elif field.width == 2:
+                # The one place the pair is visible at a glance: a row whose
+                # address reads 200 actually occupies 200 and 201.
+                type_label = "Holding 32-bit"
+            else:
+                type_label = "Holding"
+            type_item = QTableWidgetItem(type_label)
             type_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(row, 1, type_item)
             spin = _reg_spin()
@@ -475,16 +516,28 @@ class PlcPage(QWidget):
             if field.optional:
                 spin.setSpecialValueText("Not used")
             spin.setToolTip(field.tooltip)
+            if field.width == 2:
+                # Keep the displayed pair honest as the base is edited.
+                spin.valueChanged.connect(
+                    lambda value, row=row: self._update_pair_hint(row, value)
+                )
+                self._update_pair_hint(row, spin.value())
             self._table.setCellWidget(row, 2, spin)
             self._row_spins.append(spin)
             value_item = QTableWidgetItem("—")
             value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(row, 3, value_item)
 
-            value_spin = _reg_spin()
+            value_spin = _value_spin(field.width)
             value_spin.setMinimumWidth(100)
             value_spin.setToolTip(
                 f"Value to write into {field.name}'s register when Set is pressed."
+                + (
+                    " 32-bit: the value is split into low and high words and "
+                    "both are written in one transaction."
+                    if field.width == 2
+                    else ""
+                )
             )
             self._table.setCellWidget(row, 4, value_spin)
             self._row_value_spins.append(value_spin)
@@ -626,12 +679,12 @@ class PlcPage(QWidget):
         names. Same danger and the same admin gate as Manual Write below the
         table — this is only a shortcut that saves retyping the address.
 
-        Two limits worth knowing, both shared with the Live Value column:
-        a 32-bit positional register's row names only its *low* word, so this
-        writes the low 16 bits and leaves base+1 alone (use Manual Write for
-        the high word); and a row whose address is the "Not used" sentinel has
-        no register to write at all, so it is refused rather than writing to
-        address 0."""
+        The row's width decides what "the register" means, exactly as it does
+        for the Live Value column: a 32-bit positional row writes the combined
+        value as a low/high word pair in one transaction (base and base+1),
+        every other row writes its single 16-bit register or coil. A row whose
+        address is the "Not used" sentinel has no register to write at all, so
+        it is refused rather than writing to address 0."""
         field = self._fields[row]
         if not self._auth.is_admin:
             QMessageBox.warning(
@@ -651,6 +704,8 @@ class PlcPage(QWidget):
         try:
             if field.kind == "coil":
                 self._svc.write_coil(address, bool(value))
+            elif field.width == 2:
+                self._svc.write_dword_register(address, value)
             else:
                 self._svc.write_register(address, value)
         except VisionSystemError as exc:
@@ -684,43 +739,73 @@ class PlcPage(QWidget):
         if self._auto.isChecked():
             self._refresh_viewer()
 
+    def _update_pair_hint(self, row: int, base: int) -> None:
+        """Spell out which two registers a 32-bit row actually occupies, on
+        the Type cell's tooltip, and keep it correct as the base is edited."""
+        item = self._table.item(row, 1)
+        if item is None:
+            return
+        item.setToolTip(
+            f"32-bit value spanning registers {base} (low word) and "
+            f"{base + 1} (high word). Live Value shows the two combined."
+        )
+
     def _refresh_viewer(self) -> None:
         # Holding registers and coils are separate address spaces (see
         # core.plc.plc_client_base) — address 5 means different physical
         # memory in each, so they must never be clustered/read together.
-        holding_rows: dict[int, list[int]] = {}
-        coil_rows: dict[int, list[int]] = {}
+        holding_rows: list[tuple[int, int, int]] = []  # (row, base address, width)
+        coil_rows: list[tuple[int, int, int]] = []
         for row, (field, spin) in enumerate(zip(self._fields, self._row_spins)):
             address = spin.value()
             if field.optional and address == 0:
                 self._table.item(row, 3).setText("—")
                 continue
             group = coil_rows if field.kind == "coil" else holding_rows
-            group.setdefault(address, []).append(row)
+            group.append((row, address, field.width))
 
         self._refresh_group(holding_rows, self._svc.read_register)
         self._refresh_group(coil_rows, self._svc.read_coil)
 
     def _refresh_group(
-        self, address_rows: dict[int, list[int]], reader: Callable[[int, int], list]
+        self,
+        rows: list[tuple[int, int, int]],
+        reader: Callable[[int, int], list],
     ) -> None:
         """Bulk-read one address space's rows (clustered to cut round trips)
-        and write the results into the Live Value column. Silently keeps the
-        last displayed values on a comm failure — the LED already shows link
-        state, and one address space being briefly down shouldn't blank out
-        the other's rows too."""
+        and write the results into the Live Value column.
+
+        A width-2 row needs both of its words, so base+1 joins the set of
+        addresses read — which costs no extra round trip, since the two sit
+        adjacent and ``_read_clusters`` merges them into the span it was
+        already reading. The pair is displayed combined
+        (:meth:`RegisterMap.join_dword`), so the column shows the actual
+        servo target rather than its low 16 bits.
+
+        Silently keeps the last displayed values on a comm failure — the LED
+        already shows link state, and one address space being briefly down
+        shouldn't blank out the other's rows too."""
+        wanted = {
+            address + offset for _row, address, width in rows for offset in range(width)
+        }
         values: dict[int, object] = {}
         try:
-            for start, count in _read_clusters(list(address_rows)):
+            for start, count in _read_clusters(sorted(wanted)):
                 block = reader(start, count)
                 for offset, value in enumerate(block):
                     values[start + offset] = value
         except VisionSystemError:
             return
 
-        for address, rows in address_rows.items():
-            value = values.get(address)
-            if value is None:
+        for row, address, width in rows:
+            low = values.get(address)
+            if low is None:
                 continue
-            for row in rows:
-                self._table.item(row, 3).setText(str(int(value)))
+            if width == 2:
+                high = values.get(address + 1)
+                if high is None:
+                    continue
+                text = str(RegisterMap.join_dword(int(low), int(high)))
+            else:
+                text = str(int(low))
+            self._table.item(row, 3).setText(text)

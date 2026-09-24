@@ -35,7 +35,8 @@ between the two kinds of trigger, on purpose:
   The edge state is baselined on the value actually *read* (1), never on the
   0 written back, so a PLC that keeps driving the trigger high until it sees
   vision_complete cannot re-fire the cycle every tick: a 0 has to be observed
-  on the wire before the next 1 counts as an edge.
+  on the wire before the next 1 counts as an edge. It is then cleared **again
+  after the cycle**, twice — see below.
 * a **per-camera trigger** is cleared at the *end* of that camera's cycle, by
   ``PlcManager.write_camera_inspection_output`` on the inspection thread, just
   before that camera's vision_complete goes high. A camera trigger still
@@ -43,6 +44,35 @@ between the two kinds of trigger, on purpose:
 
 Each register is handled independently: releasing camera 2's trigger touches
 neither camera 3's nor the global one.
+
+Clearing the global trigger again after the cycle
+-------------------------------------------------
+The edge-detection clear above is written *before* the cycle runs, so a PLC
+that drives the trigger high until it sees vision_complete simply overwrites
+it and the register sits at 1 for the whole cycle. :meth:`notify_cycle_finished`
+(wired to ``InspectionWorker.inspection_finished`` in the composition root, for
+full cycles only) therefore arms **two** more clears of that same register:
+
+* one on the next poll tick, i.e. as soon as the cycle is finished, and
+* one ``trigger_clear_delay_ms`` later — 1 s by default — for the PLC that is
+  still holding the line high at the moment the first one lands, or that
+  re-asserts it in between.
+
+Both go through the same guard, and that guard is the part worth keeping: a
+clear is written **only when the trigger is still high from the cycle that
+just ran** (read 1 this tick *and* baselined at 1, so not a fresh edge). A
+trigger already at 0 is left alone rather than re-zeroed, and a **fresh rising
+edge is never swallowed** — the edge branch above runs first on every tick and
+owns that 1, so a new trigger raised during the delay window starts its cycle
+in the normal way and the pending clear declines to touch it. A new cycle
+simply re-arms both clears when it finishes.
+
+Neither clear survives a link loss: a pending clear is dropped when the link
+drops, because writing 0 to a trigger this worker never acted on would fake a
+handshake that never happened — the same reason a trigger frozen high across a
+reconnect is not acknowledged.
+
+Set ``trigger_clear_delay_ms`` to 0 to keep only the end-of-cycle clear.
 
 The inspection itself runs on the InspectionWorker — this loop must never be
 blocked for longer than one poll interval, or the heartbeat would jitter.
@@ -77,6 +107,7 @@ class PlcPollWorker(QThread):
         poll_interval_ms: int = 50,
         heartbeat_interval_ms: int = 500,
         model_poll_interval_ms: int = 1000,
+        trigger_clear_delay_ms: int = 1000,
         camera_status_provider: "Callable[[], dict[int, bool]] | None" = None,
     ) -> None:
         super().__init__()
@@ -86,6 +117,16 @@ class PlcPollWorker(QThread):
         self._poll_interval_s = max(0.01, poll_interval_ms / 1000.0)
         self._heartbeat_interval_s = max(0.1, heartbeat_interval_ms / 1000.0)
         self._model_poll_interval_s = max(0.1, model_poll_interval_ms / 1000.0)
+        # Delay between a finished cycle and the second, time-based clear of
+        # the global trigger. 0 disables that one; the end-of-cycle clear on
+        # the next tick always happens.
+        self._trigger_clear_delay_s = max(0.0, trigger_clear_delay_ms / 1000.0)
+        # Post-cycle clears, armed from the inspection thread by
+        # notify_cycle_finished and serviced on this thread. Guarded because
+        # they are written and read from different threads.
+        self._clear_lock = threading.Lock()
+        self._clear_trigger_now = False
+        self._clear_trigger_at: float | None = None
         self._stop_event = threading.Event()
         self._last_trigger: int | None = None  # None = re-baseline required
         self._last_model: int | None = None  # None = not yet read this session
@@ -98,6 +139,27 @@ class PlcPollWorker(QThread):
         self._last_camera_status: dict[int, bool] = {}
 
     # ------------------------------------------------------------------ api
+    def notify_cycle_finished(self, cycle: object = None) -> None:
+        """Arm the two post-cycle clears of the global trigger.
+
+        Called from whichever thread finished the cycle (the inspection
+        thread, via ``InspectionWorker.inspection_finished``), so it only
+        records the intent — the register is written on the poll thread like
+        every other PLC I/O this worker owns. Re-arming while a delayed clear
+        is still pending simply restarts the delay from this cycle, which is
+        what a back-to-back pair of cycles should do.
+
+        *cycle* is accepted and ignored so the method can be connected
+        straight to a signal that carries the finished cycle.
+        """
+        with self._clear_lock:
+            self._clear_trigger_now = True
+            self._clear_trigger_at = (
+                time.monotonic() + self._trigger_clear_delay_s
+                if self._trigger_clear_delay_s > 0
+                else None
+            )
+
     def stop(self, timeout_ms: int = 3000) -> None:
         """Request shutdown and join the thread."""
         self._stop_event.set()
@@ -120,6 +182,7 @@ class PlcPollWorker(QThread):
             if self._manager.ensure_connected():
                 try:
                     value = self._manager.read_trigger()
+                    previous = self._last_trigger
                     if self._last_trigger is None:
                         # first read after (re)connect: baseline, not an edge
                         self._last_trigger = value
@@ -143,6 +206,11 @@ class PlcPollWorker(QThread):
                         self._manager.clear_trigger()
                     self._last_trigger = value
 
+                    # After the edge branch, so a fresh rising edge is always
+                    # claimed by the cycle it belongs to before any post-cycle
+                    # clear gets to look at the register.
+                    self._service_trigger_clears(value, previous, tick_started)
+
                     self._poll_camera_triggers()
                     self._publish_camera_status()
 
@@ -164,11 +232,13 @@ class PlcPollWorker(QThread):
                     self._last_model = None
                     self._rebaseline_camera_triggers()
                     self._last_camera_status.clear()
+                    self._discard_pending_trigger_clears()
             else:
                 self._last_trigger = None
                 self._last_model = None
                 self._rebaseline_camera_triggers()
                 self._last_camera_status.clear()
+                self._discard_pending_trigger_clears()
 
             elapsed = time.monotonic() - tick_started
             remaining = self._poll_interval_s - elapsed
@@ -176,6 +246,54 @@ class PlcPollWorker(QThread):
                 self._stop_event.wait(remaining)
 
         logger.info("PLC poll worker stopped")
+
+    # -------------------------------------------------- post-cycle clearing
+    def _service_trigger_clears(
+        self, value: int, previous: int | None, now: float
+    ) -> None:
+        """Write the post-cycle 0 to the global trigger, if one is due.
+
+        Two independent one-shots are armed by :meth:`notify_cycle_finished`:
+        an immediate one, serviced on the first tick after the cycle, and a
+        delayed one ``trigger_clear_delay_ms`` after it. Both are serviced
+        here, on the poll thread, with the trigger value this tick already
+        read — no extra round trip.
+
+        *value* is what the register reads now and *previous* the baseline it
+        was compared against. A clear is written only for ``value == 1`` with
+        ``previous == 1``: the trigger is still high, and it is the same 1
+        this worker already acted on rather than a fresh edge (which the edge
+        branch above has just claimed and cleared itself). Anything else needs
+        no write — a trigger already at 0 is left alone rather than
+        re-zeroed.
+        """
+        with self._clear_lock:
+            immediate = self._clear_trigger_now
+            deadline = self._clear_trigger_at
+            delayed = deadline is not None and now >= deadline
+            if not immediate and not delayed:
+                return
+            self._clear_trigger_now = False
+            if delayed:
+                self._clear_trigger_at = None
+
+        if value == 1 and previous == 1:
+            self._manager.clear_trigger()
+            logger.info(
+                "Global trigger still high after the cycle — cleared (%s)",
+                "delayed" if delayed and not immediate else "end of cycle",
+            )
+
+    def _discard_pending_trigger_clears(self) -> None:
+        """Forget any armed post-cycle clear on link loss.
+
+        Writing 0 to the trigger after a reconnect would acknowledge a
+        handshake this worker never completed — the same reason a trigger
+        found frozen high at (re)connect is baselined rather than cleared.
+        """
+        with self._clear_lock:
+            self._clear_trigger_now = False
+            self._clear_trigger_at = None
 
     # ------------------------------------------------------ camera triggers
     def _poll_camera_triggers(self) -> None:

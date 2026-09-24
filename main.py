@@ -1,4 +1,4 @@
-"""Washing Machine Bottom Hole Detection System — application entry point.
+"""Washing Machine Back Plate Hole Detection System — application entry point.
 
 Composition root: builds the object graph (config → logging → database →
 hardware managers → services → workers → UI), wires cross-cutting concerns
@@ -134,6 +134,7 @@ class Application:
             plc_client,
             self.register_map,
             connection_cfg.get("reconnect_backoff_ms"),
+            connection_cfg.get("vision_complete_delay_ms"),
         )
         self.plc.subscribe_state(self.app_state.update_plc_state)
         self.plc.subscribe_paused(self.app_state.set_plc_paused)
@@ -168,6 +169,9 @@ class Application:
 
         # -------------------------------------------------------- workers
         self.inspection_worker = InspectionWorker(self.inspection)
+        # Connected to the Application, not to the poll worker itself, so the
+        # hook survives _on_plc_config_saved rebuilding the poll worker.
+        self.inspection_worker.inspection_finished.connect(self._on_inspection_finished)
         self.poll_worker = self._build_poll_worker(connection_cfg)
         preview_fps = float(self.config.get_value("app_config", "ui.live_preview_fps", 15))
         self.acquisition_workers = create_acquisition_workers(
@@ -222,7 +226,10 @@ class Application:
         )
         self.window.add_page(
             "Detection", "◎",
-            DetectionPage(self.config, self.vision, self.camera_service, self.app_state),
+            DetectionPage(
+                self.config, self.vision, self.camera_service, self.app_state,
+                self.calibration,
+            ),
             min_role=UserRole.ADMIN,
         )
         self.window.add_page(
@@ -470,12 +477,32 @@ class Application:
             poll_interval_ms=int(connection_cfg.get("poll_interval_ms", 50)),
             heartbeat_interval_ms=int(connection_cfg.get("heartbeat_interval_ms", 500)),
             model_poll_interval_ms=int(connection_cfg.get("model_poll_interval_ms", 1000)),
+            trigger_clear_delay_ms=int(
+                connection_cfg.get("trigger_clear_delay_ms", 1000)
+            ),
             camera_status_provider=self._camera_availability,
         )
         worker.trigger_detected.connect(self.inspection_worker.on_trigger)
         worker.camera_trigger_detected.connect(self.inspection_worker.on_camera_trigger)
         worker.machine_model_changed.connect(self._on_machine_model_changed)
         return worker
+
+    def _on_inspection_finished(self, cycle) -> None:
+        """Ask the poll worker to re-zero the global trigger after a cycle.
+
+        Only for a **full** cycle: the global trigger is that cycle's
+        handshake. A single-camera cycle (``partial``) answers on its own
+        camera trigger, which ``write_camera_inspection_output`` already
+        released, and must not touch register 100 — a global trigger raised
+        while the per-camera cycle was running may not have been seen as an
+        edge yet, and zeroing it here would throw that cycle away.
+
+        The worker does the writing on its own thread; this only arms it (see
+        ``PlcPollWorker.notify_cycle_finished``).
+        """
+        if getattr(cycle, "partial", False):
+            return
+        self.poll_worker.notify_cycle_finished()
 
     def _on_plc_config_saved(self, plc_cfg: dict) -> None:
         """Rebuild the PLC client/register map + poll worker after a save
@@ -501,7 +528,12 @@ class Application:
             self.app_state.raise_alarm("error", message)
             return
         connection_cfg = plc_cfg.get("connection", {})
-        self.plc.rebuild(client, register_map, connection_cfg.get("reconnect_backoff_ms"))
+        self.plc.rebuild(
+            client,
+            register_map,
+            connection_cfg.get("reconnect_backoff_ms"),
+            connection_cfg.get("vision_complete_delay_ms"),
+        )
         self.register_map = register_map
         self.poll_worker = self._build_poll_worker(connection_cfg)
         self.poll_worker.start()
@@ -590,7 +622,7 @@ def _configured_theme() -> AppTheme:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Washing Machine Bottom Hole Detection")
+    parser = argparse.ArgumentParser(description="Washing Machine Back Plate Hole Detection")
     parser.add_argument(
         "--selftest",
         type=float,

@@ -28,6 +28,18 @@ to read one from; it reads the camera's *live-effective* config instead
 (``CameraService.effective_config``), so a machine-model switch is honoured
 too. A non-strobe camera is untouched, exactly as before.
 
+Under the result line, "Test" also shows the **judgement** a real cycle would
+reach on that frame — GOOD/NG with the hole's deviation from the calibrated
+reference point against "Position Tolerance", using exactly the pipeline's
+rules (``InspectionService._inspect_one``) and its hole choice
+(``services.inspection_service.select_hole``). The verdict re-evaluates the
+moment "Expected Hole Count" or "Position Tolerance" changes, without a new
+capture, so a tolerance can be dialled in against a known part. The deviation
+exists only for a **calibrated** camera (it is measured from the calibration's
+reference point, not from the image centre); on an uncalibrated camera the
+pipeline skips the tolerance check entirely, and the page says so rather than
+reporting a GOOD it never checked.
+
 **Auto Sweep** grid-searches (almost) every gating parameter of the active
 strategy — not just two — against the last "Test on Camera" frame. Drawing an
 ROI around the hole first is now required, not optional: it both scopes which
@@ -69,6 +81,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.calibration import CalibrationManager
 from core.utilities import ConfigManager
 from core.utilities.enums import DetectorType
 from core.utilities.exceptions import ConfigurationError, VisionSystemError
@@ -84,6 +97,7 @@ from core.vision import (
 )
 from models.app_state import AppState
 from services.camera_service import CameraService
+from services.inspection_service import select_hole
 from ui.widgets import RoiEditor
 
 # Strategies the auto sweep can grid-search, and the detector class it builds
@@ -228,12 +242,17 @@ class DetectionPage(QWidget):
         vision_engine: VisionEngine,
         camera_service: CameraService,
         app_state: AppState,
+        calibration: CalibrationManager | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._config = config_manager
         self._engine = vision_engine
         self._cameras = camera_service
+        # Optional so a page built without one (tests) still works — the
+        # verdict then reports the tolerance as unchecked, as for an
+        # uncalibrated camera.
+        self._calibration = calibration
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
@@ -264,7 +283,11 @@ class DetectionPage(QWidget):
         self._expected = _spin(1, 16)
         self._tolerance = _dspin(0.0, 500.0, 0.1, 1)
         self._tolerance.setSuffix(" mm")
-        self._tolerance.setToolTip("0 disables the position tolerance check")
+        self._tolerance.setToolTip(
+            "Max distance (mm) the hole may sit from the calibrated reference "
+            "point before the camera reports NG. 0 disables the check; it is "
+            "also skipped for an uncalibrated camera."
+        )
         self._normalize = QCheckBox("Normalize image before detection")
         self._normalize.setToolTip(
             "Contrast-stretches the frame to the full 0-255 range before the "
@@ -276,6 +299,9 @@ class DetectionPage(QWidget):
         common.addRow("Confidence Threshold", self._confidence)
         common.addRow("Expected Hole Count", self._expected)
         common.addRow("Position Tolerance", self._tolerance)
+        # Re-judge the last Test against the new threshold, no new capture.
+        self._expected.valueChanged.connect(self._refresh_verdict)
+        self._tolerance.valueChanged.connect(self._refresh_verdict)
         common.addRow("", self._normalize)
         left.addWidget(common_box)
 
@@ -364,6 +390,9 @@ class DetectionPage(QWidget):
         self._result_label = QLabel("—")
         self._result_label.setProperty("class", "dim")
         right.addWidget(self._result_label)
+        self._verdict_label = QLabel("")
+        self._verdict_label.setWordWrap(True)
+        right.addWidget(self._verdict_label)
         right.addWidget(self._build_sweep_box())
         body.addLayout(right, stretch=1)
 
@@ -719,6 +748,8 @@ class DetectionPage(QWidget):
             frame = self._cameras.test_capture(camera_index)
             self._engine.apply_camera_config(camera_index, self._collect())  # test what's on screen
             result = self._engine.detect(frame, camera_index)
+            if self._calibration is not None:
+                select_hole(self._calibration, camera_index, result)  # judge what a cycle would
         except VisionSystemError as exc:
             # Turn the light off before the blocking warning dialog, not
             # after — it must not sit lit for however long the operator
@@ -742,6 +773,73 @@ class DetectionPage(QWidget):
             )
         else:
             self._result_label.setText(f"No hole found — {result.processing_ms:.1f} ms")
+        self._refresh_verdict()
+
+    def _refresh_verdict(self) -> None:
+        """Show the GOOD/NG a real cycle would reach on the last Test frame.
+
+        Mirrors ``InspectionService._inspect_one`` rule for rule, reading the
+        *on-screen* expected count and tolerance (Test applies the form to the
+        engine, so that is what the last detection ran under anyway).
+        """
+        if self._last_result is None or self._last_frame is None:
+            self._set_verdict("", "")
+            return
+        result = self._last_result
+        camera_index = self._last_camera_index
+        expected = self._expected.value()
+        best = result.best
+        if best is None or len(result.holes) < expected:
+            self._set_verdict(
+                "NG",
+                f"NG — {len(result.holes)} of {expected} expected hole(s) found; "
+                f"position tolerance not reached.",
+            )
+            return
+
+        calibrated = self._calibration is not None and self._calibration.has(camera_index)
+        if not calibrated:
+            self._set_verdict(
+                "GOOD",
+                f"GOOD — position tolerance NOT checked: camera {camera_index} is "
+                f"not calibrated, so there is no reference point to measure "
+                f"deviation from (a real cycle skips the check too). Calibrate "
+                f"it on the Calibration page to enable the tolerance.",
+            )
+            return
+
+        height, width = self._last_frame.shape[:2]
+        x_mm, y_mm, deviation = self._calibration.evaluate(
+            camera_index, best.x_px, best.y_px, width, height
+        )
+        tolerance = self._tolerance.value()
+        position = f"position X {x_mm:+.2f} / Y {y_mm:+.2f} mm"
+        if tolerance <= 0:
+            self._set_verdict(
+                "GOOD",
+                f"GOOD — deviation {deviation:.2f} mm from reference; tolerance "
+                f"check disabled (0 mm). {position}",
+            )
+        elif deviation > tolerance:
+            self._set_verdict(
+                "NG",
+                f"NG — deviation {deviation:.2f} mm exceeds the {tolerance:.2f} mm "
+                f"tolerance by {deviation - tolerance:.2f} mm. {position}",
+            )
+        else:
+            self._set_verdict(
+                "GOOD",
+                f"GOOD — deviation {deviation:.2f} mm within the {tolerance:.2f} mm "
+                f"tolerance ({tolerance - deviation:.2f} mm margin). {position}",
+            )
+
+    def _set_verdict(self, result: str, text: str) -> None:
+        """``result`` drives the theme's ``QLabel[result=...]`` colour."""
+        label = self._verdict_label
+        label.style().unpolish(label)
+        label.setProperty("result", result)
+        label.style().polish(label)
+        label.setText(text)
 
     def _render_preview(self) -> None:
         """Redraw the last captured frame in whichever mode 'View' is set to.
@@ -811,6 +909,7 @@ class DetectionPage(QWidget):
         self._last_camera_index = None
         self._view.clear_frame()
         self._result_label.setText("—")
+        self._set_verdict("", "")
         self._sweep_rows = []
         self._sweep_table.setRowCount(0)
         self._sweep_status.setText("Run 'Test on Camera' first.")

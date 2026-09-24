@@ -4,9 +4,9 @@
       "index": 1,
       "name": "Camera 1 - Top Left",
       "driver": "basler",
-      "connection_id": "2",
+      "connection_id": "0",
       "enabled": true,
-      "exposure_us": 70000,
+      "exposure_us": 75000,
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 255,
@@ -14,10 +14,10 @@
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 86,
-        "y": 1749,
+        "x": 91,
+        "y": 2153,
         "width": 3500,
-        "height": 2000
+        "height": 1200
       },
       "trigger_mode": "software",
       "basler": {
@@ -41,7 +41,7 @@
       "driver": "basler",
       "connection_id": "1",
       "enabled": true,
-      "exposure_us": 70000,
+      "exposure_us": 75000,
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 255,
@@ -49,10 +49,10 @@
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 86,
-        "y": 1749,
+        "x": 84,
+        "y": 2149,
         "width": 3500,
-        "height": 2000
+        "height": 1200
       },
       "trigger_mode": "software",
       "basler": {
@@ -74,9 +74,9 @@
       "index": 3,
       "name": "Camera 3 - Bottom Left",
       "driver": "basler",
-      "connection_id": "3",
+      "connection_id": "2",
       "enabled": true,
-      "exposure_us": 70000,
+      "exposure_us": 100000,
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 255,
@@ -84,10 +84,10 @@
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 950,
-        "y": 760,
+        "x": 995,
+        "y": 896,
         "width": 3500,
-        "height": 2000
+        "height": 1200
       },
       "trigger_mode": "software",
       "basler": {
@@ -109,9 +109,9 @@
       "index": 4,
       "name": "Camera 4 - Bottom Right",
       "driver": "basler",
-      "connection_id": "0",
+      "connection_id": "3",
       "enabled": true,
-      "exposure_us": 70000,
+      "exposure_us": 100000,
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 255,
@@ -119,10 +119,10 @@
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 1250,
-        "y": 150,
+        "x": 1002,
+        "y": 966,
         "width": 3500,
-        "height": 2000
+        "height": 1200
       },
       "trigger_mode": "software",
       "basler": {

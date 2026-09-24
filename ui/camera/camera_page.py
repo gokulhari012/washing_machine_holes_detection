@@ -54,6 +54,16 @@ preview so the operator can watch each change take effect instead of clicking
 checkable QPushButton has no built-in "checked" styling in this theme, so
 without it the button gave no ongoing sign that it was still streaming.
 
+The preview always shows the camera's **whole** (rotated) frame with the ROI
+drawn on it, so the operator can see where the region sits in the scene;
+"ROI View" beside it shows just the cropped region — what detection is
+actually given. The ROI view is cropped here from the form's ROI
+(``core.camera.crop_roi``, the same function ``CameraBase.capture`` uses), so
+it follows the spin boxes and "Draw ROI" immediately, before Apply/Save.
+Frames from the background preview workers (``AppState.preview_frame``) are
+already ROI-cropped by the camera, so while an ROI is set they go to the ROI
+view only and the full preview keeps the last full frame.
+
 "Apply Live" pushes settings to the connected device without persisting;
 "Save" writes camera.json (+ DB mirror). Worker/manager rebuilds after a
 save are handled by the composition root's config subscription.
@@ -79,6 +89,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSpinBox,
+    QSplitter,
     QVBoxLayout,
     QWidget,
 )
@@ -86,6 +97,7 @@ from PySide6.QtWidgets import (
 from core.camera import (
     DEFAULT_VIEW_FPS,
     VALID_ROTATIONS,
+    crop_roi,
     frame_interval_ms,
     rotate_frame,
 )
@@ -94,7 +106,7 @@ from core.utilities.enums import CameraDriver, ConnectionState, TriggerMode
 from core.utilities.exceptions import VisionSystemError
 from models.app_state import AppState
 from services.camera_service import CameraService
-from ui.widgets import LabeledLed, RoiEditor
+from ui.widgets import ImageView, LabeledLed, RoiEditor
 
 # Adapters actually wired up in core.camera.create_camera(); USB/HikRobot/Daheng/IDS
 # stay in CameraDriver for config-file compatibility but are hidden from this dropdown.
@@ -121,6 +133,9 @@ class CameraPage(QWidget):
         # (and therefore _current_index()) may already have moved to a
         # different camera by the time the run stops (see _on_select).
         self._continuous_strobe_index: int | None = None
+        # Last whole (un-cropped) frame shown, so the ROI view can be re-cropped
+        # whenever the ROI changes without grabbing again.
+        self._full_frame = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
@@ -356,10 +371,10 @@ class CameraPage(QWidget):
         # is nearly the same colour as the page background, so with no live
         # camera connected it reads as a hole in the page rather than an
         # actual "no signal yet" panel.
-        preview_box = QGroupBox("Live Preview")
+        preview_box = QGroupBox("Live Preview — full frame")
         preview_col = QVBoxLayout(preview_box)
         self._preview = RoiEditor()
-        self._preview.setMinimumSize(480, 360)
+        self._preview.setMinimumSize(420, 300)
         self._preview.roi_changed.connect(self._on_roi_drawn)
         preview_col.addWidget(self._preview, stretch=1)
         hint = QLabel("Wheel: zoom · Drag: pan · Double-click: fit · Draw ROI: drag a region")
@@ -369,7 +384,26 @@ class CameraPage(QWidget):
         self._image_hint.setProperty("class", "dim")
         self._image_hint.setWordWrap(True)
         preview_col.addWidget(self._image_hint)
-        body.addWidget(preview_box, stretch=1)
+
+        # What detection is actually given: the ROI crop of the frame above.
+        roi_box = QGroupBox("ROI View — cropped image")
+        roi_col = QVBoxLayout(roi_box)
+        self._roi_view = ImageView()
+        self._roi_view.setMinimumSize(300, 220)
+        roi_col.addWidget(self._roi_view, stretch=1)
+        self._roi_caption = QLabel("—")
+        self._roi_caption.setProperty("class", "dim")
+        self._roi_caption.setWordWrap(True)
+        roi_col.addWidget(self._roi_caption)
+
+        # Side by side, resizable: the full frame usually needs the width.
+        views = QSplitter(Qt.Orientation.Horizontal)
+        views.setChildrenCollapsible(False)
+        views.addWidget(preview_box)
+        views.addWidget(roi_box)
+        views.setStretchFactor(0, 3)
+        views.setStretchFactor(1, 2)
+        body.addWidget(views, stretch=1)
 
         # ---------------------------------------------------------- wiring
         self._continuous_timer = QTimer(self)
@@ -420,6 +454,10 @@ class CameraPage(QWidget):
 
     def _on_select(self, row: int) -> None:
         self._continuous_btn.setChecked(False)  # stop streaming the camera we're leaving
+        # The last frame belongs to the camera we're leaving — don't crop it
+        # with the next camera's ROI.
+        self._full_frame = None
+        self._preview.clear_frame()
         self._populate_form()
 
     def _on_machine_model_applied(self, name: str, plc_code: int) -> None:
@@ -468,6 +506,7 @@ class CameraPage(QWidget):
             self._preview.set_roi(*corner)
         finally:
             self._loading = False
+        self._update_roi_view()
         self._refresh_health()
 
     # ------------------------------------------------------------ collecting
@@ -585,7 +624,7 @@ class CameraPage(QWidget):
         # here means the same thing as one drawn on a live frame.
         self._width.setValue(width)
         self._height.setValue(height)
-        self._preview.set_frame(rotate_frame(frame, self._current_rotation()))
+        self._show_full_frame(rotate_frame(frame, self._current_rotation()))
         self._image_hint.setText(
             f"Resolution detected from the image ({width}x{height}). Press "
             f"“Save Configuration” to stream it live into the preview and the "
@@ -618,7 +657,7 @@ class CameraPage(QWidget):
         if strobe:
             self._svc.light_on(index)
         try:
-            frame = self._svc.test_capture(index)
+            frame = self._svc.test_capture(index, full_frame=True)
         except VisionSystemError as exc:
             # Turn the light off before the blocking warning dialog, not after
             # - it must not sit lit for however long the operator takes to
@@ -629,7 +668,7 @@ class CameraPage(QWidget):
             return
         if strobe:
             self._svc.light_off(index)
-        self._preview.set_frame(frame)
+        self._show_full_frame(frame)
 
     def _on_continuous_toggled(self, checked: bool) -> None:
         if not checked:
@@ -705,12 +744,12 @@ class CameraPage(QWidget):
             self._continuous_btn.setChecked(False)
             return
         try:
-            frame = self._svc.test_capture(index)
+            frame = self._svc.test_capture(index, full_frame=True)
         except VisionSystemError as exc:
             self._continuous_btn.setChecked(False)  # stops the timer via toggled(False)
             QMessageBox.warning(self, "Continuous Capture", str(exc))
             return
-        self._preview.set_frame(frame)
+        self._show_full_frame(frame)
 
     def _on_apply(self) -> None:
         try:
@@ -767,21 +806,67 @@ class CameraPage(QWidget):
                 spin.setValue(value)
         finally:
             self._loading = False
+        self._update_roi_view()
 
     def _on_roi_spins_changed(self) -> None:
         if not self._loading:
             values = self._center_to_corner(*(spin.value() for spin in self._roi_spins))
             self._preview.set_roi(*values)
+            self._update_roi_view()
 
     def _on_clear_roi(self) -> None:
         for spin in self._roi_spins:
             spin.setValue(0)
         self._preview.clear_roi()
+        self._update_roi_view()
+
+    def _form_roi(self) -> tuple[int, int, int, int]:
+        """The form's ROI as top-left ``x, y, w, h`` (w/h 0 = no ROI)."""
+        return self._center_to_corner(*(spin.value() for spin in self._roi_spins))
+
+    def _show_full_frame(self, frame) -> None:
+        """Show a whole (un-cropped) frame with the ROI box, and its crop."""
+        self._full_frame = frame
+        self._preview.set_frame(frame)
+        self._update_roi_view()
+
+    def _update_roi_view(self) -> None:
+        """Re-crop the ROI view from the last full frame and the form's ROI."""
+        frame = self._full_frame
+        if frame is None:
+            self._roi_view.clear_frame()
+            self._roi_caption.setText("Run “Test Camera” to see the ROI crop.")
+            return
+        roi = self._form_roi()
+        cropped = crop_roi(frame, roi)
+        self._roi_view.set_frame(cropped)
+        height, width = cropped.shape[:2]
+        if roi[2] <= 0 or roi[3] <= 0:
+            self._roi_caption.setText(
+                f"No ROI set — detection uses the full frame ({width}×{height} px)."
+            )
+        elif (width, height) != (roi[2], roi[3]):
+            self._roi_caption.setText(
+                f"{width}×{height} px — the ROI ({roi[2]}×{roi[3]}) runs off the "
+                f"frame and is clipped to it."
+            )
+        else:
+            self._roi_caption.setText(
+                f"{width}×{height} px at ({roi[0]}, {roi[1]}) — this crop is what "
+                f"detection is given."
+            )
 
     # --------------------------------------------------------------- events
     def _on_preview_frame(self, camera_index: int, frame) -> None:
-        if self.isVisible() and camera_index == self._current_index():
-            self._preview.set_frame(frame)
+        if not (self.isVisible() and camera_index == self._current_index()):
+            return
+        roi = self._form_roi()
+        if roi[2] > 0 and roi[3] > 0:
+            # Preview workers deliver the camera's ROI crop, not the whole
+            # frame — drawing the ROI box over it would be meaningless.
+            self._roi_view.set_frame(frame)
+        else:
+            self._show_full_frame(frame)
 
     def _on_camera_state(self, camera_index: int, state: str) -> None:
         if camera_index == self._current_index():

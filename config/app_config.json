@@ -4,7 +4,7 @@
     "version": "1.0.0",
     "factory_name": "Factory 1",
     "operator_name": "Operator",
-    "shift": "Evening",
+    "shift": "Night",
     "serial_prefix": "WM-",
     "language": "en",
     "theme": "dark"
@@ -23,8 +23,8 @@
     "export_directory": "exports"
   },
   "inspection": {
-    "capture_mode": "sequential",
-    "camera_delay_ms": 50
+    "capture_mode": "parallel",
+    "camera_delay_ms": 0
   },
   "security": {
     "settings_password_protected": true,

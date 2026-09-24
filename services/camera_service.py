@@ -123,9 +123,14 @@ class CameraService:
     def connect_all(self) -> dict[int, str]:
         return self._manager.connect_all()
 
-    def test_capture(self, index: int) -> np.ndarray:
-        """One frame for the 'Test Camera' button. Raises CameraError."""
-        return self._manager.capture(index)
+    def test_capture(self, index: int, *, full_frame: bool = False) -> np.ndarray:
+        """One frame for the 'Test Camera' button. Raises CameraError.
+
+        ``full_frame=True`` returns the whole rotated frame, not the ROI crop
+        — the Camera page draws the ROI on top of it and crops its own ROI
+        view, so it can follow ROI edits that have not been applied yet.
+        """
+        return self._manager.capture(index, apply_roi=not full_frame)
 
     def detect_resolution(self, index: int) -> tuple[int, int]:
         """(width, height) for the 'Detect Resolution' button. Raises CameraError."""

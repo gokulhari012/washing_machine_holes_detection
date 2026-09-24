@@ -6,9 +6,11 @@
     "auto_cycle_interval_s": 0.0,
     "unit_id": 1,
     "timeout_ms": 1000,
-    "poll_interval_ms": 50,
+    "poll_interval_ms": 10,
     "heartbeat_interval_ms": 500,
     "model_poll_interval_ms": 1000,
+    "trigger_clear_delay_ms": 1000,
+    "vision_complete_delay_ms": 50,
     "reconnect_backoff_ms": [
       1000,
       2000,
@@ -66,10 +68,10 @@
       "4": 6060
     },
     "camera_triggers": {
-      "1": 7000,
-      "2": 7000,
-      "3": 7000,
-      "4": 7000
+      "1": 6500,
+      "2": 6500,
+      "3": 6500,
+      "4": 6500
     },
     "camera_vision_complete": {
       "1": 6002,
@@ -98,8 +100,8 @@
     }
   },
   "scaling": {
-    "position_scale_x": 100,
-    "position_scale_y": 100
+    "position_scale_x": 1000,
+    "position_scale_y": 3000
   },
   "camera_jog": {
     "step": 10,

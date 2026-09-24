@@ -28,7 +28,7 @@ class RoiEditor(ImageView):
         self._roi_mode = False
         self._drag_origin: QPointF | None = None
         self._roi_item = QGraphicsRectItem()
-        pen = QPen(_ACCENT, 2, Qt.PenStyle.DashLine)
+        pen = QPen(_ACCENT, 3, Qt.PenStyle.DashLine)
         pen.setCosmetic(True)  # constant width regardless of zoom
         self._roi_item.setPen(pen)
         self._roi_item.setBrush(QBrush(QColor(47, 129, 247, 40)))
