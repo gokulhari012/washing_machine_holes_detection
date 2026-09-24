@@ -52,6 +52,17 @@ frame, which is what keeps a several-thousand-combination grid (see
 ``_SWEEP_LEVELS``) finishing in seconds rather than minutes. "Apply Best"
 writes every one of the winning combination's parameters into the form, not
 just two spin boxes.
+
+``opencv``, ``dark_hole`` and ``template_matching`` are sweepable. For
+``template_matching`` the ROI does more than bound the search: the diameter
+gates it implies are divided by the template's own size to give the **scale
+range**, so the sweep searches the sizes the drawn box could actually
+contain rather than a ladder of guessed factors (``_scales_from_roi``), and
+each trial searches a single scale so the winning row names it. ``yolo`` is
+deliberately not sweepable — see ``_UNSWEEPABLE_REASON``, which is also what
+its greyed-out button says. One detector instance is built per sweep and
+reconfigured per trial, so template_matching re-reads its template file once
+for the whole grid rather than once per combination.
 """
 
 from __future__ import annotations
@@ -89,12 +100,15 @@ from core.vision import (
     DarkHoleDetector,
     DetectionResult,
     Hole,
+    HoleDetector,
     OpenCVHoleDetector,
+    TemplateMatchingDetector,
     VisionEngine,
     draw_debug_overlay,
     draw_detection_overlay,
     normalize_image,
 )
+from core.vision.template_matching_detector import parse_scales, template_mean_side
 from models.app_state import AppState
 from services.camera_service import CameraService
 from services.inspection_service import select_hole
@@ -106,6 +120,23 @@ from ui.widgets import RoiEditor
 _SWEEP_DETECTORS: dict[str, type] = {
     "opencv": OpenCVHoleDetector,
     "dark_hole": DarkHoleDetector,
+    "template_matching": TemplateMatchingDetector,
+}
+
+# ``yolo`` is deliberately absent, and the disabled button says why: a trained
+# model's only sweepable knobs are its two post-processing thresholds, and the
+# sweep evaluates every trial against a small ROI crop (see _crop_around_roi).
+# A detector trained on full frames, run against a 150 px crop that Ultralytics
+# then letterboxes to its own imgsz, answers a different question from the one
+# the production cycle asks — so a sweep here would not be slow, it would be
+# misleading. Tune a model with "Test on Camera" and its confidence readout.
+_UNSWEEPABLE_REASON = {
+    "yolo": (
+        "Auto sweep is not available for 'yolo': a trained model has only its "
+        "two thresholds to search, and the sweep runs each trial on a small ROI "
+        "crop, which is not what the model saw in training — the result would "
+        "mislead rather than tune. Use 'Test on Camera' and read the confidence."
+    ),
 }
 
 # Auto Sweep discretization: every value each gating parameter is tried at.
@@ -139,7 +170,24 @@ _SWEEP_LEVELS: dict[str, dict[str, list]] = {
         "min_fill_ratio": [0.2, 0.35, 0.5, 0.65],
         "max_fit_error": [0.15, 0.25, 0.4],
     },
+    "template_matching": {
+        "method": ["TM_CCOEFF_NORMED", "TM_CCORR_NORMED", "TM_SQDIFF_NORMED"],
+        # Descending on purpose. A threshold no candidate clears simply
+        # contributes no row, and every threshold a candidate *does* clear
+        # scores it identically — so with the sort being stable, the first row
+        # for a given method/scale is the **strictest threshold that still
+        # found the hole**, which is the number an operator wants.
+        "match_threshold": [0.95, 0.9, 0.85, 0.8, 0.75, 0.7, 0.6, 0.5],
+        # Derived per run from the drawn ROI, not a fixed ladder — see
+        # _scales_from_roi. Listed with an empty level set so the results
+        # table still shows the winning scale, which is the whole point of
+        # sweeping this strategy.
+        "scales": [],
+    },
 }
+
+#: How many scales _scales_from_roi spreads across the ROI-implied range.
+_SWEEP_SCALE_STEPS = 9
 
 
 def _opencv_param_grid(base: dict) -> list[dict]:
@@ -211,9 +259,54 @@ def _dark_hole_param_grid(base: dict) -> list[dict]:
     return combos
 
 
+def _scales_from_roi(base: dict) -> list[float]:
+    """The scale range worth searching, from the ROI-derived diameter gates.
+
+    A match's diameter is the template's own mean side times the scale it
+    matched at, so the ROI that already bounds the hole's diameter bounds the
+    scale directly: no ladder of guessed factors, and no combination spent on
+    a scale that could not produce a hole the drawn box would accept. Spread
+    geometrically, because scale is multiplicative — a fixed +0.1 step is
+    coarse at 0.3x and needlessly fine at 3x.
+
+    Raises:
+        DetectionError: no template configured, or it cannot be read.
+    """
+    side = template_mean_side(str(base.get("template_path", "") or ""))
+    min_diameter = float(base.get("min_hole_diameter_px", 0) or 0)
+    max_diameter = float(base.get("max_hole_diameter_px", 0) or 0)
+    low = max(0.05, min_diameter / side)
+    high = max(low * 1.2, max_diameter / side)
+    ratio = (high / low) ** (1.0 / (_SWEEP_SCALE_STEPS - 1))
+    return sorted({round(low * ratio**step, 3) for step in range(_SWEEP_SCALE_STEPS)})
+
+
+def _template_matching_param_grid(base: dict) -> list[dict]:
+    """Every combination the template_matching sweep tries, seeded with *base*.
+
+    Each trial searches exactly **one** scale, so the winning row names the
+    scale that fitted rather than a set that happened to contain it; "Apply
+    Best" then writes that single scale into the form's Scales field, which
+    the operator can widen by hand around it.
+    """
+    levels = _SWEEP_LEVELS["template_matching"]
+    combos: list[dict] = []
+    for method in levels["method"]:
+        for scale in _scales_from_roi(base):
+            for threshold in levels["match_threshold"]:
+                combos.append({
+                    **base,
+                    "method": method,
+                    "scales": [scale],
+                    "match_threshold": threshold,
+                })
+    return combos
+
+
 _SWEEP_GRID_BUILDERS = {
     "opencv": _opencv_param_grid,
     "dark_hole": _dark_hole_param_grid,
+    "template_matching": _template_matching_param_grid,
 }
 
 _SWEEP_PROGRESS_TICK = 25  # UI refresh cadence — every Nth trial, not every one
@@ -231,6 +324,16 @@ def _spin(minimum: int, maximum: int) -> QSpinBox:
     spin = QSpinBox()
     spin.setRange(minimum, maximum)
     return spin
+
+
+def _format_scales(value: object) -> str:
+    """Render a ``scales`` value for the form's line edit.
+
+    Trailing zeros are trimmed (``1.0`` -> ``1``, ``1.05`` -> ``1.05``) so a
+    hand-typed list survives a load/save round trip looking the way it was
+    typed rather than growing decimals each time.
+    """
+    return ", ".join(f"{scale:g}" for scale in parse_scales(value))
 
 
 class DetectionPage(QWidget):
@@ -351,6 +454,13 @@ class DetectionPage(QWidget):
                 "min_hole_diameter_px": self._dh_min_diameter,
                 "max_hole_diameter_px": self._dh_max_diameter,
             },
+            "template_matching": {
+                "method": self._tm_method,
+                "match_threshold": self._tm_threshold,
+                "scales": self._tm_scales,
+                "min_hole_diameter_px": self._tm_min_diameter,
+                "max_hole_diameter_px": self._tm_max_diameter,
+            },
         }
 
         buttons = QHBoxLayout()
@@ -458,9 +568,38 @@ class DetectionPage(QWidget):
         self._tm_threshold = _dspin(0.0, 1.0, 0.05)
         self._tm_method = QComboBox()
         self._tm_method.addItems(["TM_CCOEFF_NORMED", "TM_CCORR_NORMED", "TM_SQDIFF_NORMED"])
+        self._tm_method.setToolTip(
+            "TM_CCOEFF_NORMED subtracts the mean and is the one to use. "
+            "TM_CCORR_NORMED does not, so on a bright low-contrast plate it "
+            "scores near 1.0 almost everywhere"
+        )
+        self._tm_scales = QLineEdit()
+        self._tm_scales.setPlaceholderText("1.0")
+        self._tm_scales.setToolTip(
+            "Comma-separated sizes the template is searched at, relative to "
+            "how it was cropped — '0.9, 1.0, 1.1' tolerates about +/-10% of "
+            "standoff or part-height variation. One entry is fastest; each "
+            "extra one is another full pass over the frame. Run Auto Sweep "
+            "with an ROI drawn round the hole to find the right value."
+        )
+        self._tm_max_matches = _spin(1, 50)
+        self._tm_max_matches.setToolTip("Most holes this strategy will report per frame")
+        self._tm_min_diameter = _spin(0, 4000)
+        self._tm_max_diameter = _spin(0, 4000)
+        size_hint = (
+            "Gate on the matched size in px; 0 on either field disables it. "
+            "Only meaningful with several scales in play — it is what stops a "
+            "much-magnified match on a background feature counting as a hole."
+        )
+        self._tm_min_diameter.setToolTip(size_hint)
+        self._tm_max_diameter.setToolTip(size_hint)
         form.addRow("Template Image", path_w)
         form.addRow("Match Threshold", self._tm_threshold)
         form.addRow("Method", self._tm_method)
+        form.addRow("Scales", self._tm_scales)
+        form.addRow("Max Matches", self._tm_max_matches)
+        form.addRow("Min Hole Diameter (px)", self._tm_min_diameter)
+        form.addRow("Max Hole Diameter (px)", self._tm_max_diameter)
         return box
 
     def _build_yolo_form(self) -> QWidget:
@@ -476,12 +615,52 @@ class DetectionPage(QWidget):
         path_w = QWidget()
         path_w.setLayout(path_row)
         self._yolo_conf = _dspin(0.0, 1.0, 0.05)
+        self._yolo_conf.setToolTip(
+            "The model's own per-box gate. 'Confidence Threshold' above "
+            "filters again afterwards, so the effective floor is whichever "
+            "of the two is higher"
+        )
         self._yolo_iou = _dspin(0.0, 1.0, 0.05)
-        self._yolo_class = _spin(0, 999)
+        self._yolo_class = _spin(-1, 999)
+        self._yolo_class.setSpecialValueText("any class")  # shown at -1
+        self._yolo_class.setToolTip(
+            "Which trained class counts as a hole. Set it to 'any class' (-1) "
+            "for a single-class model — a model whose one class is not id 0 "
+            "otherwise detects nothing at all"
+        )
+        self._yolo_device = QComboBox()
+        self._yolo_device.setEditable(True)
+        self._yolo_device.addItems(["", "cpu", "0", "cuda:0"])
+        self._yolo_device.setToolTip(
+            "Leave blank to let Ultralytics choose. This station has no CUDA "
+            "unless one was fitted, in which case '0' selects the first GPU"
+        )
+        self._yolo_imgsz = _spin(0, 4096)
+        self._yolo_imgsz.setSpecialValueText("model default")  # shown at 0
+        self._yolo_imgsz.setToolTip(
+            "Inference size in px. Worth setting only to match how the model "
+            "was trained; anything else costs accuracy"
+        )
+        self._yolo_max_det = _spin(0, 1000)
+        self._yolo_max_det.setSpecialValueText("model default")  # shown at 0
+        self._yolo_min_diameter = _spin(0, 4000)
+        self._yolo_max_diameter = _spin(0, 4000)
+        size_hint = (
+            "Gate on the box's mean side in px; 0 on either field disables it. "
+            "A trained model usually needs no size gate — this is for the case "
+            "where it also fires on a similar feature at a very different scale."
+        )
+        self._yolo_min_diameter.setToolTip(size_hint)
+        self._yolo_max_diameter.setToolTip(size_hint)
         form.addRow("Model Weights", path_w)
         form.addRow("Confidence", self._yolo_conf)
         form.addRow("IoU Threshold", self._yolo_iou)
         form.addRow("Class ID", self._yolo_class)
+        form.addRow("Device", self._yolo_device)
+        form.addRow("Inference Size (px)", self._yolo_imgsz)
+        form.addRow("Max Detections", self._yolo_max_det)
+        form.addRow("Min Hole Diameter (px)", self._yolo_min_diameter)
+        form.addRow("Max Hole Diameter (px)", self._yolo_max_diameter)
         return box
 
     def _build_dark_hole_form(self) -> QWidget:
@@ -634,6 +813,10 @@ class DetectionPage(QWidget):
         self._tm_path.setText(template.get("template_path", ""))
         self._tm_threshold.setValue(float(template.get("match_threshold", 0.8)))
         self._tm_method.setCurrentText(template.get("method", "TM_CCOEFF_NORMED"))
+        self._tm_scales.setText(_format_scales(template.get("scales")))
+        self._tm_max_matches.setValue(int(template.get("max_matches", 10)))
+        self._tm_min_diameter.setValue(int(template.get("min_hole_diameter_px", 0)))
+        self._tm_max_diameter.setValue(int(template.get("max_hole_diameter_px", 0)))
 
         dark = cfg.get("dark_hole", {})
         self._dh_channel.setCurrentText(str(dark.get("channel", "auto")))
@@ -651,6 +834,11 @@ class DetectionPage(QWidget):
         self._yolo_conf.setValue(float(yolo.get("confidence", 0.5)))
         self._yolo_iou.setValue(float(yolo.get("iou_threshold", 0.45)))
         self._yolo_class.setValue(int(yolo.get("class_id", 0)))
+        self._yolo_device.setCurrentText(str(yolo.get("device", "") or ""))
+        self._yolo_imgsz.setValue(int(yolo.get("imgsz", 0) or 0))
+        self._yolo_max_det.setValue(int(yolo.get("max_detections", 0) or 0))
+        self._yolo_min_diameter.setValue(int(yolo.get("min_hole_diameter_px", 0)))
+        self._yolo_max_diameter.setValue(int(yolo.get("max_hole_diameter_px", 0)))
 
     def _collect(self) -> dict:
         return {
@@ -680,6 +868,12 @@ class DetectionPage(QWidget):
                 "template_path": self._tm_path.text().strip(),
                 "match_threshold": self._tm_threshold.value(),
                 "method": self._tm_method.currentText(),
+                # Normalised here, not on the way out of the detector, so
+                # detection.json always holds a clean list whatever was typed.
+                "scales": parse_scales(self._tm_scales.text()),
+                "max_matches": self._tm_max_matches.value(),
+                "min_hole_diameter_px": self._tm_min_diameter.value(),
+                "max_hole_diameter_px": self._tm_max_diameter.value(),
             },
             "dark_hole": {
                 "channel": self._dh_channel.currentText(),
@@ -697,6 +891,11 @@ class DetectionPage(QWidget):
                 "confidence": self._yolo_conf.value(),
                 "iou_threshold": self._yolo_iou.value(),
                 "class_id": self._yolo_class.value(),
+                "device": self._yolo_device.currentText().strip(),
+                "imgsz": self._yolo_imgsz.value(),
+                "max_detections": self._yolo_max_det.value(),
+                "min_hole_diameter_px": self._yolo_min_diameter.value(),
+                "max_hole_diameter_px": self._yolo_max_diameter.value(),
             },
         }
 
@@ -918,8 +1117,14 @@ class DetectionPage(QWidget):
     def _update_sweep_availability(self, strategy: str) -> None:
         supported = strategy in _SWEEP_GRID_BUILDERS
         self._sweep_btn.setEnabled(supported)
-        self._sweep_btn.setToolTip(
-            "" if supported else f"Auto sweep is not available for the '{strategy}' strategy"
+        self._sweep_btn.setToolTip("" if supported else self._unsweepable_reason(strategy))
+
+    @staticmethod
+    def _unsweepable_reason(strategy: str) -> str:
+        """Why this strategy's sweep button is greyed out — a bare "not
+        available" leaves an operator wondering whether it is a bug."""
+        return _UNSWEEPABLE_REASON.get(
+            strategy, f"Auto sweep is not available for the '{strategy}' strategy"
         )
 
     def _on_cancel_sweep(self) -> None:
@@ -932,9 +1137,7 @@ class DetectionPage(QWidget):
         strategy = self._strategy.currentText()
         grid_builder = _SWEEP_GRID_BUILDERS.get(strategy)
         if grid_builder is None:
-            QMessageBox.information(
-                self, "Auto Sweep", f"Auto sweep is not available for the '{strategy}' strategy."
-            )
+            QMessageBox.information(self, "Auto Sweep", self._unsweepable_reason(strategy))
             return
         roi = self._view.current_roi()
         if roi[2] <= 0 or roi[3] <= 0:
@@ -951,14 +1154,21 @@ class DetectionPage(QWidget):
             min_hole_diameter_px=min_diameter,
             max_hole_diameter_px=max_diameter,
         )
-        combos = grid_builder(base_params)
+        try:
+            # template_matching derives its scale range here, which needs the
+            # template itself — an unset or unreadable one has to be reported
+            # as the configuration problem it is, not as "found nothing".
+            combos = grid_builder(base_params)
+            detector = _SWEEP_DETECTORS[strategy](base_params)
+        except VisionSystemError as exc:
+            QMessageBox.warning(self, "Auto Sweep", str(exc))
+            return
         cropped, offset_x, offset_y = self._crop_around_roi(self._last_frame, roi)
         if self._normalize.isChecked():  # match what the live/tested detector actually sees
             cropped = normalize_image(cropped)
-        detector_cls = _SWEEP_DETECTORS[strategy]
 
         found: list[tuple[dict, Hole]] = []
-        tried = self._run_sweep_grid(combos, detector_cls, cropped, roi, offset_x, offset_y, found)
+        tried = self._run_sweep_grid(combos, detector, cropped, roi, offset_x, offset_y, found)
 
         self._sweep_rows = sorted(found, key=lambda item: item[1].confidence, reverse=True)[:20]
         self._fill_sweep_table(strategy)
@@ -984,7 +1194,7 @@ class DetectionPage(QWidget):
     def _run_sweep_grid(
         self,
         combos: list[dict],
-        detector_cls: type,
+        detector: HoleDetector,
         cropped: np.ndarray,
         roi: tuple[int, int, int, int],
         offset_x: int,
@@ -999,6 +1209,13 @@ class DetectionPage(QWidget):
         this only runs from the UI thread, on a small ROI crop, so a plain
         loop with periodic ``processEvents()`` is enough; it doesn't warrant
         promoting to a full worker thread for a diagnostic tuning tool.
+
+        *detector* is **one** instance, reconfigured per trial rather than
+        rebuilt: every combination carries the full parameter set, so
+        ``configure`` fully determines each trial, and a strategy that does
+        real work on construction (template_matching re-reads and rescales
+        its template file) then pays that cost once for the whole grid
+        instead of once per combination.
         """
         self._sweep_cancel_requested = False
         self._sweep_btn.setEnabled(False)
@@ -1012,7 +1229,8 @@ class DetectionPage(QWidget):
                 if self._sweep_cancel_requested:
                     break
                 try:
-                    result = detector_cls(params).detect(cropped)
+                    detector.configure(params)
+                    result = detector.detect(cropped)
                 except VisionSystemError:
                     pass  # this combination is not a valid configuration — skip it
                 else:
@@ -1085,10 +1303,19 @@ class DetectionPage(QWidget):
         self._sweep_table.setHorizontalHeaderLabels(headers)
         self._sweep_table.setRowCount(len(self._sweep_rows))
         for row_index, (params, hole) in enumerate(self._sweep_rows):
-            values = [str(params.get(key)) for key in columns]
+            values = [self._format_cell(params.get(key)) for key in columns]
             values += [f"{hole.confidence:.2f}", f"{hole.diameter_px:.1f}", f"{hole.circularity:.2f}"]
             for col, value in enumerate(values):
                 self._sweep_table.setItem(row_index, col, QTableWidgetItem(value))
+
+    @staticmethod
+    def _format_cell(value: object) -> str:
+        """One results-table cell. A list parameter (template_matching's
+        ``scales``) renders as its bare values rather than ``[1.05]``."""
+        if isinstance(value, (list, tuple)):
+            return ", ".join(f"{item:g}" if isinstance(item, float) else str(item)
+                             for item in value)
+        return str(value)
 
     def _on_sweep_row_clicked(self, row: int, _column: int) -> None:
         """Preview that combination's result, without touching the live engine."""
@@ -1125,5 +1352,11 @@ class DetectionPage(QWidget):
             widget.setValue(float(value))
         elif isinstance(widget, QComboBox):
             widget.setCurrentText(str(value))
+        elif isinstance(widget, QLineEdit):
+            # Only template_matching's "scales" reaches here, and it arrives
+            # as the single-entry list each trial searched.
+            widget.setText(
+                _format_scales(value) if isinstance(value, (list, tuple)) else str(value)
+            )
         else:
             raise TypeError(f"Unsupported widget type for sweep apply: {type(widget)}")

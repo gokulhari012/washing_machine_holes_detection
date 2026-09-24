@@ -3,7 +3,7 @@
     {
       "index": 1,
       "name": "Camera 1 - Top Left",
-      "driver": "basler",
+      "driver": "image_file",
       "connection_id": "0",
       "enabled": true,
       "exposure_us": 75000,
@@ -14,10 +14,10 @@
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 91,
-        "y": 2153,
-        "width": 3500,
-        "height": 1200
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
       },
       "trigger_mode": "software",
       "basler": {
@@ -30,8 +30,8 @@
       "simulation": {
         "image_directory": "resources/sample_images/camera_1"
       },
-      "image_source": "D:/washing_machine_holes_detection-main/washing_machine_holes_detection-main/test images",
-      "rotation": 90,
+      "image_source": "C:/Users/gokul/Pictures/Washing machine/Image__2026-09-07__13-18-43.bmp",
+      "rotation": 0,
       "led_channel": 2,
       "led_strobe": true
     },

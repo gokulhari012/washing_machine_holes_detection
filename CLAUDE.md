@@ -940,6 +940,34 @@ since detection parameters are per-camera, each camera's Detection-page block ca
 (and generally should) carry its own gates for the optics it actually looks through —
 there is no "keep all four consistent" constraint anymore.
 
+**A detector's missing resource is a *detect-time* error, never a construct-time
+one.** `template_matching` with no `template_path`, and `yolo` with no
+`model_path`, both build fine and raise `DetectionError` when they run. That
+looks like something worth "fixing" in `configure` — don't. A detector is
+constructed at startup (`main.py` builds `VisionEngine` from `detection.json`)
+and inside `apply_config`'s all-or-nothing hot-swap, so raising there would turn
+a half-finished tuning session into a station that will not boot, and would take
+the other three cameras' working strategies down with it. An unreadable file
+(as opposed to an unset one) *does* raise at configure, because that is a real
+fault rather than an unfinished setting. `tests/test_detection_page_strategies.py`
+pins it. The operator sees it where they are standing: "Test on Camera" reports
+it immediately.
+
+**`template_matching` searches a `scales` list, and `yolo` is deliberately not
+sweepable.** Both strategies are wired as fully as `opencv`/`dark_hole` — debug
+view, size gates, per-camera config — with two things worth knowing. (1) The
+template is correlated at every entry in `scales` (default `[1.0]`, the authored
+size) and a bore matched at several neighbouring scales is suppressed *across*
+maps into one hole, so widening the list costs a full pass per entry but no
+duplicate holes; the Detection page's Auto Sweep derives the scale range from
+the drawn ROI divided by the template's own size rather than a guessed ladder.
+(2) `yolo` is absent from `_SWEEP_GRID_BUILDERS` on purpose — the sweep
+evaluates every trial against a small ROI crop, which is not what a model
+trained on full frames saw, so a sweep there would mislead rather than tune.
+The greyed-out button says exactly that (`_UNSWEEPABLE_REASON`); don't "enable"
+it. `ultralytics` is bundled by `wmhd.spec` only when the build machine has it
+installed, since it pulls torch in with it.
+
 **`config/defaults/` must be updated in lockstep.** Adding a config key without adding
 it to `defaults/` means "Restore Defaults" silently drops the feature. (`defaults/`
 currently carries every key, including `model_select`, `camera_results` and

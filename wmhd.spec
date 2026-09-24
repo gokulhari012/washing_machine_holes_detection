@@ -16,6 +16,7 @@ every launch. resources/ is read-only, so it is bundled inside _internal and
 reached through ``sys._MEIPASS`` (see ui/theme.py).
 """
 
+import importlib.util
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
@@ -26,11 +27,23 @@ BASE_DIR = Path(SPECPATH)
 # knows about; collect_all pulls the binaries and the .zip GenICam payload.
 pylon_datas, pylon_binaries, pylon_hidden = collect_all("pypylon")
 
+# ultralytics backs the optional "yolo" detection strategy and is imported
+# lazily inside YoloHoleDetector, so PyInstaller cannot see it. Bundle it only
+# when the build machine actually has it installed: it pulls torch along with
+# it, several times the size of everything else here, and a station running a
+# classical detector must not pay that. Leaving it out is safe — the frozen
+# app still starts and the yolo strategy reports the missing package, exactly
+# as it does from source.
+if importlib.util.find_spec("ultralytics") is not None:
+    yolo_datas, yolo_binaries, yolo_hidden = collect_all("ultralytics")
+else:
+    yolo_datas, yolo_binaries, yolo_hidden = [], [], []
+
 a = Analysis(
     ["main.py"],
     pathex=[str(BASE_DIR)],
-    binaries=pylon_binaries,
-    datas=[("resources", "resources")] + pylon_datas,
+    binaries=pylon_binaries + yolo_binaries,
+    datas=[("resources", "resources")] + pylon_datas + yolo_datas,
     # The camera/PLC adapters are imported lazily inside factories; name them
     # explicitly so a driver switch in camera.json cannot hit a missing module.
     hiddenimports=[
@@ -43,6 +56,7 @@ a = Analysis(
         "serial",
         "serial.tools.list_ports",
         *pylon_hidden,
+        *yolo_hidden,
     ],
     hookspath=[],
     hooksconfig={},
@@ -52,6 +66,7 @@ a = Analysis(
     excludes=[
         "tkinter", "matplotlib", "scipy", "pandas", "IPython", "notebook",
         "pytest", "_pytest", "PyQt5", "PyQt6", "PySide2",
+        *([] if yolo_hidden else ["ultralytics", "torch", "torchvision"]),
         "PySide6.Qt3DAnimation", "PySide6.Qt3DCore", "PySide6.Qt3DExtras",
         "PySide6.Qt3DInput", "PySide6.Qt3DLogic", "PySide6.Qt3DRender",
         "PySide6.QtBluetooth", "PySide6.QtCharts", "PySide6.QtDataVisualization",

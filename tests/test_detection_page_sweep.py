@@ -9,11 +9,18 @@ import cv2
 import numpy as np
 import pytest
 
-from core.vision import DarkHoleDetector, OpenCVHoleDetector
+from core.utilities.exceptions import DetectionError
+from core.vision import DarkHoleDetector, OpenCVHoleDetector, TemplateMatchingDetector
 from ui.detection.detection_page import (
     DetectionPage,
+    _SWEEP_GRID_BUILDERS,
+    _SWEEP_LEVELS,
+    _SWEEP_SCALE_STEPS,
     _dark_hole_param_grid,
+    _format_scales,
     _opencv_param_grid,
+    _scales_from_roi,
+    _template_matching_param_grid,
 )
 
 
@@ -135,3 +142,151 @@ def test_dark_hole_sweep_pipeline_finds_hole() -> None:
             found = True
             break
     assert found, "expected at least one dark_hole combo to find the synthetic hole"
+
+
+# ---------------------------------------------- template_matching sweep
+def _template_file(tmp_path, side: int = 100, radius: int = 40) -> str:
+    """A template whose bore is ``2*radius`` px across in a ``side`` px crop."""
+    template = np.full((side, side), 180, np.uint8)
+    cv2.circle(template, (side // 2, side // 2), radius, 20, -1)
+    path = tmp_path / "template.png"
+    cv2.imwrite(str(path), template)
+    return str(path)
+
+
+def test_scales_come_from_the_roi_not_a_fixed_ladder(tmp_path) -> None:
+    """The ROI bounds the hole's diameter; dividing by the template's own
+    size turns that straight into the scale range worth searching."""
+    base = {
+        "template_path": _template_file(tmp_path),  # 100 px mean side
+        "min_hole_diameter_px": 30.0,
+        "max_hole_diameter_px": 90.0,
+    }
+    scales = _scales_from_roi(base)
+    assert scales[0] == pytest.approx(0.3, abs=0.01)
+    assert scales[-1] == pytest.approx(0.9, abs=0.01)
+    assert len(scales) == _SWEEP_SCALE_STEPS
+    assert scales == sorted(scales)
+
+
+def test_scales_from_roi_stay_positive_for_a_zero_gate(tmp_path) -> None:
+    """A 0 min gate must not collapse the range to 0 (or divide by it)."""
+    base = {
+        "template_path": _template_file(tmp_path),
+        "min_hole_diameter_px": 0.0,
+        "max_hole_diameter_px": 0.0,
+    }
+    scales = _scales_from_roi(base)
+    assert all(scale > 0 for scale in scales)
+    assert scales[-1] > scales[0]
+
+
+def test_scales_from_roi_without_a_template_is_a_configuration_error() -> None:
+    with pytest.raises(DetectionError, match="template_path"):
+        _scales_from_roi({"min_hole_diameter_px": 10, "max_hole_diameter_px": 50})
+
+
+def test_template_grid_covers_methods_scales_and_thresholds(tmp_path) -> None:
+    base = {
+        "template_path": _template_file(tmp_path),
+        "min_hole_diameter_px": 30.0,
+        "max_hole_diameter_px": 90.0,
+    }
+    combos = _template_matching_param_grid(base)
+    levels = _SWEEP_LEVELS["template_matching"]
+    assert len(combos) == len(levels["method"]) * _SWEEP_SCALE_STEPS * len(
+        levels["match_threshold"]
+    )
+    assert {combo["method"] for combo in combos} == set(levels["method"])
+    # one scale per trial, so the winning row names the scale that fitted
+    assert all(len(combo["scales"]) == 1 for combo in combos)
+    assert combos[0]["template_path"] == base["template_path"]  # base passes through
+
+
+def test_template_grid_tries_the_strictest_threshold_first(tmp_path) -> None:
+    """Every threshold a candidate clears scores it identically, and the sort
+    is stable — so descending order is what makes the top row the tightest
+    threshold that still found the hole, rather than the loosest."""
+    base = {
+        "template_path": _template_file(tmp_path),
+        "min_hole_diameter_px": 30.0,
+        "max_hole_diameter_px": 90.0,
+    }
+    combos = _template_matching_param_grid(base)
+    first_group = [
+        combo["match_threshold"]
+        for combo in combos
+        if combo["method"] == combos[0]["method"] and combo["scales"] == combos[0]["scales"]
+    ]
+    assert first_group == sorted(first_group, reverse=True)
+
+
+def test_template_sweep_pipeline_finds_the_hole(tmp_path) -> None:
+    """End-to-end, the path _on_run_sweep drives: ROI -> gates -> scales ->
+    crop -> one reconfigured detector per trial -> offset back into the ROI."""
+    from dataclasses import replace
+
+    frame = _frame_with_hole()  # 50 px bore at (150, 150)
+    roi = (120, 120, 60, 60)
+    min_d, max_d = DetectionPage._diameter_bounds_from_roi(roi)
+    cropped, offset_x, offset_y = DetectionPage._crop_around_roi(frame, roi)
+
+    base = {
+        "template_path": _template_file(tmp_path),
+        "min_hole_diameter_px": min_d,
+        "max_hole_diameter_px": max_d,
+    }
+    detector = TemplateMatchingDetector(base)  # one instance, reconfigured per trial
+    found = []
+    for params in _template_matching_param_grid(base):
+        try:
+            detector.configure(params)
+            result = detector.detect(cropped)
+        except DetectionError:
+            continue
+        holes = [
+            replace(h, x_px=h.x_px + offset_x, y_px=h.y_px + offset_y) for h in result.holes
+        ]
+        hole = DetectionPage._best_in_roi(holes, roi)
+        if hole is not None:
+            found.append((params, hole))
+
+    assert found, "expected at least one template_matching combo to find the hole"
+    best_params, best_hole = sorted(found, key=lambda item: item[1].confidence, reverse=True)[0]
+    assert roi[0] <= best_hole.x_px <= roi[0] + roi[2]
+    assert roi[1] <= best_hole.y_px <= roi[1] + roi[3]
+    # the winning scale must be the one that maps the template onto a ~50 px bore
+    assert best_params["scales"][0] == pytest.approx(0.6, abs=0.15)
+
+
+def test_yolo_is_not_sweepable_and_says_why() -> None:
+    assert "yolo" not in _SWEEP_GRID_BUILDERS
+    reason = DetectionPage._unsweepable_reason("yolo")
+    assert "yolo" in reason and "crop" in reason
+
+
+def test_unknown_strategy_gets_a_generic_reason() -> None:
+    assert "whatever" in DetectionPage._unsweepable_reason("whatever")
+
+
+# ------------------------------------------------------- cell formatting
+@pytest.mark.parametrize(
+    "value, expected",
+    [
+        ([1.05], "1.05"),
+        ([0.9, 1.0, 1.1], "0.9, 1, 1.1"),
+        ("close", "close"),
+        (True, "True"),
+        (5, "5"),
+    ],
+)
+def test_sweep_cell_formatting(value, expected) -> None:
+    assert DetectionPage._format_cell(value) == expected
+
+
+@pytest.mark.parametrize(
+    "value, expected",
+    [([1.0], "1"), ([0.9, 1.0, 1.1], "0.9, 1, 1.1"), ("", "1"), (None, "1")],
+)
+def test_scales_round_trip_through_the_form_field(value, expected) -> None:
+    assert _format_scales(value) == expected
