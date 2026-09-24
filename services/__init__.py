@@ -10,6 +10,7 @@ from services.led_service import LedService
 from services.machine_model_service import MachineModelService
 from services.plc_service import PlcService
 from services.shift_service import ShiftService
+from services.yolo_training_service import YoloTrainingService
 
 __all__ = [
     "AuthService",
@@ -22,4 +23,5 @@ __all__ = [
     "MachineModelService",
     "PlcService",
     "ShiftService",
+    "YoloTrainingService",
 ]

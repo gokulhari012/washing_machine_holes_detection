@@ -5,6 +5,7 @@ from workers.checkerboard_worker import CheckerboardScanWorker
 from workers.database_worker import DatabaseWorker
 from workers.inspection_worker import InspectionWorker
 from workers.plc_poll_worker import PlcPollWorker
+from workers.yolo_training_worker import YoloTrainingWorker
 
 __all__ = [
     "AcquisitionWorker",
@@ -13,4 +14,5 @@ __all__ = [
     "DatabaseWorker",
     "InspectionWorker",
     "PlcPollWorker",
+    "YoloTrainingWorker",
 ]

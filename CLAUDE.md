@@ -968,6 +968,23 @@ The greyed-out button says exactly that (`_UNSWEEPABLE_REASON`); don't "enable"
 it. `ultralytics` is bundled by `wmhd.spec` only when the build machine has it
 installed, since it pulls torch in with it.
 
+**YOLO labelling/training is offline tooling, and it must not run in the frozen
+build's own interpreter.** The Detection page's `yolo` form has a "Dataset &
+Training…" button (`ui/detection/yolo_training_dialog.py`) that launches the
+bundled `tools/YOLO Training/yolo labling/YoloLabel.exe` and then runs
+`tools/YOLO Training/run_training.py` through `YoloTrainingWorker`. The trap:
+`YoloTrainingService.training_interpreter()` returns `sys.executable` **only
+when running from source** — under PyInstaller that path is
+`WMHoleDetection.exe`, so handing it the runner script would relaunch the
+station instead of training. A frozen build falls back to a Python on PATH and
+raises a clear `TrainingError` when there is none. Neither the labelling tool
+nor `ultralytics` is bundled by `wmhd.spec` (see `scripts/build_exe.py`), which
+is deliberate: training belongs on an engineering machine, and torch would
+multiply the build size. Dataset shape is one **flat folder** of images with
+their `.txt` labels beside them — what YoloLabel writes, what
+`training_all_folder.py` assumed, and what ultralytics falls back to when a
+path has no `/images/` segment; don't "fix" it into `images/`+`labels/`.
+
 **`config/defaults/` must be updated in lockstep.** Adding a config key without adding
 it to `defaults/` means "Restore Defaults" silently drops the feature. (`defaults/`
 currently carries every key, including `model_select`, `camera_results` and

@@ -1,7 +1,7 @@
 {
   "cameras": {
     "1": {
-      "active_detector": "template_matching",
+      "active_detector": "yolo",
       "common": {
         "confidence_threshold": 0.4,
         "expected_hole_count": 1,
@@ -46,8 +46,8 @@
         "max_fit_error": 0.4
       },
       "yolo": {
-        "model_path": "",
-        "confidence": 0.5,
+        "model_path": "C:\\Users\\gokul\\Pictures\\Washing machine\\yolo result\\train\\weights\\best.pt",
+        "confidence": 0.8,
         "iou_threshold": 0.45,
         "class_id": 0,
         "device": "",

@@ -53,6 +53,15 @@ frame, which is what keeps a several-thousand-combination grid (see
 writes every one of the winning combination's parameters into the form, not
 just two spin boxes.
 
+**Dataset & Training** appears on the ``yolo`` form only, because it is the
+one strategy that cannot do anything until a trained ``.pt`` exists. It opens
+:class:`~ui.detection.yolo_training_dialog.YoloTrainingDialog` — the bundled
+``YoloLabel.exe`` for labelling, then a training run off the GUI thread — and
+a run that produced weights loads them straight into "Model Weights" here, so
+the model is one "Save & Apply" from being what the station runs. The
+dialog's folder/model choices persist in ``app_config.json``'s
+``yolo_training`` block.
+
 ``opencv``, ``dark_hole`` and ``template_matching`` are sweepable. For
 ``template_matching`` the ROI does more than bound the search: the diameter
 gates it implies are divided by the template's own size to give the **scale
@@ -70,10 +79,12 @@ from __future__ import annotations
 from dataclasses import replace
 
 import numpy as np
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QDialog,
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
@@ -93,8 +104,9 @@ from PySide6.QtWidgets import (
 )
 
 from core.calibration import CalibrationManager
+from core.logging import get_logger
 from core.utilities import ConfigManager
-from core.utilities.enums import DetectorType
+from core.utilities.enums import DetectorType, LogSource
 from core.utilities.exceptions import ConfigurationError, VisionSystemError
 from core.vision import (
     DarkHoleDetector,
@@ -112,7 +124,15 @@ from core.vision.template_matching_detector import parse_scales, template_mean_s
 from models.app_state import AppState
 from services.camera_service import CameraService
 from services.inspection_service import select_hole
+from services.yolo_training_service import YoloTrainingService
+from ui.detection.yolo_training_dialog import YoloTrainingDialog
 from ui.widgets import RoiEditor
+
+logger = get_logger(LogSource.UI)
+
+#: app_config.json block the training dialog's folder/model choices persist in,
+#: so an operator does not retype two paths every session.
+_TRAINING_SETTINGS_KEY = "yolo_training"
 
 # Strategies the auto sweep can grid-search, and the detector class it builds
 # each trial candidate from directly (bypassing the shared VisionEngine, so a
@@ -346,6 +366,7 @@ class DetectionPage(QWidget):
         camera_service: CameraService,
         app_state: AppState,
         calibration: CalibrationManager | None = None,
+        training: YoloTrainingService | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
@@ -356,6 +377,9 @@ class DetectionPage(QWidget):
         # verdict then reports the tolerance as unchecked, as for an
         # uncalibrated camera.
         self._calibration = calibration
+        # Also optional: without it the yolo form's "Dataset & Training"
+        # button is disabled and says so, but every parameter still edits.
+        self._training = training
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
@@ -661,6 +685,22 @@ class DetectionPage(QWidget):
         form.addRow("Max Detections", self._yolo_max_det)
         form.addRow("Min Hole Diameter (px)", self._yolo_min_diameter)
         form.addRow("Max Hole Diameter (px)", self._yolo_max_diameter)
+
+        # yolo is the one strategy with nothing to run until a model exists,
+        # so the tooling that produces one is offered right where it is
+        # selected rather than at a command prompt.
+        self._train_btn = QPushButton("Dataset && Training…")
+        self._train_btn.setToolTip(
+            "Label captured frames and train a model, without leaving the app"
+        )
+        self._train_btn.clicked.connect(self._on_open_training)
+        if self._training is None:
+            self._train_btn.setEnabled(False)
+            self._train_btn.setToolTip(
+                "Training tooling was not wired into this page (it is optional, "
+                "so a page built without it still edits parameters normally)"
+            )
+        form.addRow("", self._train_btn)
         return box
 
     def _build_dark_hole_form(self) -> QWidget:
@@ -973,6 +1013,52 @@ class DetectionPage(QWidget):
         else:
             self._result_label.setText(f"No hole found — {result.processing_ms:.1f} ms")
         self._refresh_verdict()
+
+    def _on_open_training(self) -> None:
+        """Open the labelling/training dialog for the selected camera.
+
+        Modeless: a run is minutes to hours, and the station has to stay
+        usable — an inspection cycle included — for all of it. The dialog's
+        folder and model choices are persisted to app_config.json when it
+        closes, and a run that produced weights offers them straight to the
+        Model Weights field, which is the point of hosting this here.
+        """
+        if self._training is None:
+            return
+        settings = self._config.get_value("app_config", _TRAINING_SETTINGS_KEY) or {}
+        dialog = YoloTrainingDialog(self._training, dict(settings), self)
+        dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
+        dialog.finished.connect(lambda _result: self._on_training_closed(dialog))
+        dialog.show()
+
+    def _on_training_closed(self, dialog: YoloTrainingDialog) -> None:
+        """Persist the dialog's choices, and adopt the weights it produced."""
+        try:
+            document = self._config.load("app_config")
+            # Merged, never replaced: the block also holds keys the dialog
+            # has no field for — 'labeling_tool', which only main.py reads —
+            # and assigning over it would delete a relocated station's path
+            # the first time anyone opened this dialog.
+            block = dict(document.get(_TRAINING_SETTINGS_KEY) or {})
+            block.update(dialog.settings())
+            document[_TRAINING_SETTINGS_KEY] = block
+            self._config.save("app_config", document)
+        except VisionSystemError as exc:
+            # Never raised back at the operator: failing to remember a folder
+            # path must not look like the training itself failed.
+            logger.warning("Could not persist training settings: %s", exc)
+
+        weights = dialog.trained_weights
+        if weights and dialog.result() == QDialog.DialogCode.Accepted:
+            self._strategy.setCurrentText(DetectorType.YOLO.value)
+            self._yolo_path.setText(weights)
+            QMessageBox.information(
+                self, "Trained Model",
+                "The trained weights are in the Model Weights field.\n\n"
+                "Press 'Save && Apply' to make this camera use them, then "
+                "'Test on Camera' to check it before running production.",
+            )
+        dialog.deleteLater()
 
     def _refresh_verdict(self) -> None:
         """Show the GOOD/NG a real cycle would reach on the last Test frame.

@@ -55,6 +55,7 @@ from services import (
     MachineModelService,
     PlcService,
     ShiftService,
+    YoloTrainingService,
 )
 from services.auth_service import DEFAULT_DEVELOPER_PASSWORD, DEFAULT_DEVELOPER_USER
 from services.shift_service import POLL_INTERVAL_MS as SHIFT_POLL_INTERVAL_MS
@@ -161,6 +162,12 @@ class Application:
         self.machine_models = MachineModelService(
             self.config, self.camera_service, self.vision, self.plc_service, self.calibration
         )
+        # Offline tooling for the yolo strategy (labelling + training). Holds
+        # no hardware and starts no threads, so it costs nothing on a
+        # station that never opens it.
+        self.yolo_training = YoloTrainingService(
+            labeling_tool=app_cfg.get("yolo_training", {}).get("labeling_tool") or None
+        )
         self.export_service = ExportService()
         self.backup_service = BackupService(self.db, self.database, self.config)
         self.auth_service = AuthService(self.database)
@@ -228,7 +235,7 @@ class Application:
             "Detection", "◎",
             DetectionPage(
                 self.config, self.vision, self.camera_service, self.app_state,
-                self.calibration,
+                self.calibration, self.yolo_training,
             ),
             min_role=UserRole.ADMIN,
         )

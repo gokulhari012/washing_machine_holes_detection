@@ -1,0 +1,5 @@
+train: D:\program\Ten Cam Project\YOLO Training\normal_camera_images\Camera_1\1  # Path to your training images
+val: D:\program\Ten Cam Project\YOLO Training\normal_camera_images\Camera_1\1 # Path to your validation images
+
+nc: 2  # Number of classes in your dataset
+names: ['cb','defect']  # List of class names

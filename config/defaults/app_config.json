@@ -64,5 +64,16 @@
     "level": "INFO",
     "max_file_size_mb": 5,
     "backup_count": 10
+  },
+  "yolo_training": {
+    "labeling_tool": "",
+    "dataset_dir": "",
+    "validation_dir": "",
+    "output_dir": "",
+    "class_names": "hole",
+    "model": "yolo11n.pt",
+    "epochs": 100,
+    "imgsz": 640,
+    "device": ""
   }
 }

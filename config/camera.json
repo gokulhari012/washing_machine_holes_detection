@@ -30,7 +30,7 @@
       "simulation": {
         "image_directory": "resources/sample_images/camera_1"
       },
-      "image_source": "C:/Users/gokul/Pictures/Washing machine/Image__2026-09-07__13-18-43.bmp",
+      "image_source": "C:/Users/gokul/Pictures/Washing machine/1 Image__2026-09-07__13-18-43.bmp",
       "rotation": 0,
       "led_channel": 2,
       "led_strobe": true

@@ -1,0 +1,6 @@
+For labeling Tool
+Download Yolo Label refer this git hub page : https://github.com/developer0hye/Yolo_Label
+
+After lable run this in cmd
+
+yolo detect train data="data.yaml" model=yolo11n.pt epochs=60 imgsz=640

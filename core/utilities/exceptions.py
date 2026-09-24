@@ -98,6 +98,15 @@ class CalibrationError(VisionSystemError):
     """Calibration data is missing, invalid, or could not be computed."""
 
 
+class TrainingError(VisionSystemError):
+    """A YOLO dataset/labelling/training operation could not be started.
+
+    Offline tooling, not part of an inspection cycle: it is raised while
+    preparing or launching a training run (missing labelling tool, empty or
+    unlabelled dataset, ultralytics not installed), never from ``detect()``.
+    """
+
+
 # --------------------------------------------------------------------------- #
 # Persistence / misc
 # --------------------------------------------------------------------------- #

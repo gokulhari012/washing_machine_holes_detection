@@ -64,5 +64,16 @@
         "end": "06:00"
       }
     ]
+  },
+  "yolo_training": {
+    "labeling_tool": "",
+    "dataset_dir": "C:/Users/gokul/Pictures/Washing machine/yolo test",
+    "validation_dir": "",
+    "output_dir": "C:/Users/gokul/Pictures/Washing machine/yolo result",
+    "class_names": "hole",
+    "model": "yolo11m.pt",
+    "epochs": 10,
+    "imgsz": 640,
+    "device": ""
   }
 }

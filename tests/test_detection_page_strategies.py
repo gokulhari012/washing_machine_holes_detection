@@ -289,3 +289,148 @@ def test_sweep_button_follows_the_selected_strategy(page) -> None:
         assert widget._sweep_btn.isEnabled() is enabled, strategy
     widget._strategy.setCurrentText("yolo")
     assert "crop" in widget._sweep_btn.toolTip()
+
+
+# ------------------------------------------------ yolo training tooling
+def test_training_button_is_disabled_without_the_service(page) -> None:
+    """The page is built without a YoloTrainingService here, so the button
+    says why rather than being absent — parameters still edit normally."""
+    assert page.widget._train_btn.isEnabled() is False
+    assert "not wired" in page.widget._train_btn.toolTip()
+
+
+def test_training_button_lives_on_the_yolo_form_only(page) -> None:
+    """It is reachable only while yolo is the selected strategy, because it
+    is the one strategy that needs a trained file to do anything."""
+    widget = page.widget
+    yolo_form = widget._stack.widget([d.value for d in DetectorType].index("yolo"))
+    assert widget._train_btn.parent() is yolo_form
+
+    widget._strategy.setCurrentText("opencv")
+    assert widget._stack.currentWidget() is not yolo_form
+    widget._strategy.setCurrentText("yolo")
+    assert widget._stack.currentWidget() is yolo_form
+
+
+def test_training_button_is_enabled_when_the_service_is_wired(tmp_path, qt_app) -> None:
+    from services.yolo_training_service import YoloTrainingService
+    from ui.detection import DetectionPage
+
+    config_dir = tmp_path / "config2"
+    (config_dir / "defaults").mkdir(parents=True)
+    (config_dir / "camera.json").write_text(json.dumps(CAMERA_DOC))
+    (config_dir / "detection.json").write_text(json.dumps(DETECTION_DOC))
+    (config_dir / "defaults" / "detection.json").write_text(json.dumps(DETECTION_DOC))
+    config = ConfigManager(config_dir)
+    database = SimpleNamespace(camera_configs=FakeRepo(), plc_config=FakeRepo())
+    led_service = LedService(
+        LedManager(SimulatedLedClient(), LedControllerSettings()), config
+    )
+    cameras = CameraService(
+        CameraManager(CAMERA_DOC["cameras"]), config, database, led_service
+    )
+    widget = DetectionPage(
+        config, VisionEngine(DETECTION_DOC), cameras, AppState(),
+        None, YoloTrainingService(),
+    )
+    assert widget._train_btn.isEnabled() is True
+
+
+def test_training_dialog_round_trips_its_settings(qt_app) -> None:
+    """What the page persists into app_config.json and reloads next session."""
+    from services.yolo_training_service import YoloTrainingService
+    from ui.detection.yolo_training_dialog import YoloTrainingDialog
+
+    saved = {
+        "dataset_dir": "D:/data/cam2",
+        "validation_dir": "D:/data/val",
+        "output_dir": "D:/runs",
+        "class_names": "hole, burr",
+        "model": "yolo11m.pt",
+        "epochs": 250,
+        "imgsz": 1280,
+        "device": "cpu",
+    }
+    dialog = YoloTrainingDialog(YoloTrainingService(), dict(saved))
+    try:
+        assert dialog.settings() == saved
+        assert dialog.trained_weights == ""
+    finally:
+        dialog.deleteLater()
+
+
+def test_training_dialog_survives_an_empty_settings_block(qt_app) -> None:
+    """First run: app_config.json ships every key blank."""
+    from services.yolo_training_service import YOLO_MODELS, YoloTrainingService
+    from ui.detection.yolo_training_dialog import YoloTrainingDialog
+
+    dialog = YoloTrainingDialog(YoloTrainingService(), {})
+    try:
+        settings = dialog.settings()
+        assert settings["dataset_dir"] == ""
+        assert settings["class_names"] == "hole"
+        assert settings["model"] in YOLO_MODELS
+    finally:
+        dialog.deleteLater()
+
+
+def test_training_dialog_summarises_the_chosen_dataset(qt_app, tmp_path) -> None:
+    """The count appears as soon as a folder is typed, before Start is pressed."""
+    from services.yolo_training_service import YoloTrainingService
+    from ui.detection.yolo_training_dialog import YoloTrainingDialog
+
+    folder = tmp_path / "ds"
+    folder.mkdir()
+    for index in range(3):
+        (folder / f"f{index}.png").write_bytes(b"\x89PNG")
+        (folder / f"f{index}.txt").write_text("0 .5 .5 .1 .1\n", encoding="utf-8")
+    (folder / "extra.png").write_bytes(b"\x89PNG")  # deliberately unlabelled
+
+    dialog = YoloTrainingDialog(YoloTrainingService(), {})
+    try:
+        dialog._dataset.setText(str(folder))
+        text = dialog._dataset_status.text()
+        assert "4 image(s), 3 labelled" in text
+        assert "1 with no label file" in text
+    finally:
+        dialog.deleteLater()
+
+
+def test_folder_class_list_wins_over_the_remembered_one(qt_app, tmp_path) -> None:
+    """The remembered setting can be stale — the list in the dataset folder
+    is what the images were actually labelled with, so it wins on open."""
+    from services.yolo_training_service import YoloTrainingService
+    from ui.detection.yolo_training_dialog import YoloTrainingDialog
+
+    folder = tmp_path / "ds"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(b"\x89PNG")
+    (folder / "a.txt").write_text("0 .5 .5 .1 .1\n", encoding="utf-8")
+    (folder / "lables.txt").write_text("Holes\n", encoding="utf-8")
+
+    dialog = YoloTrainingDialog(
+        YoloTrainingService(), {"dataset_dir": str(folder), "class_names": "stale"}
+    )
+    try:
+        assert dialog._classes.text() == "Holes"
+        assert dialog.settings()["class_names"] == "Holes"
+    finally:
+        dialog.deleteLater()
+
+
+def test_remembered_classes_survive_a_folder_with_no_list(qt_app, tmp_path) -> None:
+    folder = tmp_path / "ds"
+    folder.mkdir()
+    (folder / "a.png").write_bytes(b"\x89PNG")
+    (folder / "a.txt").write_text("0 .5 .5 .1 .1\n", encoding="utf-8")
+
+    from services.yolo_training_service import YoloTrainingService
+    from ui.detection.yolo_training_dialog import YoloTrainingDialog
+
+    dialog = YoloTrainingDialog(
+        YoloTrainingService(), {"dataset_dir": str(folder), "class_names": "hole, burr"}
+    )
+    try:
+        assert dialog._classes.text() == "hole, burr"
+    finally:
+        dialog.deleteLater()
