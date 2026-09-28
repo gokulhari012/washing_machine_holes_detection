@@ -37,7 +37,13 @@ class LedClientBase(ABC):
         """Close the connection. Must be safe to call repeatedly."""
 
     @abstractmethod
-    def send(self, command: str, *, append_terminator: bool = False) -> str:
+    def send(
+        self,
+        command: str,
+        *,
+        append_terminator: bool = False,
+        expect_response: bool = True,
+    ) -> str:
         """Write *command* exactly as given and return whatever the
         controller sends back within the configured timeout.
 
@@ -48,8 +54,20 @@ class LedClientBase(ABC):
         end-of-line/termination character is ``#``, embedded in *command*
         itself, so this defaults to off.
 
+        ``expect_response=False`` makes this **fire-and-forget**: the command
+        is still written synchronously - so a strobe really is lit by the
+        time this returns and the capture that follows sees it - but the
+        adapter does not then sit waiting for the acknowledgement, and
+        returns ``""`` instead. That is what every one-way command in this
+        application uses (brightness pushes, strobe on/off), because none of
+        them reads the reply and a silent controller must never stall a
+        capture, an inspection cycle, or the GUI thread. Only the LED
+        Controller page's raw command tester - where the operator is asking
+        the hardware a question and wants the answer - waits for a response.
+
         Raises:
             LedConnectionError: not connected.
             LedWriteError: the command could not be written.
-            LedTimeoutError: no bytes were received before the timeout elapsed.
+            LedTimeoutError: nothing was received before the timeout elapsed.
+                Never raised when ``expect_response`` is False.
         """

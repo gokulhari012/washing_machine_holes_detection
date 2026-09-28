@@ -42,8 +42,14 @@ class SimulatedLedClient(LedClientBase):
     def disconnect(self) -> None:
         self._connected = False
 
-    def send(self, command: str, *, append_terminator: bool = False) -> str:
+    def send(
+        self,
+        command: str,
+        *,
+        append_terminator: bool = False,
+        expect_response: bool = True,
+    ) -> str:
         if not self._connected:
             raise LedConnectionError("Not connected to LED controller")
         self.sent.append(command)
-        return ACK
+        return ACK if expect_response else ""

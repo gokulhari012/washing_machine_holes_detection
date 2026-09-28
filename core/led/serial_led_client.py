@@ -4,6 +4,21 @@ Fixed serial parameters per the controller's documented RS232 settings:
 
     bytesize = 8, parity = NONE, stopbits = 1, flow control = None
 
+Two independent timeouts, deliberately not the same number. ``timeout_ms``
+from ``led.json`` is the *response* timeout - how long to wait for the
+controller's documented "!" acknowledgement - and tuning it down to a
+hundred milliseconds or so is a reasonable thing for a station to do, since
+the reply comes back in one frame. The *write* timeout is a different
+quantity: it bounds how long the driver may take to report the outgoing
+bytes as transferred, which on a USB-RS232 bridge is dominated by the
+adapter's latency timer (~16 ms) and USB frame scheduling rather than by
+wire time (an 8-byte command at 19200 baud is ~4 ms of line time). Under
+load - a full-resolution GigE grab on the same box - that completion report
+can take far longer than a tight response timeout allows, surfacing as
+``SerialTimeoutException('Write timeout')`` even though the link is
+healthy. So the write timeout takes ``_MIN_WRITE_TIMEOUT_S`` as a floor and
+never follows ``timeout_ms`` below it.
+
 Thread ownership: every call site in this application (``LedService``, the
 LED Controller page) invokes this client directly from the GUI thread, the
 same way the PLC page's manual register write and ``PlcService.test_connection``
@@ -31,6 +46,11 @@ logger = get_logger(LogSource.LED)
 _ACK_BYTES = ACK.encode("ascii")
 _POLL_INTERVAL_S = 0.01
 
+#: Floor for the serial write timeout (see the module docstring). A station
+#: may tune ``timeout_ms`` down for a snappier ack wait; that must not also
+#: shorten the window the USB-serial driver gets to flush bytes.
+_MIN_WRITE_TIMEOUT_S = 1.0
+
 
 class SerialLedClient(LedClientBase):
     """Synchronous RS232 implementation of :class:`LedClientBase`."""
@@ -44,6 +64,7 @@ class SerialLedClient(LedClientBase):
         self._port_name = port
         self._baud_rate = baud_rate
         self._timeout_s = timeout_s
+        self._write_timeout_s = max(timeout_s, _MIN_WRITE_TIMEOUT_S)
         self._serial: serial.Serial | None = None
         self._lock = threading.RLock()
 
@@ -64,7 +85,7 @@ class SerialLedClient(LedClientBase):
                     parity=serial.PARITY_NONE,
                     stopbits=serial.STOPBITS_ONE,
                     timeout=self._timeout_s,
-                    write_timeout=self._timeout_s,
+                    write_timeout=self._write_timeout_s,
                     xonxoff=False,
                     rtscts=False,
                     dsrdtr=False,
@@ -88,7 +109,13 @@ class SerialLedClient(LedClientBase):
                 self._serial = None
 
     # ------------------------------------------------------------------- I/O
-    def send(self, command: str, *, append_terminator: bool = False) -> str:
+    def send(
+        self,
+        command: str,
+        *,
+        append_terminator: bool = False,
+        expect_response: bool = True,
+    ) -> str:
         with self._lock:
             ser = self._require_serial()
             data = command.encode("ascii", errors="replace")
@@ -100,6 +127,13 @@ class SerialLedClient(LedClientBase):
                 ser.flush()
             except Exception as exc:
                 raise LedWriteError(f"Write failed: {exc}") from exc
+
+            if not expect_response:
+                # Fire-and-forget (see LedClientBase.send): the bytes are on
+                # the wire, which is all a strobe or a brightness push needs.
+                # Any reply the controller does send is discarded by the
+                # reset_input_buffer() of the next command.
+                return ""
 
             response = self._read_response(ser)
 

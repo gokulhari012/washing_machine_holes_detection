@@ -63,8 +63,8 @@ def test_connect_and_disconnect_reach_the_manager(tmp_path) -> None:
 def test_set_channel_brightness_delegates_to_manager(tmp_path) -> None:
     service, client, _manager = make_service(tmp_path)
     service.connect()
-    response = service.set_channel_brightness(2, 128)
-    assert response == "!"
+    # Fire-and-forget: the write happens, no acknowledgement is awaited.
+    assert service.set_channel_brightness(2, 128) == ""
     assert client.sent == ["SB0128#"]
 
 

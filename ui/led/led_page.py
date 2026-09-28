@@ -38,6 +38,8 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt
 
+from workers import LedCommandWorker
+
 from core.led import protocol
 from core.utilities.exceptions import VisionSystemError
 from models.app_state import AppState
@@ -76,6 +78,9 @@ class LedPage(QWidget):
         # (timestamp, message, kind) for every line on screen, so the log can
         # be re-rendered in the other scheme's colours on a theme switch.
         self._entries: list[tuple[str, str, str]] = []
+        # The raw tester is the one LED command that waits for a reply, so it
+        # runs on LedCommandWorker rather than here — see _on_raw_send.
+        self._raw_worker: LedCommandWorker | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
@@ -192,9 +197,9 @@ class LedPage(QWidget):
         self._raw_command.setPlaceholderText("e.g. SA0200#  or  S100T128T025F000TC#")
         self._raw_command.returnPressed.connect(self._on_raw_send)
         row.addWidget(self._raw_command, stretch=1)
-        raw_send_btn = QPushButton("SEND")
-        raw_send_btn.clicked.connect(self._on_raw_send)
-        row.addWidget(raw_send_btn)
+        self._raw_send_btn = QPushButton("SEND")
+        self._raw_send_btn.clicked.connect(self._on_raw_send)
+        row.addWidget(self._raw_send_btn)
         layout.addLayout(row)
 
         response_row = QHBoxLayout()
@@ -307,19 +312,56 @@ class LedPage(QWidget):
 
     # ---------------------------------------------------------------- raw
     def _on_raw_send(self) -> None:
+        """Send the typed command on a worker thread and return immediately.
+
+        This is the only LED command in the application that waits for the
+        controller to answer (everything else is fire-and-forget — see
+        ``core.led.led_manager``), so it is also the only one that could
+        freeze the window while a mute controller runs down the timeout.
+        The button is disabled until the reply or the timeout arrives, which
+        both stops a queue of overlapping sends and shows the operator that
+        something is in flight.
+        """
+        if self._raw_worker is not None:  # a send is already in flight
+            return
         command = self._raw_command.text()
         if not command:
             return
-        try:
-            response = self._svc.send_raw(command, append_terminator=self._raw_crlf.isChecked())
-        except VisionSystemError as exc:
-            self._raw_response.setText("ERROR")
-            self._log(f"ERROR: {exc}", "error")
-            self._set_controls_enabled(False)
-            return
-        self._raw_response.setText(response)
+
         self._log(f"TX -> {command}", "tx")
+        self._raw_response.setText("")
+        self._raw_send_btn.setEnabled(False)
+
+        worker = LedCommandWorker(
+            self._svc.send_raw,
+            command,
+            append_terminator=self._raw_crlf.isChecked(),
+            parent=self,
+        )
+        worker.succeeded.connect(self._on_raw_succeeded)
+        worker.failed.connect(self._on_raw_failed)
+        worker.finished.connect(self._on_raw_worker_finished)
+        self._raw_worker = worker
+        worker.start()
+
+    def _on_raw_succeeded(self, response: str) -> None:
+        self._raw_response.setText(response)
         self._log(f"RX <- {response}", "rx")
+
+    def _on_raw_failed(self, message: str) -> None:
+        """A timeout leaves the link up (only a broken port drops it), so the
+        Connect/Disconnect buttons are refreshed from the service's *actual*
+        state rather than assumed to be disconnected."""
+        self._raw_response.setText("ERROR")
+        self._log(f"ERROR: {message}", "error")
+        self._set_controls_enabled(self._svc.state.value == "connected")
+
+    def _on_raw_worker_finished(self) -> None:
+        """Runs on either outcome, so the button always comes back."""
+        self._raw_send_btn.setEnabled(True)
+        if self._raw_worker is not None:
+            self._raw_worker.deleteLater()
+            self._raw_worker = None
 
     # -------------------------------------------------------------- logging
     def _log(self, message: str, kind: str) -> None:

@@ -4,6 +4,7 @@ from workers.acquisition_worker import AcquisitionWorker, create_acquisition_wor
 from workers.checkerboard_worker import CheckerboardScanWorker
 from workers.database_worker import DatabaseWorker
 from workers.inspection_worker import InspectionWorker
+from workers.led_command_worker import LedCommandWorker
 from workers.plc_poll_worker import PlcPollWorker
 from workers.yolo_training_worker import YoloTrainingWorker
 
@@ -13,6 +14,7 @@ __all__ = [
     "CheckerboardScanWorker",
     "DatabaseWorker",
     "InspectionWorker",
+    "LedCommandWorker",
     "PlcPollWorker",
     "YoloTrainingWorker",
 ]

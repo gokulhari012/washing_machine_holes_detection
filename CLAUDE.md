@@ -652,6 +652,46 @@ Controller, so they neither strobe nor are blocked by it — only the Camera
 page's own Test Camera / Continuous Capture, the Detection page's Test on
 Camera, and the two PLC-facing inspection entry points do.
 
+**A silent controller never stalls the station, and never freezes the UI.**
+Three separate mechanisms, all pinned by `tests/test_led_no_hang.py`:
+- **Dispatch is fire-and-forget everywhere except the raw command tester.**
+  `LedManager.send_channel`/`send_multichannel`/`send_all_channels` pass
+  `expect_response=False` down to `LedClientBase.send`; the adapter writes
+  the bytes **synchronously** (so a strobe really is lit before the capture
+  that follows) and returns `""` without entering the read loop. There is
+  therefore no timeout to wait out on any production path — brightness
+  pushes, strobes, Test Camera, Continuous Capture, the Detection page's
+  Test on Camera, and both PLC trigger paths. Only `send_raw` waits, since
+  the operator is asking the hardware a question.
+- **A timeout no longer drops the link.** `LedManager._send` catches
+  `LedTimeoutError` separately: the port is open and writable, so it logs,
+  records `last_error` and re-raises **without** disconnecting. Only
+  `LedConnectionError`/`LedWriteError` tear the link down into ERROR. This
+  matters because there is no poll loop to bring the link back — latching
+  off for one silent reply used to kill the lights until somebody pressed
+  Connect, and since the strobe/brightness callers swallow `LedError`, no
+  operator would see why.
+- **The one command that waits does it off the GUI thread**, on
+  `LedCommandWorker` (`workers/led_command_worker.py`, page-owned like
+  `CheckerboardScanWorker`). The LED page disables SEND while one is in
+  flight and re-enables it on either outcome.
+
+Note the trade: nothing on the production path can detect a mute controller
+any more, because nothing reads the reply. The raw tester on the LED page is
+the health check. That is the deliberate direction — lights are a
+convenience, and a dead LED must never hold up a part.
+
+**The write timeout is not `timeout_ms`.** `connection.timeout_ms` is the
+*response* timeout only. The serial adapter floors the pyserial
+`write_timeout` at `_MIN_WRITE_TIMEOUT_S` (1 s) and never follows
+`timeout_ms` below it, because the two bound different things: an 8-byte
+command is ~4 ms of line time at 19200 baud, but a USB-RS232 bridge's
+write-completion report is dominated by the adapter latency timer (~16 ms)
+and USB scheduling, and under a full-resolution GigE grab it can exceed a
+tight ack timeout easily. The live `led.json` carries `timeout_ms: 100`
+(defaults ship `1000`), and feeding that to `write_timeout` is what produced
+`Write failed: Write timeout` on a perfectly healthy link.
+
 **No poll loop.** Unlike the PLC link, the LED connection has nothing to
 continuously poll — every command is a one-shot write the caller triggers
 directly. It still auto-connects (`Application.start`, and again after a

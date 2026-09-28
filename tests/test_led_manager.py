@@ -31,8 +31,8 @@ def test_disconnect_transitions_to_disconnected(stack) -> None:
 
 def test_send_channel_builds_the_documented_command(stack) -> None:
     client, manager = stack
-    response = manager.send_channel(1, 200)
-    assert response == "!"
+    # Fire-and-forget: no reply is awaited, so nothing comes back.
+    assert manager.send_channel(1, 200) == ""
     assert client.sent == ["SA0200#"]
 
 
@@ -48,7 +48,7 @@ def test_send_all_channels_sends_each_channel_in_order(stack) -> None:
     client, manager = stack
     responses = manager.send_all_channels(128)
     assert client.sent == ["SA0128#", "SB0128#", "SC0128#", "SD0128#"]
-    assert responses == {1: "!", 2: "!", 3: "!", 4: "!"}
+    assert responses == {1: "", 2: "", 3: "", 4: ""}
 
 
 def test_send_multichannel_documented_example(stack) -> None:
