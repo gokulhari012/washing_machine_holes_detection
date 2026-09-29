@@ -17,6 +17,12 @@ PLC-triggered ones included, which is why the bar says so on screen as well as
 in the tooltip. Three gaps between four cameras means the PLC waits 3x the
 delay longer for ``vision_complete`` (register 119) on every part.
 
+The "Capture mode" dropdown beside it is ``app_config.inspection.capture_mode``
+in the same sense — saved on change, and read by the pipeline on every cycle,
+so PLC triggers follow it from the next part on. In parallel mode the delay
+spin box is disabled (its value is kept), because parallel cycles never wait
+between cameras.
+
 That whole bar is **developer-only**, like the toolbar's own trigger button:
 firing the station by hand and re-timing its capture sequence are commissioning
 acts, not shift work, so the bar is hidden (not merely disabled) for the
@@ -36,6 +42,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
+    QComboBox,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -52,7 +59,11 @@ from core.utilities.exceptions import ConfigurationError
 from models.app_state import AppState
 from models.dto import CameraInspectionData, InspectionCycleData
 from services.auth_service import AuthService
-from services.inspection_service import DEFAULT_CAMERA_DELAY_MS, SEQUENTIAL_MODE
+from services.inspection_service import (
+    DEFAULT_CAMERA_DELAY_MS,
+    PARALLEL_MODE,
+    SEQUENTIAL_MODE,
+)
 from ui.dashboard.camera_panel import CameraPanel
 from ui.dashboard.summary_panels import CameraCoordinatesPanel, CycleSummaryPanel
 
@@ -157,6 +168,23 @@ class DashboardPage(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(8)
 
+        mode_caption = QLabel("Capture mode")
+        mode_caption.setProperty("class", "dim")
+        layout.addWidget(mode_caption)
+
+        self._mode = QComboBox()
+        self._mode.addItem("Sequential", SEQUENTIAL_MODE)
+        self._mode.addItem("Parallel", PARALLEL_MODE)
+        self._mode.setToolTip(
+            "app_config.inspection.capture_mode - a station setting that every "
+            "full cycle follows, PLC-triggered ones included.\n\nSequential: "
+            "one camera at a time, with the delay below between them.\n"
+            "Parallel: all cameras grab and detect at once; the delay is unused."
+        )
+        self._mode.setCurrentIndex(max(0, self._mode.findData(self._stored_capture_mode())))
+        self._mode.currentIndexChanged.connect(self._on_mode_changed)
+        layout.addWidget(self._mode)
+
         caption = QLabel("Delay between cameras")
         caption.setProperty("class", "dim")
         layout.addWidget(caption)
@@ -175,6 +203,7 @@ class DashboardPage(QWidget):
         self._delay.setValue(self._stored_delay_ms())
         self._delay.valueChanged.connect(self._on_delay_changed)
         layout.addWidget(self._delay)
+        self._sync_delay_enabled()
 
         # Said on screen, not just in the tooltip: the spin box sits beside a
         # manual trigger button, which makes it look like it only paces that
@@ -221,19 +250,47 @@ class DashboardPage(QWidget):
         except (ConfigurationError, TypeError, ValueError):
             return DEFAULT_CAMERA_DELAY_MS
 
+    def _stored_capture_mode(self) -> str:
+        """Configured capture mode; anything unrecognised reads as sequential,
+        the same fallback the pipeline applies."""
+        if self._config is None:
+            return SEQUENTIAL_MODE
+        try:
+            value = self._config.get_value(
+                "app_config", "inspection.capture_mode", SEQUENTIAL_MODE
+            )
+        except ConfigurationError:
+            return SEQUENTIAL_MODE
+        mode = str(value).strip().lower()
+        return mode if mode in (SEQUENTIAL_MODE, PARALLEL_MODE) else SEQUENTIAL_MODE
+
+    def _sync_delay_enabled(self) -> None:
+        """The delay only paces sequential cycles, so grey it out in parallel."""
+        self._delay.setEnabled(self._mode.currentData() != PARALLEL_MODE)
+
+    def _on_mode_changed(self, _index: int) -> None:
+        """Persist the capture mode; the pipeline reads it on every cycle, so
+        the next PLC trigger already runs in the new mode."""
+        self._sync_delay_enabled()
+        self._save_inspection_key("capture_mode", str(self._mode.currentData()), "capture mode")
+
     def _on_delay_changed(self, value: int) -> None:
         """Persist the delay so the running pipeline picks it up next cycle."""
+        self._save_inspection_key("camera_delay_ms", int(value), "camera delay")
+
+    def _save_inspection_key(self, key: str, value: object, label: str) -> None:
+        """Write one ``app_config.inspection`` key back to disk."""
         if self._config is None or self._loading:
             return
         try:
             document = self._config.load("app_config")
             inspection = document.setdefault("inspection", {})
-            inspection["camera_delay_ms"] = int(value)
+            inspection[key] = value
             inspection.setdefault("capture_mode", SEQUENTIAL_MODE)
             self._config.save("app_config", document)
         except ConfigurationError as exc:
-            logger.error("Could not save the camera delay: %s", exc)
-            self._app_state.raise_alarm("warning", f"Could not save the camera delay: {exc}")
+            logger.error("Could not save the %s: %s", label, exc)
+            self._app_state.raise_alarm("warning", f"Could not save the {label}: {exc}")
 
     def _on_simulate_clicked(self) -> None:
         self._set_triggers_enabled(False)  # re-enabled when the cycle ends

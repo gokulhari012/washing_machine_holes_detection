@@ -172,6 +172,11 @@ The cycle's `shift` is resolved by `ShiftService` against the cycle's own
   quietly drop that note.
 - `parallel` — all four grab and detect at once via `ThreadPoolExecutor`. Shortest cycle.
 
+The dashboard's developer-only trigger bar also has a **"Capture mode"** dropdown
+that writes this key on change. The pipeline reads the key on every cycle, so PLC
+triggers use the new mode from the next part on. While `parallel` is selected the
+delay spin box is disabled but still holds its value.
+
 Anything else in that key — a typo like `parellel`, which the live file really did
 carry — resolves to `sequential` with a warning in the log
 (`InspectionService._resolve_capture_mode`). It used to fall through the
