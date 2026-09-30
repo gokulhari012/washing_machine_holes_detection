@@ -15,7 +15,7 @@ from __future__ import annotations
 import threading
 import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import numpy as np
@@ -335,6 +335,21 @@ class CameraBase(ABC):
         if self._connected:
             self._apply_to_device(settings)
             logger.info("%s: settings applied", self.name)
+
+    def set_brightness(self, brightness: int) -> CameraSettings:
+        """Adopt a new light-brightness level and nothing else.
+
+        ``brightness`` drives the external LED light, not the camera (see
+        :class:`CameraSettings`), so unlike :meth:`apply_settings` nothing is
+        pushed to the device: exposure/gain are left untouched and a grab in
+        flight is never disturbed. The settings object is *replaced* rather
+        than mutated, so a reader on another thread (the inspection
+        pipeline's strobe) sees either the old object or the new one, never
+        a half-written one. Returns the new settings.
+        """
+        self._settings = replace(self._settings, brightness=int(brightness))
+        logger.info("%s: light brightness set to %d", self.name, self._settings.brightness)
+        return self._settings
 
     def detect_resolution(self) -> tuple[int, int]:
         """Actual (width, height) reported by the device or file source,

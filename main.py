@@ -228,7 +228,7 @@ class Application:
         )
         self.window.add_page(
             "LED Controller", "☀",
-            LedPage(self.app_state, self.led_service),
+            LedPage(self.app_state, self.led_service, self.camera_service),
             min_role=UserRole.ADMIN,
         )
         self.window.add_page(
@@ -279,6 +279,11 @@ class Application:
         self.config.subscribe("detection", self._on_detection_settings_saved)
         self.config.subscribe("app_config", self._on_app_config_saved)
         self.calibration.subscribe(self._on_calibration_saved)
+        # The LED Controller page's camera brightness is persisted without
+        # notifying the "camera" subscribers (see CameraService.set_brightness),
+        # so it gets its own hook for the two things they would have done
+        # that still matter: sync the model, and tell the Camera page.
+        self.camera_service.subscribe_brightness(self._on_camera_brightness_set)
         self._maintenance_timer = QTimer(self.window)
         self._maintenance_timer.timeout.connect(self._run_maintenance_async)
         # The rota's only clock. Polling (rather than a one-shot timer armed
@@ -394,6 +399,14 @@ class Application:
     # ------------------------------------------------- machine-model sync
     def _on_camera_settings_saved(self, _camera_cfg: dict) -> None:
         self._sync_active_machine_model("cameras")
+
+    def _on_camera_brightness_set(self, levels: dict[int, int]) -> None:
+        """Brightness set from the LED Controller page: fold it into the
+        applied machine model (it is a tunable per-model field) and publish
+        it so the Camera page's form follows. Runs on the UI thread."""
+        self._sync_active_machine_model("cameras")
+        for index, brightness in levels.items():
+            self.app_state.camera_brightness_changed.emit(index, brightness)
 
     def _on_detection_settings_saved(self, _detection_cfg: dict) -> None:
         self._sync_active_machine_model("detection")

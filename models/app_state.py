@@ -32,6 +32,10 @@ class AppState(QObject):
     # the engineering pages reload on (see set_active_machine_model)
     active_machine_model_changed = Signal(str, int)
     current_shift_changed = Signal(str)        # shift name, from the configured rota
+    # camera index, brightness - set from the LED Controller page, which
+    # persists it without the camera rebuild a camera.json save triggers
+    # (see CameraService.set_brightness), so the Camera page needs telling
+    camera_brightness_changed = Signal(int, int)
 
     # inspection flow
     trigger_received = Signal(int)             # machine number

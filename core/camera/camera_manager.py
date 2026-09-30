@@ -162,6 +162,13 @@ class CameraManager:
         """Push new settings to one camera (Camera Configuration page)."""
         self.get(index).apply_settings(settings)
 
+    def set_brightness(self, index: int, brightness: int) -> CameraSettings | None:
+        """Change one camera's light-brightness level live, without a device
+        push (see ``CameraBase.set_brightness``). Returns the new settings,
+        or None for a camera that is configured but failed to construct."""
+        camera = self._cameras.get(index)
+        return None if camera is None else camera.set_brightness(brightness)
+
     def detect_resolution(self, index: int) -> tuple[int, int]:
         """(width, height) reported by the device or its image source; raises CameraError."""
         return self.get(index).detect_resolution()

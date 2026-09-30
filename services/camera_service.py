@@ -17,13 +17,23 @@ instead: :meth:`light_on`/:meth:`light_off` are the caller's (the Camera page's)
 responsibility to bracket around a capture or a Continuous Capture run — see
 their docstrings. While strobe mode is on, :meth:`_push_brightness` is a
 no-op, so an unrelated Apply/Save can't leave the light lit at rest.
+
+:meth:`set_brightness` is a second, narrower way in - the LED Controller
+page's "Camera Light Brightness" panel. It changes *only* ``brightness``,
+live and in camera.json, without the full camera rebuild a
+``ConfigManager.save`` of the ``camera`` domain triggers (see its docstring
+for why), and tells :meth:`subscribe_brightness` observers so the Camera
+page's form and the active machine model follow it.
 """
 
 from __future__ import annotations
 
+from typing import Callable, Mapping
+
 import numpy as np
 
 from core.camera import DEFAULT_VIEW_FPS, CameraHealth, CameraManager, CameraSettings
+from core.led.protocol import MAX_BRIGHTNESS, MIN_BRIGHTNESS
 from core.logging import get_logger
 from core.utilities import ConfigManager
 from core.utilities.enums import ConnectionState, LogSource
@@ -32,6 +42,9 @@ from services.database_service import DatabaseService
 from services.led_service import LedService
 
 logger = get_logger(LogSource.CAMERA)
+
+#: Called with ``{camera index: brightness}`` after :meth:`CameraService.set_brightness`.
+BrightnessCallback = Callable[[dict[int, int]], None]
 
 
 class CameraService:
@@ -48,6 +61,7 @@ class CameraService:
         self._config = config_manager
         self._database = database_service
         self._led = led_service
+        self._brightness_callbacks: list[BrightnessCallback] = []
 
     # -------------------------------------------------------------- queries
     def get_configs(self) -> list[dict]:
@@ -208,6 +222,80 @@ class CameraService:
         self._mirror_to_database(settings)
         self._push_brightness(settings)
         logger.info("Camera %d configuration saved", settings.index)
+
+    def set_brightness(self, levels: Mapping[int, int]) -> None:
+        """Set the light brightness of one or more cameras, and nothing else.
+
+        The LED Controller page's per-camera / "Set All" controls. The same
+        ``brightness`` field as the Camera page's "Light Brightness", so it
+        is what the inspection cycle's strobe lights each camera at, and
+        what a steady (non-strobe) camera's channel is held at. For each
+        camera, in this order:
+
+        1. camera.json's ``brightness`` key is rewritten - that key only. The
+           file is saved **without** notifying the ``camera`` subscribers,
+           because the composition root's one rebuilds every camera from
+           the file and reconnects them: seconds of blocked GUI and dropped
+           GigE links to store a light level, and - with a machine model
+           applied - it would reset the running cameras to the file's
+           baseline and so undo the model's ROI/exposure;
+        2. the running camera adopts it (``CameraManager.set_brightness``,
+           no device push), so the next trigger cycle already uses it;
+        3. it is pushed to the camera's LED channel exactly as a Camera page
+           Save would (:meth:`_push_brightness`: skipped for strobe cameras
+           and unwired ones, best-effort);
+        4. :meth:`subscribe_brightness` observers are told, once, with every
+           level set - the composition root syncs the active machine model
+           and repaints the Camera page from that.
+
+        All-or-nothing on validation: an unknown camera or an out-of-range
+        level raises before anything is written.
+
+        Raises:
+            ConfigurationError: unknown camera index, brightness outside
+                0-255, or camera.json could not be written.
+        """
+        wanted = {int(index): int(value) for index, value in levels.items()}
+        if not wanted:
+            return
+        for index, value in wanted.items():
+            if not MIN_BRIGHTNESS <= value <= MAX_BRIGHTNESS:
+                raise ConfigurationError(
+                    f"Camera {index}: brightness must be {MIN_BRIGHTNESS}-{MAX_BRIGHTNESS}, got {value}"
+                )
+
+        document = self._config.load("camera")
+        entries = {
+            int(entry.get("index", -1)): entry for entry in document.get("cameras", [])
+        }
+        unknown = sorted(set(wanted) - set(entries))
+        if unknown:
+            raise ConfigurationError(f"No camera with index {unknown[0]} is configured")
+        for index, value in wanted.items():
+            entries[index]["brightness"] = value
+        self._config.save("camera", document, notify=False)
+
+        for index in sorted(wanted):
+            persisted = CameraSettings.from_config(entries[index])
+            live = self._manager.set_brightness(index, wanted[index])
+            self._mirror_to_database(persisted)
+            # led_channel/led_strobe are rig facts no machine model overrides,
+            # so the live and persisted entries agree on them; prefer live.
+            self._push_brightness(live if live is not None else persisted)
+            logger.info("Camera %d light brightness set to %d", index, wanted[index])
+
+        for callback in list(self._brightness_callbacks):
+            try:
+                callback(dict(wanted))
+            except Exception:  # observers must never break the caller
+                logger.exception("Camera brightness callback raised")
+
+    def subscribe_brightness(self, callback: BrightnessCallback) -> None:
+        """Register a callback fired after every :meth:`set_brightness`.
+
+        Qt-free, like ``ConfigManager.subscribe`` - the composition root
+        bridges it to ``AppState.camera_brightness_changed``."""
+        self._brightness_callbacks.append(callback)
 
     def remove_camera(self, index: int) -> None:
         document = self._config.load("camera")

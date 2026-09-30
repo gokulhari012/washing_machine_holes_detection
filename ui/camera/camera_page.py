@@ -417,6 +417,7 @@ class CameraPage(QWidget):
         app_state.preview_frame.connect(self._on_preview_frame)
         app_state.camera_state_changed.connect(self._on_camera_state)
         app_state.active_machine_model_changed.connect(self._on_machine_model_applied)
+        app_state.camera_brightness_changed.connect(self._on_brightness_set_elsewhere)
         self._on_driver_changed(self._driver.currentText())
         self.reload()
 
@@ -471,6 +472,18 @@ class CameraPage(QWidget):
         """
         self.reload()
         self._populate_form()
+
+    def _on_brightness_set_elsewhere(self, camera_index: int, brightness: int) -> None:
+        """The LED Controller page set a camera's light brightness.
+
+        Only the Light Brightness field moves, and only when it is showing
+        that camera: repopulating the whole form would throw away any other
+        edits the operator has on screen and not yet applied. That value is
+        already persisted and live, so a later Save here writes it back
+        unchanged.
+        """
+        if camera_index == self._current_index():
+            self._brightness.setValue(int(brightness))
 
     def _populate_form(self) -> None:
         cfg = self._current_config()

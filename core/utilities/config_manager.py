@@ -83,8 +83,15 @@ class ConfigManager:
             return copy.deepcopy(data)
 
     # ------------------------------------------------------------------- save
-    def save(self, name: str, data: dict[str, Any]) -> None:
+    def save(self, name: str, data: dict[str, Any], *, notify: bool = True) -> None:
         """Atomically persist *data* as configuration *name* and notify subscribers.
+
+        ``notify=False`` persists without running the subscribers. It exists
+        for narrow edits whose runtime effect the caller has already applied
+        itself - e.g. ``CameraService.set_brightness``, where the ``camera``
+        subscriber would otherwise rebuild and reconnect every camera just
+        to store one light level. A caller skipping notification owns every
+        side effect the subscribers would have had.
 
         Raises:
             ConfigurationError: the file could not be written.
@@ -105,7 +112,8 @@ class ConfigManager:
             callbacks = list(self._subscribers.get(name, ()))
 
         logger.info("Configuration '%s' saved", name)
-        self._notify(name, callbacks, data)
+        if notify:
+            self._notify(name, callbacks, data)
 
     def load_defaults(self, name: str) -> dict[str, Any]:
         """Read configuration *name*'s shipped default without touching the
