@@ -418,6 +418,7 @@ class CameraPage(QWidget):
         app_state.camera_state_changed.connect(self._on_camera_state)
         app_state.active_machine_model_changed.connect(self._on_machine_model_applied)
         app_state.camera_brightness_changed.connect(self._on_brightness_set_elsewhere)
+        app_state.camera_strobe_changed.connect(self._on_strobe_set_elsewhere)
         self._on_driver_changed(self._driver.currentText())
         self.reload()
 
@@ -484,6 +485,12 @@ class CameraPage(QWidget):
         """
         if camera_index == self._current_index():
             self._brightness.setValue(int(brightness))
+
+    def _on_strobe_set_elsewhere(self, camera_index: int, strobe: bool) -> None:
+        """The LED Controller page switched a camera's strobe mode. Same rule
+        as :meth:`_on_brightness_set_elsewhere`: only that checkbox moves."""
+        if camera_index == self._current_index():
+            self._led_strobe.setChecked(bool(strobe))
 
     def _populate_form(self) -> None:
         cfg = self._current_config()

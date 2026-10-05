@@ -116,7 +116,12 @@ class SerialLedClient(LedClientBase):
         append_terminator: bool = False,
         expect_response: bool = True,
     ) -> str:
-        with self._lock:
+        # Bounded, never indefinite: the raw command tester holds this lock
+        # for up to ``timeout_ms`` while it waits for a reply, and an
+        # inspection cycle's strobe must not queue behind that forever.
+        if not self._lock.acquire(timeout=self._write_timeout_s):
+            raise LedTimeoutError("LED controller busy with another command")
+        try:
             ser = self._require_serial()
             data = command.encode("ascii", errors="replace")
             if append_terminator:
@@ -124,7 +129,7 @@ class SerialLedClient(LedClientBase):
             try:
                 ser.reset_input_buffer()
                 ser.write(data)
-                ser.flush()
+                self._drain(ser)
             except Exception as exc:
                 raise LedWriteError(f"Write failed: {exc}") from exc
 
@@ -136,12 +141,30 @@ class SerialLedClient(LedClientBase):
                 return ""
 
             response = self._read_response(ser)
+        finally:
+            self._lock.release()
 
         if not response:
             raise LedTimeoutError(
                 f"No response from LED controller within {self._timeout_s * 1000:.0f} ms"
             )
         return response
+
+    def _drain(self, ser: serial.Serial) -> None:
+        """Wait for the output buffer to empty, bounded by the write timeout.
+
+        Replaces ``ser.flush()``, which on Windows is an *unbounded*
+        ``while out_waiting: sleep`` loop: a USB-RS232 bridge that has
+        wedged (controller powered off, cable pulled mid-cycle) would hold
+        the calling thread - an inspection cycle - forever. Here it raises
+        instead, which ``send`` reports as a write failure."""
+        deadline = time.monotonic() + self._write_timeout_s
+        while getattr(ser, "out_waiting", 0):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"output not drained within {self._write_timeout_s * 1000:.0f} ms"
+                )
+            time.sleep(_POLL_INTERVAL_S)
 
     def _read_response(self, ser: serial.Serial) -> str:
         """Read whatever the controller sends back within the configured

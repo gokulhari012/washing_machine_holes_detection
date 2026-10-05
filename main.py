@@ -66,6 +66,7 @@ from workers import (
     create_acquisition_workers,
 )
 from ui.dashboard import DashboardPage
+from ui.dashboard.dashboard_snapshot import DashboardSnapshotter
 from ui.camera import CameraPage
 from ui.led import LedPage
 from ui.plc import PlcPage
@@ -204,17 +205,22 @@ class Application:
         # profiles change the coordinate frame and the whole per-model tuning
         # snapshot, so they are re-done at commissioning, not on a shift.
         # Roles nest, so a developer sees every page here.
-        self.window.add_page(
-            "Dashboard",
-            "▦",
-            DashboardPage(
-                self.app_state,
-                self.camera_configs,
-                config_manager=self.config,
-                on_simulate_trigger=self._simulate_trigger,
-                on_camera_trigger=self._trigger_camera,
-                auth_service=self.auth_service,
-            ),
+        dashboard = DashboardPage(
+            self.app_state,
+            self.camera_configs,
+            config_manager=self.config,
+            on_simulate_trigger=self._simulate_trigger,
+            on_camera_trigger=self._trigger_camera,
+            auth_service=self.auth_service,
+        )
+        self.window.add_page("Dashboard", "▦", dashboard)
+        # storage.save_dashboard_screenshot: a PNG of the dashboard after
+        # every full cycle. Connected after the dashboard exists; the
+        # dashboard itself repaints from AppState.inspection_completed, which
+        # is emitted inside the cycle, so it is already up to date here.
+        self.dashboard_snapshotter = DashboardSnapshotter(dashboard, self.config)
+        self.inspection_worker.inspection_finished.connect(
+            self.dashboard_snapshotter.on_inspection_finished
         )
         self.window.add_page(
             "Cameras", "◉",
@@ -284,6 +290,7 @@ class Application:
         # so it gets its own hook for the two things they would have done
         # that still matter: sync the model, and tell the Camera page.
         self.camera_service.subscribe_brightness(self._on_camera_brightness_set)
+        self.camera_service.subscribe_strobe(self._on_camera_strobe_set)
         self._maintenance_timer = QTimer(self.window)
         self._maintenance_timer.timeout.connect(self._run_maintenance_async)
         # The rota's only clock. Polling (rather than a one-shot timer armed
@@ -407,6 +414,13 @@ class Application:
         self._sync_active_machine_model("cameras")
         for index, brightness in levels.items():
             self.app_state.camera_brightness_changed.emit(index, brightness)
+
+    def _on_camera_strobe_set(self, states: dict[int, bool]) -> None:
+        """Strobe mode switched from the LED Controller page: tell the Camera
+        page so its checkbox follows. No model sync - ``led_strobe`` is a rig
+        fact no machine model carries. Runs on the UI thread."""
+        for index, strobe in states.items():
+            self.app_state.camera_strobe_changed.emit(index, strobe)
 
     def _on_detection_settings_saved(self, _detection_cfg: dict) -> None:
         self._sync_active_machine_model("detection")

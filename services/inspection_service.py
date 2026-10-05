@@ -58,6 +58,17 @@ never raised, so it can never stall or fail an inspection cycle. Skipped
 either. ``led_manager`` is optional — a service built without one (tests, or
 a station that hasn't finished the LED integration) simply never strobes.
 
+Every strobe command also runs under a hard deadline
+(:data:`LED_COMMAND_DEADLINE_S`) on a dedicated daemon thread
+(:class:`_LedDispatcher`), so a controller that never answers — or a serial
+driver call that ignores its own timeouts — can delay a cycle by at most that
+deadline and never freeze it: past it the cycle logs a warning and carries on
+to the next step (capture, or the PLC write) without the light. Commands keep
+their order on that one thread, so a late light-on is still followed by its
+light-off. While a command is still stuck from earlier, later ones are queued
+behind it without being waited on (a wedged link costs one deadline, not one
+per command), and past :data:`_LED_MAX_BACKLOG` they are dropped.
+
 Every cycle is stamped with the operator and the shift it ran in. The shift
 comes from ``ShiftService`` -- resolved from the configured rota against the
 cycle's own ``started_at``, so a cycle that straddles a handover is filed
@@ -96,16 +107,20 @@ Runs on the inspection worker thread; never on the UI thread.
 
 from __future__ import annotations
 
+import queue
+import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime
+from typing import Callable
 from pathlib import Path
 
 import cv2
 import numpy as np
 
 from core.calibration import CalibrationManager
-from core.camera import CameraManager
+from core.camera import CameraManager, roi_rect
 from core.led import LedManager
 from core.logging import get_logger
 from core.plc import PlcManager
@@ -122,6 +137,65 @@ logger = get_logger(LogSource.VISION)
 
 SEQUENTIAL_MODE = "sequential"
 PARALLEL_MODE = "parallel"
+
+#: Longest a cycle waits on any one LED command before carrying on without it.
+#: A healthy fire-and-forget write takes a few ms; this only bites when the
+#: controller or its USB-RS232 bridge has stopped responding.
+LED_COMMAND_DEADLINE_S = 0.5
+
+#: Commands allowed to pile up behind a stuck one before new ones are dropped.
+_LED_MAX_BACKLOG = 4
+
+
+class _LedDispatcher:
+    """Runs LED commands in order on one daemon thread, so the caller can
+    stop waiting on a stuck one (see the module docstring). Daemon, so a
+    command wedged in the serial driver never holds up process exit."""
+
+    def __init__(self) -> None:
+        self._queue: queue.Queue = queue.Queue()
+        self._lock = threading.Lock()
+        self._pending = 0
+        self._thread: threading.Thread | None = None
+
+    @property
+    def busy(self) -> bool:
+        with self._lock:
+            return self._pending > 0
+
+    def submit(self, fn: Callable[[], object]) -> Future | None:
+        """Queue *fn*; ``None`` when the backlog is already full."""
+        with self._lock:
+            if self._pending >= _LED_MAX_BACKLOG:
+                return None
+            self._pending += 1
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(
+                    target=self._run, name="led-dispatch", daemon=True
+                )
+                self._thread.start()
+        future: Future = Future()
+        self._queue.put((fn, future))
+        return future
+
+    def _run(self) -> None:
+        while True:
+            fn, future = self._queue.get()
+            try:
+                future.set_result(fn())
+            except BaseException as exc:  # handed to the waiting caller
+                future.set_exception(exc)
+            finally:
+                with self._lock:
+                    self._pending -= 1
+
+
+def _full_view_enabled(app_cfg: dict) -> bool:
+    """``app_config.ui.dashboard_full_frame`` (Settings page, General): show
+    the whole camera image with the ROI, its centre and the holes drawn on it
+    (default), or — ``false`` — just the ROI crop with the holes, as earlier
+    versions did. Display only: detection always runs on the ROI crop."""
+    return bool(app_cfg.get("ui", {}).get("dashboard_full_frame", True))
 
 
 def _resolve_capture_mode(value: object) -> str:
@@ -212,6 +286,11 @@ class InspectionService:
         self._config = config_manager
         self._shifts = shift_service
         self._led = led_manager
+        self._led_dispatch = _LedDispatcher()
+        # app_config.ui.dashboard_full_frame, re-read at the start of every
+        # cycle (both entry points run on the inspection thread and never
+        # overlap; the parallel detect pool only reads it).
+        self._full_view = True
 
     # -------------------------------------------------------------- pipeline
     def run_inspection(
@@ -229,6 +308,7 @@ class InspectionService:
         started_at = datetime.now()
         app_cfg = self._config.load("app_config")
         application = app_cfg.get("application", {})
+        self._full_view = _full_view_enabled(app_cfg)
 
         self._app_state.notify_trigger(machine_number)
         logger.info("Inspection started (machine %d)", machine_number)
@@ -359,6 +439,7 @@ class InspectionService:
         started_at = datetime.now()
         app_cfg = self._config.load("app_config")
         application = app_cfg.get("application", {})
+        self._full_view = _full_view_enabled(app_cfg)
 
         self._app_state.notify_trigger(machine_number)
         camera = self._cameras.get(camera_index)
@@ -379,16 +460,16 @@ class InspectionService:
         camera_started = time.perf_counter()
         lit = self._strobe_on([camera_index])
         try:
-            frame = self._cameras.capture(camera_index)
+            full = self._cameras.capture(camera_index, apply_roi=False)
         except CameraError:
-            frame = None  # already logged and recorded in health by capture()
+            full = None  # already logged and recorded in health by capture()
         finally:
             self._strobe_off(lit)
-        if frame is not None:
-            self._app_state.publish_camera_capture(camera_index, frame)
+        if full is not None:
+            self._publish_capture(camera_index, full)
 
         detect_started = time.perf_counter()
-        data = self._inspect_one(camera_index, frame)
+        data = self._inspect_one(camera_index, full)
         now = time.perf_counter()
         detection_ms = (now - detect_started) * 1000.0
         data.cycle_time_ms = (now - camera_started) * 1000.0
@@ -569,14 +650,14 @@ class InspectionService:
             )
             camera_started = time.perf_counter()
             try:
-                frame = self._cameras.capture(index)
+                full = self._cameras.capture(index, apply_roi=False)
             except CameraError:
-                frame = None  # already logged and recorded in health by capture()
-            if frame is not None:
-                self._app_state.publish_camera_capture(index, frame)
+                full = None  # already logged and recorded in health by capture()
+            if full is not None:
+                self._publish_capture(index, full)
 
             detect_started = time.perf_counter()
-            data = self._inspect_one(index, frame)
+            data = self._inspect_one(index, full)
             now = time.perf_counter()
             detection_ms += (now - detect_started) * 1000.0
             data.cycle_time_ms = (now - camera_started) * 1000.0  # this camera's own capture+detect
@@ -594,11 +675,11 @@ class InspectionService:
         # Only the gantry-active cameras: a skipped camera is not captured at
         # all (same as the sequential path), and grabbing it would cost a
         # full-resolution transfer nothing then reads.
-        frames = self._cameras.capture_all(enabled)
+        frames = self._cameras.capture_all(enabled, apply_roi=False)
         capture_ms = (time.perf_counter() - capture_started) * 1000.0
         for index, frame in frames.items():
             if frame is not None:
-                self._app_state.publish_camera_capture(index, frame)
+                self._publish_capture(index, frame)
 
         detect_started = time.perf_counter()
         camera_results: dict[int, CameraInspectionData] = {}
@@ -633,13 +714,51 @@ class InspectionService:
         return data, (time.perf_counter() - started) * 1000.0
 
     # ------------------------------------------------------------ per camera
+    def _roi_of(self, camera_index: int, full: np.ndarray) -> tuple[int, int, int, int]:
+        """*camera_index*'s ROI as an ``(x0, y0, x1, y1)`` region of *full*,
+        clamped exactly as ``CameraBase.capture``'s crop would clamp it."""
+        roi = getattr(self._cameras.get(camera_index).settings, "roi", (0, 0, 0, 0))
+        return roi_rect(full, roi)
+
+    def _publish_capture(self, camera_index: int, full: np.ndarray) -> None:
+        """Show the just-taken picture: the whole frame with the ROI outlined,
+        or only the ROI crop when the full view is switched off."""
+        rect = self._roi_of(camera_index, full)
+        if self._full_view:
+            picture = draw_detection_overlay(full, None, roi=rect)
+        else:
+            x0, y0, x1, y1 = rect
+            picture = full[y0:y1, x0:x1]
+        self._app_state.publish_camera_capture(camera_index, picture)
+
+    def _annotate(
+        self,
+        full: np.ndarray,
+        crop: np.ndarray,
+        rect: tuple[int, int, int, int],
+        detection: DetectionResult | None,
+        label: str,
+    ) -> np.ndarray:
+        """The result picture for the dashboard and saved images — see
+        :func:`_full_view_enabled`."""
+        if self._full_view:
+            return draw_detection_overlay(full, detection, label=label, roi=rect)
+        return draw_detection_overlay(crop, detection, label=label)
+
     def _inspect_one(
-        self, camera_index: int, frame: np.ndarray | None
+        self, camera_index: int, full: np.ndarray | None
     ) -> CameraInspectionData:
-        """Capture-to-judgement for a single camera. Never raises."""
+        """Capture-to-judgement for a single camera. Never raises.
+
+        *full* is the whole (rotated, uncropped) frame. Detection and every
+        measurement run on its ROI crop — the same pixels ``capture()`` with
+        its default ``apply_roi`` would have returned, so ``x_px``/``x_mm``
+        and the verdict are unchanged — while the annotated ``frame`` shown
+        on the dashboard and saved to disk is the whole picture, with the
+        ROI, its centre and the holes drawn in place."""
         camera_name = self._cameras.get(camera_index).name
 
-        if frame is None:
+        if full is None:
             health = self._cameras.health(camera_index)
             message = health.last_error or "capture failed"
             self._app_state.raise_alarm(
@@ -652,6 +771,10 @@ class InspectionService:
                 error=message,
             )
 
+        rect = self._roi_of(camera_index, full)
+        x0, y0, x1, y1 = rect
+        frame = full[y0:y1, x0:x1]
+
         try:
             detection = self._vision.detect(frame, camera_index)
         except DetectionError as exc:
@@ -662,11 +785,11 @@ class InspectionService:
                 camera_name=camera_name,
                 result=InspectionResult.ERROR,
                 error=str(exc),
-                frame=draw_detection_overlay(frame, None, label=camera_name),
+                frame=self._annotate(full, frame, rect, None, camera_name),
             )
 
         self._select_hole(camera_index, detection)
-        annotated = draw_detection_overlay(frame, detection, label=camera_name)
+        annotated = self._annotate(full, frame, rect, detection, camera_name)
         best = detection.best
         if best is None or len(detection.holes) < self._vision.expected_hole_count(camera_index):
             return CameraInspectionData(
@@ -747,13 +870,10 @@ class InspectionService:
             channel = getattr(settings, "led_channel", 0)
             if channel <= 0:
                 continue
-            try:
-                self._led.send_channel(channel, settings.brightness)
-            except LedError as exc:
-                logger.warning(
-                    "Camera %d: strobe light-on failed on LED channel %d (%s)",
-                    index, channel, exc,
-                )
+            self._led_send(
+                f"Camera {index}: strobe light-on on LED channel {channel}",
+                self._led.send_channel, channel, settings.brightness,
+            )
             lit.append(index)
         return lit
 
@@ -767,13 +887,10 @@ class InspectionService:
             channel = getattr(settings, "led_channel", 0)
             if channel <= 0:
                 continue
-            try:
-                self._led.send_channel(channel, 0)
-            except LedError as exc:
-                logger.warning(
-                    "Camera %d: strobe light-off failed on LED channel %d (%s)",
-                    index, channel, exc,
-                )
+            self._led_send(
+                f"Camera {index}: strobe light-off on LED channel {channel}",
+                self._led.send_channel, channel, 0,
+            )
 
     def _strobe_group_on(self, indices: list[int]) -> list[int]:
         """Light every strobe-enabled camera among *indices* together, in one
@@ -795,10 +912,10 @@ class InspectionService:
             channel_of[channel] = index
         if not channel_of:
             return []
-        try:
-            self._led.send_multichannel(self._channel_states(channel_of, on=True))
-        except LedError as exc:
-            logger.warning("Grouped strobe light-on failed: %s", exc)
+        self._led_send(
+            "Grouped strobe light-on",
+            self._led.send_multichannel, self._channel_states(channel_of, on=True),
+        )
         return list(channel_of.values())
 
     def _strobe_group_off(self, indices: list[int]) -> None:
@@ -814,10 +931,39 @@ class InspectionService:
                 channel_of[channel] = index
         if not channel_of:
             return
+        self._led_send(
+            "Grouped strobe light-off",
+            self._led.send_multichannel, self._channel_states(channel_of, on=False),
+        )
+
+    def _led_send(self, what: str, fn: Callable[..., object], *args: object) -> None:
+        """Run one LED command, waiting at most :data:`LED_COMMAND_DEADLINE_S`.
+
+        Never raises an LED fault and never blocks past the deadline — the
+        cycle always proceeds to its next step. A command still stuck from
+        earlier means this one is queued behind it (order preserved) but not
+        waited on at all."""
+        stuck = self._led_dispatch.busy
+        future = self._led_dispatch.submit(lambda: fn(*args))
+        if future is None:
+            logger.warning("%s skipped: LED controller is not responding", what)
+            return
+        if stuck:
+            logger.warning(
+                "%s queued behind an LED command that has not completed; "
+                "continuing the cycle without waiting", what,
+            )
+            return
         try:
-            self._led.send_multichannel(self._channel_states(channel_of, on=False))
+            future.result(timeout=LED_COMMAND_DEADLINE_S)
+        except FutureTimeoutError:
+            logger.warning(
+                "%s: no completion from the LED controller within %d ms; "
+                "continuing the cycle without it",
+                what, int(LED_COMMAND_DEADLINE_S * 1000),
+            )
         except LedError as exc:
-            logger.warning("Grouped strobe light-off failed: %s", exc)
+            logger.warning("%s failed (%s)", what, exc)
 
     def _channel_states(
         self, toggled: dict[int, int], *, on: bool

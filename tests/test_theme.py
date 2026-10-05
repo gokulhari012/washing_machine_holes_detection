@@ -233,3 +233,94 @@ def test_the_led_log_colours_differ_between_the_schemes():
 
     for token in _LOG_TOKENS.values():
         assert theme._DARK[token] != theme._LIGHT[token], token
+
+
+def test_settings_page_saves_the_full_view_checkbox(qt_app, tmp_path) -> None:
+    config = _config_manager(tmp_path)
+    page = _settings_page(config, _FakeAuth(UserRole.ADMIN))
+    assert page._full_frame.isChecked()  # shipped default: full image
+
+    page._full_frame.setChecked(False)
+    page._on_save()
+    _dispose(page)
+
+    assert config.get_value("app_config", "ui.dashboard_full_frame") is False
+
+
+def test_settings_page_saves_the_dashboard_screenshot_checkbox(qt_app, tmp_path) -> None:
+    config = _config_manager(tmp_path)
+    page = _settings_page(config, _FakeAuth(UserRole.ADMIN))
+    assert not page._dashboard_shot.isChecked()  # shipped default: off
+
+    page._dashboard_shot.setChecked(True)
+    page._on_save()
+    _dispose(page)
+
+    assert config.get_value("app_config", "storage.save_dashboard_screenshot") is True
+
+
+def _dispose(widget) -> None:
+    """Delete a parentless widget now, while the QApplication is alive.
+    Left to Python, it is collected in pytest's final gc pass, after Qt has
+    started tearing down, which crashes the interpreter on exit."""
+    import shiboken6
+
+    shiboken6.delete(widget)
+
+
+def _wait_for(predicate, timeout_s: float = 3.0) -> bool:
+    import time
+
+    from PySide6.QtWidgets import QApplication
+
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        QApplication.processEvents()
+        if predicate():
+            return True
+        time.sleep(0.02)
+    return predicate()
+
+
+@pytest.mark.parametrize(
+    ("enabled", "partial", "saved"),
+    [(True, False, True), (True, True, False), (False, False, False)],
+)
+def test_dashboard_screenshot_after_a_full_cycle_only(
+    qt_app, tmp_path, enabled, partial, saved
+) -> None:
+    """A full cycle with the setting on leaves a PNG beside its camera
+    images; a single-camera cycle, or the setting off, leaves nothing."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QLabel
+
+    from ui.dashboard import dashboard_snapshot
+    from ui.dashboard.dashboard_snapshot import DashboardSnapshotter
+
+    config = _config_manager(tmp_path)
+    cfg = config.load("app_config")
+    cfg["storage"]["image_directory"] = str(tmp_path / "images")
+    cfg["storage"]["save_dashboard_screenshot"] = enabled
+    config.save("app_config", cfg)
+
+    widget = QLabel("dashboard")
+    widget.resize(200, 100)
+    cycle = SimpleNamespace(
+        partial=partial,
+        started_at=datetime(2026, 10, 1, 9, 30, 15),
+        machine_number=42,
+        overall_result=SimpleNamespace(value="GOOD"),
+    )
+    DashboardSnapshotter(widget, config).on_inspection_finished(cycle)
+
+    expected = tmp_path / "images" / "2026-10-01" / "093015_42_dashboard_GOOD.png"
+    try:
+        if saved:
+            assert _wait_for(expected.exists)
+        else:
+            _wait_for(lambda: False, timeout_s=(dashboard_snapshot.SETTLE_MS + 200) / 1000)
+            assert not (tmp_path / "images").exists()
+    finally:
+        _dispose(widget)

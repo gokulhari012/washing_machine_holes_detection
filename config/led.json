@@ -3,13 +3,13 @@
     "driver": "serial",
     "port": "COM3",
     "baud_rate": 19200,
-    "timeout_ms": 100
+    "timeout_ms": 1000
   },
   "max_brightness": 200,
   "manual_brightness": {
-    "1": 128,
-    "2": 128,
-    "3": 128,
-    "4": 128
+    "1": 150,
+    "2": 150,
+    "3": 150,
+    "4": 150
   }
 }

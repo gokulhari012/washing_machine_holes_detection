@@ -20,7 +20,7 @@ import pytest
 
 from core.calibration import CameraCalibration
 from core.calibration.calibration_manager import CalibrationManager
-from core.camera import crop_roi
+from core.camera import crop_roi, roi_rect
 from core.vision import DetectionResult, draw_detection_overlay
 from core.vision.detection_result import Hole
 from tests.test_camera_rotation import make_camera
@@ -139,3 +139,72 @@ def test_uncalibrated_camera_says_the_tolerance_was_not_checked() -> None:
 def test_too_few_holes_is_ng_before_any_tolerance(holes, expected) -> None:
     result, _text = _verdict(tolerance=100.0, holes=holes, expected=expected)
     assert result == "NG"
+
+
+# ------------------------------------------------- overlay on the original frame
+def test_roi_rect_is_the_region_crop_roi_keeps() -> None:
+    frame = np.arange(10 * 20, dtype=np.uint8).reshape(10, 20)
+    x0, y0, x1, y1 = roi_rect(frame, (15, 5, 50, 50))
+    np.testing.assert_array_equal(frame[y0:y1, x0:x1], crop_roi(frame, (15, 5, 50, 50)))
+    assert roi_rect(frame, (0, 0, 0, 0)) == (0, 0, 20, 10)
+
+
+def test_overlay_with_roi_draws_the_hole_where_it_sits_in_the_original_frame() -> None:
+    """A hole detected at (50, 50) inside an ROI starting at (300, 200) is
+    drawn at (350, 250) on the whole frame, and the ROI is outlined."""
+    frame = np.zeros((600, 800), dtype=np.uint8)
+    hole = Hole(x_px=50, y_px=50, diameter_px=30, circularity=1.0, confidence=0.9)
+    drawn = draw_detection_overlay(
+        frame, DetectionResult(holes=[hole]), roi=(300, 200, 500, 400)
+    )
+    green = np.all(drawn == (80, 220, 80), axis=2)
+    assert green[250, 350]  # the hole's crosshair, shifted by the ROI origin
+    assert not green[:150, :150].any()  # nothing at the ROI-relative (50, 50)
+    assert np.all(drawn[300, 400] == (255, 0, 255))  # ROI centre mark
+    assert np.all(drawn[200, 420] == (255, 170, 0))  # ROI outline, top edge
+
+
+def test_pipeline_detects_on_the_roi_but_shows_the_original_frame() -> None:
+    """Detection — and so every x_px/x_mm and verdict — still sees only the
+    ROI crop; the dashboard frame is the whole 40x40 picture."""
+    from tests.test_inspection_strobe import FakeCamera, FakeVision, _build
+
+    seen: list[tuple[int, ...]] = []
+
+    class RecordingVision(FakeVision):
+        @staticmethod
+        def detect(frame, camera_index: int) -> DetectionResult:
+            seen.append(frame.shape)
+            return FakeVision.detect(frame, camera_index)
+
+    camera = FakeCamera(1)
+    camera.settings.roi = (5, 10, 20, 15)
+    service, _cameras, _led, _plc = _build(
+        {1: camera}, [], capture_mode="sequential", camera_delay_ms=0
+    )
+    service._vision = RecordingVision()
+
+    data = service.run_camera_inspection(camera_index=1, machine_number=1).cameras[1]
+
+    assert seen == [(15, 20, 3)]
+    assert data.x_px == 10.0  # ROI-relative, as before
+    assert data.frame.shape == (40, 40, 3)
+
+
+def test_full_view_off_shows_only_the_roi_crop_like_earlier_versions() -> None:
+    """``ui.dashboard_full_frame = false`` (Settings page) brings back the
+    ROI-only picture; the measurement is identical either way."""
+    from tests.test_inspection_strobe import FakeCamera, _build
+
+    camera = FakeCamera(1)
+    camera.settings.roi = (5, 10, 20, 15)
+    service, _cameras, _led, _plc = _build(
+        {1: camera}, [], capture_mode="sequential", camera_delay_ms=0
+    )
+    service._config._document["ui"] = {"dashboard_full_frame": False}
+
+    data = service.run_camera_inspection(camera_index=1, machine_number=1).cameras[1]
+
+    assert data.frame.shape == (15, 20, 3)
+    assert data.x_px == 10.0
+

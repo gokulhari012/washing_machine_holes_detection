@@ -202,6 +202,14 @@ class SettingsPage(QWidget):
         general.addRow("Operator Name", self._operator)
         general.addRow("Shift", self._shift)
         general.addRow("Serial Prefix", self._serial_prefix)
+        self._full_frame = QCheckBox("Dashboard: show the full camera image")
+        self._full_frame.setToolTip(
+            "Checked: the whole picture with the ROI, the ROI centre and the "
+            "holes drawn on it. Unchecked: only the ROI crop with the holes, "
+            "as in earlier versions. Applies to saved images too, from the "
+            "next inspection; detection itself is unaffected."
+        )
+        general.addRow("", self._full_frame)
         left.addWidget(self._general_box)
 
         left.addWidget(self._build_shift_box())
@@ -220,6 +228,12 @@ class SettingsPage(QWidget):
         # "NG only" filters the saving loop, so it means nothing while saving
         # is off entirely — grey it out rather than let it read as active.
         self._save_images.toggled.connect(self._ng_only.setEnabled)
+        self._dashboard_shot = QCheckBox("Save a dashboard screenshot after each global trigger")
+        self._dashboard_shot.setToolTip(
+            "After every full inspection (all cameras), save a picture of the "
+            "Dashboard to images/<date>/<time>_<machine>_dashboard_<result>.png. "
+            "Single-camera triggers are not captured."
+        )
         self._auto_backup = QCheckBox("Automatic daily backup")
         self._auto_backup.setToolTip(
             "Checked every 30 minutes; takes at most one backup per calendar day."
@@ -232,6 +246,7 @@ class SettingsPage(QWidget):
         backup_now.clicked.connect(self._on_backup_now)
         storage.addRow("", self._save_images)
         storage.addRow("", self._ng_only)
+        storage.addRow("", self._dashboard_shot)
         storage.addRow("", self._auto_backup)
         storage.addRow("", self._note(
             "Copies the whole inspection database (results, measurements and "
@@ -556,6 +571,9 @@ class SettingsPage(QWidget):
         self._factory.setText(application.get("factory_name", ""))
         self._operator.setText(application.get("operator_name", ""))
         self._serial_prefix.setText(application.get("serial_prefix", ""))
+        self._full_frame.setChecked(
+            bool(cfg.get("ui", {}).get("dashboard_full_frame", True))
+        )
         theme = AppTheme.from_value(application.get("theme"))
         self._theme.setCurrentIndex(self._theme.findData(theme.value))
 
@@ -576,6 +594,7 @@ class SettingsPage(QWidget):
         self._save_images.setChecked(bool(storage.get("save_images", True)))
         self._ng_only.setChecked(bool(storage.get("save_ng_only", False)))
         self._ng_only.setEnabled(self._save_images.isChecked())
+        self._dashboard_shot.setChecked(bool(storage.get("save_dashboard_screenshot", False)))
         self._auto_backup.setChecked(bool(database.get("auto_backup", True)))
         self._retention.setValue(int(database.get("retention_days", 90)))
 
@@ -605,10 +624,12 @@ class SettingsPage(QWidget):
             }
         )
         cfg["shifts"] = schedule.to_config()
+        cfg.setdefault("ui", {})["dashboard_full_frame"] = self._full_frame.isChecked()
         cfg.setdefault("storage", {}).update(
             {
                 "save_images": self._save_images.isChecked(),
                 "save_ng_only": self._ng_only.isChecked(),
+                "save_dashboard_screenshot": self._dashboard_shot.isChecked(),
             }
         )
         cfg.setdefault("database", {}).update(

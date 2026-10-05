@@ -40,7 +40,7 @@ class FakeCameraManager:
     def health(self, index: int):
         return SimpleNamespace(last_error="camera offline")
 
-    def capture(self, index: int) -> np.ndarray:
+    def capture(self, index: int, *, apply_roi: bool = True) -> np.ndarray:
         self.capture_log.append(index)
         if index in self._failing:
             from core.utilities.exceptions import CameraCaptureError
@@ -48,7 +48,7 @@ class FakeCameraManager:
             raise CameraCaptureError(f"Camera {index}: boom")
         return np.zeros((40, 40, 3), dtype=np.uint8)
 
-    def capture_all(self, indexes=None):
+    def capture_all(self, indexes=None, *, apply_roi: bool = True):
         self.capture_all_calls += 1
         indexes = indexes or [i for i, c in self.cameras.items() if c.settings.enabled]
         return {index: self.capture(index) for index in indexes}

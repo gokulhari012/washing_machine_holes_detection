@@ -18,9 +18,16 @@ Two brightness panels that look alike and deliberately are not:
   whenever it is shown or a machine model is applied, since the Camera page
   and a model switch can change them too.
 
-Which channel lights which camera ("LED Channel") and strobe mode still live
-on the Camera Configuration page only — they are wiring, not levels. Every
-channel command, from either panel, is clamped to ``max_brightness``.
+  Each camera row also carries a **Strobe** switch (plus Strobe "Enable All"
+  / "Disable All"), the very same ``led_strobe`` field as the Camera page's
+  "Strobe" checkbox, through ``CameraService.set_strobe``: saved and live at
+  once, the channel moved to its new resting state (off for strobe, steady
+  brightness otherwise), and mirrored on the Camera page via
+  ``AppState.camera_strobe_changed``.
+
+Which channel lights which camera ("LED Channel") still lives on the Camera
+Configuration page only — it is wiring, not a level. Every channel command,
+from either panel, is clamped to ``max_brightness``.
 
 The connection auto-connects when the application starts
 (``Application.start``) and again immediately after a Save
@@ -107,6 +114,7 @@ class LedPage(QWidget):
         self._camera_spins: dict[int, QSpinBox] = {}
         self._camera_names: dict[int, QLabel] = {}
         self._camera_wiring: dict[int, QLabel] = {}
+        self._camera_strobes: dict[int, QCheckBox] = {}
         # (timestamp, message, kind) for every line on screen, so the log can
         # be re-rendered in the other scheme's colours on a theme switch.
         self._entries: list[tuple[str, str, str]] = []
@@ -136,8 +144,8 @@ class LedPage(QWidget):
         root.addWidget(warning)
 
         note = QLabel(
-            "Which channel lights which camera, and strobe mode, are set on the "
-            "Camera Configuration page."
+            "Which channel lights which camera is set on the Camera "
+            "Configuration page."
         )
         note.setWordWrap(True)
         note.setProperty("class", "dim")
@@ -339,7 +347,8 @@ class LedPage(QWidget):
         note = QLabel(
             "The same setting as Cameras → Light Brightness. Set saves it "
             "immediately, updates the Cameras page, and is used from the next "
-            "trigger cycle."
+            "trigger cycle. Strobe lights a camera only while it captures; "
+            "switching it saves immediately too."
         )
         note.setWordWrap(True)
         note.setProperty("class", "dim")
@@ -357,6 +366,18 @@ class LedPage(QWidget):
         set_all.clicked.connect(self._on_set_all_cameras)
         all_row.addWidget(set_all)
         self._camera_box_layout.addLayout(all_row)
+
+        strobe_row = QHBoxLayout()
+        strobe_row.addWidget(QLabel("Strobe, all cameras"), stretch=1)
+        enable_all = QPushButton("Enable All")
+        enable_all.setToolTip("Light every camera only while it is capturing")
+        enable_all.clicked.connect(lambda: self._on_set_all_strobe(True))
+        strobe_row.addWidget(enable_all)
+        disable_all = QPushButton("Disable All")
+        disable_all.setToolTip("Hold every camera's light steady at its brightness")
+        disable_all.clicked.connect(lambda: self._on_set_all_strobe(False))
+        strobe_row.addWidget(disable_all)
+        self._camera_box_layout.addLayout(strobe_row)
         self._camera_box_layout.addStretch()
         return box
 
@@ -370,6 +391,7 @@ class LedPage(QWidget):
         self._camera_spins.clear()
         self._camera_names.clear()
         self._camera_wiring.clear()
+        self._camera_strobes.clear()
 
         host = QWidget()
         grid = QGridLayout(host)
@@ -394,6 +416,20 @@ class LedPage(QWidget):
                 lambda _checked=False, i=index: self._on_set_camera_brightness(i)
             )
             grid.addWidget(set_btn, row, 3)
+
+            strobe = QCheckBox("Strobe")
+            strobe.setToolTip(
+                "On: the light is lit only while this camera captures.\n"
+                "Off: the light is held steady at this brightness.\n"
+                "Saved immediately — same setting as Cameras → Strobe."
+            )
+            # clicked, not toggled: only an operator click applies, never the
+            # setChecked of a refresh.
+            strobe.clicked.connect(
+                lambda checked, i=index: self._on_set_camera_strobe(i, checked)
+            )
+            self._camera_strobes[index] = strobe
+            grid.addWidget(strobe, row, 4)
         grid.setColumnStretch(1, 1)
         self._camera_box_layout.insertWidget(1, host)
         self._camera_rows_host = host
@@ -462,6 +498,7 @@ class LedPage(QWidget):
             else:
                 self._camera_wiring[index].setText("no LED channel")
             self._camera_spins[index].setValue(int(cfg.get("brightness", 0)))
+            self._camera_strobes[index].setChecked(strobe)
         for channel, label in self._manual_wiring.items():
             label.setText(", ".join(wired[channel]) or "not wired")
 
@@ -649,6 +686,48 @@ class LedPage(QWidget):
                 "Strobe cameras use the new level from the next trigger cycle.",
                 "error",
             )
+
+    # --------------------------------------------------------- camera strobe
+    def _on_set_camera_strobe(self, index: int, strobe: bool) -> None:
+        self._apply_camera_strobe({index: strobe})
+
+    def _on_set_all_strobe(self, strobe: bool) -> None:
+        if not self._camera_strobes:
+            return
+        verb = "Enable" if strobe else "Disable"
+        answer = QMessageBox.question(
+            self,
+            f"{verb} Strobe",
+            f"{verb} strobe on all {len(self._camera_strobes)} cameras?\n\n"
+            + (
+                "Each light will be lit only while its camera captures."
+                if strobe
+                else "Each light will be held steady at its camera's brightness."
+            )
+            + "\nIt is saved immediately and used from the next trigger cycle.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self._apply_camera_strobe({index: strobe for index in self._camera_strobes})
+
+    def _apply_camera_strobe(self, states: dict[int, bool]) -> None:
+        try:
+            self._cameras.set_strobe(states)
+        except VisionSystemError as exc:
+            QMessageBox.warning(self, "Camera Strobe", str(exc))
+            self._refresh_cameras()  # put the checkboxes back to what is stored
+            return
+        for index, value in sorted(states.items()):
+            self._log(
+                f"Camera {index} strobe {'enabled' if value else 'disabled'} (saved)", "info"
+            )
+        if self._svc.state.value != "connected":
+            self._log(
+                "LED controller not connected: lights were not switched now. "
+                "The new mode applies from the next trigger cycle.",
+                "error",
+            )
+        self._refresh_cameras()  # wiring labels show strobe/steady
 
     # ---------------------------------------------------------------- raw
     def _on_raw_send(self) -> None:

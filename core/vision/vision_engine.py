@@ -235,6 +235,8 @@ _YELLOW = (60, 200, 240)
 _RED = (70, 70, 230)
 _WHITE = (235, 235, 235)
 _OUTLINE = (0, 0, 0)
+_ROI_COLOR = (255, 170, 0)   # BGR: azure — the analysed region's frame
+_ROI_CENTER = (255, 0, 255)  # BGR: magenta — the (0, 0) mm reference point
 
 # Annotation size is proportional to the frame, not fixed in pixels: the
 # station's 12-20 MP frames are shown fitted into a few-hundred-pixel panel
@@ -279,6 +281,7 @@ def draw_detection_overlay(
     frame: np.ndarray,
     result: DetectionResult | None,
     label: str = "",
+    roi: tuple[int, int, int, int] | None = None,
 ) -> np.ndarray:
     """Return a BGR copy of *frame* annotated with the detection outcome.
 
@@ -287,6 +290,13 @@ def draw_detection_overlay(
     the bare value — so an operator can see *why* one hole won over another.
     Stroke width and text size follow the frame size (see
     :data:`_OVERLAY_REFERENCE_PX`).
+
+    ``roi`` — ``(x0, y0, x1, y1)`` in *frame*'s pixels, as
+    ``core.camera.roi_rect`` returns it — means *frame* is the whole
+    (uncropped) image and *result* was detected in that region of it: the
+    region is outlined, its centre (the point every reported x_mm/y_mm is
+    measured from) is marked, and the holes are shifted into place. The px
+    label keeps the hole's own ROI-relative coordinates, the ones stored.
     """
     out = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) if frame.ndim == 2 else frame.copy()
     scale = _overlay_scale(out)
@@ -295,9 +305,33 @@ def draw_detection_overlay(
     text_stroke = max(1, round(scale))
     line_gap = int(28 * scale)
 
+    ox = oy = 0
+    if roi is not None:
+        x0, y0, x1, y1 = roi
+        ox, oy = x0, y0
+        cv2.rectangle(out, (x0, y0), (x1 - 1, y1 - 1), _ROI_COLOR, stroke, cv2.LINE_AA)
+        _put_outlined_text(
+            out, "ROI", (x0 + stroke + 4, y0 - stroke - 4), _ROI_COLOR, font, text_stroke
+        )
+        mx, my = (x0 + x1) // 2, (y0 + y1) // 2
+        arm = int(18 * scale)
+        thin = max(2, stroke // 2)
+        cv2.line(out, (mx - arm, my), (mx + arm, my), _ROI_CENTER, thin, cv2.LINE_AA)
+        cv2.line(out, (mx, my - arm), (mx, my + arm), _ROI_CENTER, thin, cv2.LINE_AA)
+        cv2.circle(out, (mx, my), max(3, arm // 4), _ROI_CENTER, thin, cv2.LINE_AA)
+        # Up and to the left of the mark: a hole is usually near the centre
+        # and its own labels sit above and to the right of it.
+        (text_w, _), _ = cv2.getTextSize(
+            "ROI centre", cv2.FONT_HERSHEY_SIMPLEX, font * 0.9, text_stroke
+        )
+        _put_outlined_text(
+            out, "ROI centre", (mx - arm - 4 - text_w, my - arm // 2),
+            _ROI_CENTER, font * 0.9, text_stroke,
+        )
+
     if result is not None:
         for hole in result.holes[1:]:  # secondary candidates
-            cx, cy = int(hole.x_px), int(hole.y_px)
+            cx, cy = int(hole.x_px) + ox, int(hole.y_px) + oy
             radius = max(3, int(hole.diameter_px / 2))
             cv2.circle(out, (cx, cy), radius, _YELLOW, max(2, stroke * 2 // 3), cv2.LINE_AA)
             # Below the circle: the judged hole's label sits above its own, so
@@ -308,7 +342,7 @@ def draw_detection_overlay(
             )
         best = result.best
         if best is not None:
-            cx, cy = int(best.x_px), int(best.y_px)
+            cx, cy = int(best.x_px) + ox, int(best.y_px) + oy
             radius = max(4, int(best.diameter_px / 2))
             arm = radius + int(12 * scale)
             cv2.circle(out, (cx, cy), radius, _GREEN, stroke, cv2.LINE_AA)

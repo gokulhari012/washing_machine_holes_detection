@@ -43,6 +43,7 @@
     "image_directory": "images",
     "save_images": true,
     "save_ng_only": false,
+    "save_dashboard_screenshot": false,
     "export_directory": "exports"
   },
   "inspection": {
@@ -57,23 +58,13 @@
   "ui": {
     "live_preview_fps": 0,
     "recent_inspections_rows": 50,
-    "alarm_auto_clear_seconds": 0
+    "alarm_auto_clear_seconds": 0,
+    "dashboard_full_frame": true
   },
   "logging": {
     "directory": "logs",
     "level": "INFO",
     "max_file_size_mb": 5,
     "backup_count": 10
-  },
-  "yolo_training": {
-    "labeling_tool": "",
-    "dataset_dir": "",
-    "validation_dir": "",
-    "output_dir": "",
-    "class_names": "hole",
-    "model": "yolo11n.pt",
-    "epochs": 100,
-    "imgsz": 640,
-    "device": ""
   }
 }

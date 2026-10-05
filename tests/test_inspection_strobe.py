@@ -13,6 +13,8 @@ shared event trace lets capture and LED commands be checked in the order
 they actually happened, not just that both occurred somewhere.
 """
 
+import threading
+import time
 from types import SimpleNamespace
 
 import numpy as np
@@ -22,6 +24,7 @@ from core.utilities.enums import InspectionResult
 from core.utilities.exceptions import LedWriteError
 from core.vision.detection_result import DetectionResult, Hole
 from models.app_state import AppState
+from services import inspection_service
 from services.inspection_service import InspectionService
 
 CAMERA_INDEXES = (1, 2, 3, 4)
@@ -62,12 +65,12 @@ class FakeCameraManager:
     def health(self, index: int):
         return SimpleNamespace(last_error="camera offline")
 
-    def capture(self, index: int) -> np.ndarray:
+    def capture(self, index: int, *, apply_roi: bool = True) -> np.ndarray:
         self.capture_log.append(index)
         self.trace.append(("capture", index))
         return np.zeros((40, 40, 3), dtype=np.uint8)
 
-    def capture_all(self, indexes=None):
+    def capture_all(self, indexes=None, *, apply_roi: bool = True):
         self.capture_all_calls += 1
         indexes = list(indexes) if indexes else list(self.cameras)
         return {index: self.capture(index) for index in indexes}
@@ -255,7 +258,7 @@ def test_light_turns_off_even_when_capture_fails() -> None:
         cameras, trace, capture_mode="sequential", camera_delay_ms=0
     )
 
-    def boom(index: int):
+    def boom(index: int, **_kwargs):
         raise CameraCaptureError("boom")
 
     camera_manager.capture = boom
@@ -280,6 +283,52 @@ def test_led_failure_never_blocks_the_capture() -> None:
 
     assert ("capture", 1) in trace
     assert cycle.overall_result is InspectionResult.GOOD
+
+
+class HangingLed(FakeLed):
+    """A controller whose every command blocks until released - the
+    "no reply, driver never returns" case that used to freeze the cycle."""
+
+    def __init__(self, trace: list) -> None:
+        super().__init__(trace)
+        self.release = threading.Event()
+
+    def send_channel(self, channel: int, brightness: int) -> str:
+        self.trace.append(("led", channel, brightness))
+        self.release.wait(10)
+        return ""
+
+    def send_multichannel(self, states) -> str:
+        self.trace.append(("led_group", tuple(states)))
+        self.release.wait(10)
+        return ""
+
+
+@pytest.mark.parametrize("trigger", ["global", "single"])
+def test_a_hanging_led_controller_never_freezes_the_cycle(monkeypatch, trigger) -> None:
+    """A command that never comes back costs the cycle at most one deadline:
+    the capture still runs, the result is still judged, and the light-off is
+    queued behind the stuck light-on rather than waited on."""
+    monkeypatch.setattr(inspection_service, "LED_COMMAND_DEADLINE_S", 0.2)
+    cameras = {1: FakeCamera(1, led_strobe=True, led_channel=1, brightness=100)}
+    trace: list = []
+    service, _cameras, _led, _plc = _build(
+        cameras, trace, capture_mode="sequential", camera_delay_ms=0
+    )
+    led = HangingLed(trace)
+    service._led = led
+
+    started = time.monotonic()
+    if trigger == "global":
+        cycle = service.run_inspection(machine_number=1)
+    else:
+        cycle = service.run_camera_inspection(camera_index=1, machine_number=1)
+    elapsed = time.monotonic() - started
+    led.release.set()
+
+    assert ("capture", 1) in trace
+    assert cycle.overall_result is InspectionResult.GOOD
+    assert elapsed < 1.0  # one 0.2 s deadline, not the 10 s hang
 
 
 def test_skipped_camera_is_never_strobed() -> None:

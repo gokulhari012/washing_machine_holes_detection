@@ -3,21 +3,21 @@
     {
       "index": 1,
       "name": "Camera 1 - Top Left",
-      "driver": "image_file",
+      "driver": "basler",
       "connection_id": "0",
       "enabled": true,
-      "exposure_us": 75000,
+      "exposure_us": 40000,
       "gain_db": 0.0,
       "gamma": 1.0,
-      "brightness": 255,
+      "brightness": 200,
       "fps": 5.0,
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 0,
-        "y": 0,
-        "width": 0,
-        "height": 0
+        "x": 38,
+        "y": 2146,
+        "width": 3600,
+        "height": 1200
       },
       "trigger_mode": "software",
       "basler": {
@@ -30,10 +30,10 @@
       "simulation": {
         "image_directory": "resources/sample_images/camera_1"
       },
-      "image_source": "C:/Users/gokul/Pictures/Washing machine/1 Image__2026-09-07__13-18-43.bmp",
-      "rotation": 0,
+      "image_source": "D:/washing_machine_holes_detection-main/washing_machine_holes_detection-main/test images",
+      "rotation": 90,
       "led_channel": 2,
-      "led_strobe": true
+      "led_strobe": false
     },
     {
       "index": 2,
@@ -41,16 +41,16 @@
       "driver": "basler",
       "connection_id": "1",
       "enabled": true,
-      "exposure_us": 75000,
+      "exposure_us": 40000,
       "gain_db": 0.0,
       "gamma": 1.0,
-      "brightness": 255,
+      "brightness": 200,
       "fps": 5.0,
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 84,
-        "y": 2149,
+        "x": 134,
+        "y": 2142,
         "width": 3500,
         "height": 1200
       },
@@ -68,7 +68,7 @@
       "image_source": "D:/washing_machine_holes_detection-main/washing_machine_holes_detection-main/test images",
       "rotation": 270,
       "led_channel": 1,
-      "led_strobe": true
+      "led_strobe": false
     },
     {
       "index": 3,
@@ -76,16 +76,16 @@
       "driver": "basler",
       "connection_id": "2",
       "enabled": true,
-      "exposure_us": 100000,
+      "exposure_us": 40000,
       "gain_db": 0.0,
       "gamma": 1.0,
-      "brightness": 255,
+      "brightness": 200,
       "fps": 5.0,
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 995,
-        "y": 896,
+        "x": 962,
+        "y": 1218,
         "width": 3500,
         "height": 1200
       },
@@ -103,7 +103,7 @@
       "image_source": "C:/Users/gokul/Downloads/Image__2026-09-07__13-18-43.bmp",
       "rotation": 0,
       "led_channel": 3,
-      "led_strobe": true
+      "led_strobe": false
     },
     {
       "index": 4,
@@ -111,16 +111,16 @@
       "driver": "basler",
       "connection_id": "3",
       "enabled": true,
-      "exposure_us": 100000,
+      "exposure_us": 40000,
       "gain_db": 0.0,
       "gamma": 1.0,
-      "brightness": 255,
+      "brightness": 200,
       "fps": 5.0,
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 1002,
-        "y": 966,
+        "x": 915,
+        "y": 1208,
         "width": 3500,
         "height": 1200
       },
@@ -138,7 +138,7 @@
       "image_source": "C:/Users/gokul/Downloads/Image__2026-09-07__17-57-17.bmp",
       "rotation": 0,
       "led_channel": 4,
-      "led_strobe": true
+      "led_strobe": false
     }
   ]
 }

@@ -23,7 +23,8 @@ page's "Camera Light Brightness" panel. It changes *only* ``brightness``,
 live and in camera.json, without the full camera rebuild a
 ``ConfigManager.save`` of the ``camera`` domain triggers (see its docstring
 for why), and tells :meth:`subscribe_brightness` observers so the Camera
-page's form and the active machine model follow it.
+page's form and the active machine model follow it. :meth:`set_strobe` is
+its twin for ``led_strobe`` (the panel's per-camera strobe switches).
 """
 
 from __future__ import annotations
@@ -45,6 +46,7 @@ logger = get_logger(LogSource.CAMERA)
 
 #: Called with ``{camera index: brightness}`` after :meth:`CameraService.set_brightness`.
 BrightnessCallback = Callable[[dict[int, int]], None]
+StrobeCallback = Callable[[dict[int, bool]], None]
 
 
 class CameraService:
@@ -62,6 +64,7 @@ class CameraService:
         self._database = database_service
         self._led = led_service
         self._brightness_callbacks: list[BrightnessCallback] = []
+        self._strobe_callbacks: list[StrobeCallback] = []
 
     # -------------------------------------------------------------- queries
     def get_configs(self) -> list[dict]:
@@ -296,6 +299,70 @@ class CameraService:
         Qt-free, like ``ConfigManager.subscribe`` - the composition root
         bridges it to ``AppState.camera_brightness_changed``."""
         self._brightness_callbacks.append(callback)
+
+    def set_strobe(self, states: Mapping[int, bool]) -> None:
+        """Switch LED strobe mode on or off for one or more cameras, and
+        nothing else - the LED Controller page's per-camera strobe switches
+        and "Enable All"/"Disable All".
+
+        The same ``led_strobe`` field as the Camera page's "Strobe"
+        checkbox, written the same rebuild-free way as :meth:`set_brightness`
+        (camera.json's ``led_strobe`` key only, saved without notifying the
+        ``camera`` subscribers; then adopted live by the running camera, so
+        the next trigger cycle already uses it). The channel is then moved to
+        its new resting state at once, best-effort:
+
+        - strobe **on**  -> the channel is turned off (it now lights only
+          during a capture);
+        - strobe **off** -> the channel is held at the camera's brightness,
+          exactly as a Camera page Save would (:meth:`_push_brightness`).
+
+        A camera with no LED channel is still switched (the setting is
+        stored) but nothing is sent. ``led_strobe`` is a rig fact outside
+        ``_TUNABLE_CAMERA_FIELDS``, so no machine model is touched.
+        :meth:`subscribe_strobe` observers are told once, with every change.
+
+        Raises:
+            ConfigurationError: unknown camera index, or camera.json could
+                not be written. Nothing is written on an unknown index.
+        """
+        wanted = {int(index): bool(value) for index, value in states.items()}
+        if not wanted:
+            return
+        document = self._config.load("camera")
+        entries = {
+            int(entry.get("index", -1)): entry for entry in document.get("cameras", [])
+        }
+        unknown = sorted(set(wanted) - set(entries))
+        if unknown:
+            raise ConfigurationError(f"No camera with index {unknown[0]} is configured")
+        for index, value in wanted.items():
+            entries[index]["led_strobe"] = value
+        self._config.save("camera", document, notify=False)
+
+        for index in sorted(wanted):
+            persisted = CameraSettings.from_config(entries[index])
+            live = self._manager.set_strobe(index, wanted[index])
+            self._mirror_to_database(persisted)
+            settings = live if live is not None else persisted
+            if settings.led_strobe:
+                self.light_off(index)
+            else:
+                self._push_brightness(settings)
+            logger.info(
+                "Camera %d LED strobe %s", index, "enabled" if wanted[index] else "disabled"
+            )
+
+        for callback in list(self._strobe_callbacks):
+            try:
+                callback(dict(wanted))
+            except Exception:  # observers must never break the caller
+                logger.exception("Camera strobe callback raised")
+
+    def subscribe_strobe(self, callback: StrobeCallback) -> None:
+        """Register a callback fired after every :meth:`set_strobe` - the
+        composition root bridges it to ``AppState.camera_strobe_changed``."""
+        self._strobe_callbacks.append(callback)
 
     def remove_camera(self, index: int) -> None:
         document = self._config.load("camera")

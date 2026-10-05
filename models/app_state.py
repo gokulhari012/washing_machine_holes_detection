@@ -36,6 +36,9 @@ class AppState(QObject):
     # persists it without the camera rebuild a camera.json save triggers
     # (see CameraService.set_brightness), so the Camera page needs telling
     camera_brightness_changed = Signal(int, int)
+    # camera index, strobe on - set from the LED Controller page, persisted
+    # the same rebuild-free way (see CameraService.set_strobe)
+    camera_strobe_changed = Signal(int, bool)
 
     # inspection flow
     trigger_received = Signal(int)             # machine number

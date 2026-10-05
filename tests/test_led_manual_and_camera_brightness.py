@@ -275,3 +275,72 @@ def test_led_page_shows_channel_wiring(rig, qapp) -> None:
     assert page._manual_wiring[2].text() == "Cam 2 (strobe)"
     assert page._manual_wiring[3].text() == "not wired"
     assert page._camera_wiring[3].text() == "no LED channel"
+
+
+# ------------------------------------------------------------- camera strobe
+def test_set_strobe_is_live_and_persists_only_led_strobe(rig) -> None:
+    rig.camera_service.set_strobe({1: True})
+    # InspectionService reads camera.settings.led_strobe for its strobe.
+    assert rig.cameras.get(1).settings.led_strobe is True
+    on_disk = rig.disk("camera")["cameras"]
+    assert on_disk[0] == _camera(1, led_strobe=True)
+    assert on_disk[1:] == CAMERA_DOC["cameras"][1:]
+    assert rig.camera_saves == []  # no camera rebuild/reconnect
+    assert rig.database.camera_configs.rows[-1]["led_strobe"] is True
+
+
+def test_set_strobe_moves_each_channel_to_its_new_resting_state(rig) -> None:
+    rig.camera_service.set_strobe({1: True, 2: False, 3: True})
+    # 1 -> strobe: channel off until a capture; 2 -> steady: held at its
+    # brightness; 3 has no channel, so nothing is sent.
+    assert rig.led_client.sent == ["SA0000#", "SB0050#"]
+
+
+def test_set_strobe_notifies_observers_once(rig) -> None:
+    seen: list[dict] = []
+    rig.camera_service.subscribe_strobe(seen.append)
+    rig.camera_service.set_strobe({1: True, 2: False})
+    assert seen == [{1: True, 2: False}]
+
+
+def test_set_strobe_rejects_an_unknown_camera_without_writing(rig) -> None:
+    with pytest.raises(ConfigurationError):
+        rig.camera_service.set_strobe({1: True, 9: True})
+    assert rig.disk("camera") == CAMERA_DOC
+    assert rig.cameras.get(1).settings.led_strobe is False
+    assert rig.led_client.sent == []
+
+
+def test_led_page_strobe_checkbox_reaches_the_camera_page(rig, qapp) -> None:
+    from ui.camera.camera_page import CameraPage
+    from ui.led.led_page import LedPage
+
+    state = AppState()
+    rig.camera_service.subscribe_strobe(
+        lambda states: [state.camera_strobe_changed.emit(i, v) for i, v in states.items()]
+    )
+    led_page = LedPage(state, rig.led, rig.camera_service)
+    camera_page = CameraPage(state, rig.camera_service)
+    camera_page._list.setCurrentRow(0)  # camera 1
+    assert led_page._camera_strobes[1].isChecked() is False
+    assert led_page._camera_strobes[2].isChecked() is True
+
+    led_page._camera_strobes[1].click()
+
+    assert rig.cameras.get(1).settings.led_strobe is True
+    assert camera_page._led_strobe.isChecked() is True
+    assert led_page._camera_wiring[1].text() == "Ch 1 · strobe"
+
+
+@pytest.mark.parametrize("strobe", [True, False])
+def test_led_page_strobe_enable_and_disable_all(rig, qapp, monkeypatch, strobe) -> None:
+    from ui.led.led_page import LedPage
+
+    monkeypatch.setattr(
+        QMessageBox, "question", staticmethod(lambda *a, **k: QMessageBox.StandardButton.Yes)
+    )
+    page = LedPage(AppState(), rig.led, rig.camera_service)
+    page._on_set_all_strobe(strobe)
+    assert [c.settings.led_strobe for c in rig.cameras.cameras.values()] == [strobe] * 3
+    assert [c["led_strobe"] for c in rig.disk("camera")["cameras"]] == [strobe] * 3
+    assert [box.isChecked() for box in page._camera_strobes.values()] == [strobe] * 3

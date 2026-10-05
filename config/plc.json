@@ -20,9 +20,9 @@
   },
   "registers": {
     "trigger": 6080,
-    "machine_number": 101,
-    "heartbeat": 102,
-    "model_select": 103,
+    "machine_number": 6600,
+    "heartbeat": 6604,
+    "model_select": 6608,
     "result": 6092,
     "vision_complete": 6090,
     "camera_positions": {
@@ -35,8 +35,8 @@
         "y": 6034
       },
       "3": {
-        "x": 6050,
-        "y": 6052
+        "x": 6052,
+        "y": 6054
       },
       "4": {
         "x": 6072,
@@ -62,13 +62,13 @@
       }
     },
     "camera_results": {
-      "1": 6000,
+      "1": 7000,
       "2": 6020,
       "3": 6540,
       "4": 6060
     },
     "camera_triggers": {
-      "1": 6500,
+      "1": 6000,
       "2": 6500,
       "3": 6500,
       "4": 6500
@@ -80,10 +80,10 @@
       "4": 6062
     },
     "camera_status": {
-      "1": 140,
-      "2": 141,
+      "1": 6610,
+      "2": 6612,
       "3": 6044,
-      "4": 143
+      "4": 6614
     },
     "camera_brightness": {
       "1": 156,
@@ -91,7 +91,7 @@
       "3": 6056,
       "4": 158
     },
-    "serial_number": 12,
+    "serial_number": 6602,
     "gantry_status": {
       "1": 6082,
       "2": 6084,
@@ -100,8 +100,8 @@
     }
   },
   "scaling": {
-    "position_scale_x": 1000,
-    "position_scale_y": 3000
+    "position_scale_x": 10,
+    "position_scale_y": 10
   },
   "camera_jog": {
     "step": 10,

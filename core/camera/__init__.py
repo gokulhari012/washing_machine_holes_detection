@@ -7,6 +7,7 @@ from core.camera.camera_base import (
     CameraSettings,
     crop_roi,
     frame_interval_ms,
+    roi_rect,
     rotate_frame,
 )
 from core.camera.camera_manager import CameraHealth, CameraManager
@@ -22,6 +23,7 @@ __all__ = [
     "CameraSettings",
     "crop_roi",
     "frame_interval_ms",
+    "roi_rect",
     "rotate_frame",
     "DEFAULT_VIEW_FPS",
     "VALID_ROTATIONS",

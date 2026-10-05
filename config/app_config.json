@@ -4,7 +4,7 @@
     "version": "1.0.0",
     "factory_name": "Factory 1",
     "operator_name": "Operator",
-    "shift": "Night",
+    "shift": "Morning",
     "serial_prefix": "WM-",
     "language": "en",
     "theme": "dark"
@@ -20,11 +20,12 @@
     "image_directory": "images",
     "save_images": true,
     "save_ng_only": false,
+    "save_dashboard_screenshot": true,
     "export_directory": "exports"
   },
   "inspection": {
     "capture_mode": "parallel",
-    "camera_delay_ms": 0
+    "camera_delay_ms": 2000
   },
   "security": {
     "settings_password_protected": true,
@@ -34,7 +35,8 @@
   "ui": {
     "live_preview_fps": 0,
     "recent_inspections_rows": 50,
-    "alarm_auto_clear_seconds": 0
+    "alarm_auto_clear_seconds": 0,
+    "dashboard_full_frame": true
   },
   "logging": {
     "directory": "logs",
@@ -66,13 +68,12 @@
     ]
   },
   "yolo_training": {
-    "labeling_tool": "",
-    "dataset_dir": "C:/Users/gokul/Pictures/Washing machine/yolo test",
+    "dataset_dir": "",
     "validation_dir": "",
-    "output_dir": "C:/Users/gokul/Pictures/Washing machine/yolo result",
+    "output_dir": "",
     "class_names": "hole",
-    "model": "yolo11m.pt",
-    "epochs": 10,
+    "model": "yolo11n.pt",
+    "epochs": 100,
     "imgsz": 640,
     "device": ""
   }

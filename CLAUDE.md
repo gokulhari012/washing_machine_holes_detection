@@ -268,6 +268,28 @@ page's one "Save Calibration" persists them through `CalibrationManager.save` li
 every other field, which also refreshes the live cache — so the **next inspection
 already uses the new offset**, with nothing to re-apply.
 
+**The annotated frame is the original image, not the ROI crop.** The pipeline
+grabs with `apply_roi=False`, crops the ROI itself (`core.camera.roi_rect`, the
+same clamping as `crop_roi`) and detects on that crop — so `x_px`, `x_mm` and the
+verdict are exactly what they were — then `draw_detection_overlay(..., roi=rect)`
+draws the ROI box, the ROI centre (the `(0, 0)` mm point) and the holes, shifted
+by the ROI origin, on the whole frame. That frame is what the dashboard shows
+and what `_save_images` writes. The px label keeps the stored, ROI-relative
+coordinates. `app_config.ui.dashboard_full_frame` (Settings → General,
+"Dashboard: show the full camera image", default `true`) switches back to the
+older ROI-crop-only picture; it is read at the start of every cycle and is
+display-only — detection runs on the ROI crop either way.
+
+**Dashboard screenshots** (`app_config.storage.save_dashboard_screenshot`,
+Settings → Storage & Backup, default `false`): after every **full** cycle
+(never a `partial` one) `ui/dashboard/dashboard_snapshot.py` grabs the
+Dashboard page on the GUI thread `SETTLE_MS` after the cycle is published and
+writes `images/<date>/<HHMMSS>_<machine>_dashboard_<RESULT>.png` on a daemon
+thread. Wired in `main.py` to `InspectionWorker.inspection_finished`; read per
+cycle, so a Save applies from the next part. Tests that build parentless Qt
+widgets must delete them (`_dispose` in `tests/test_theme.py`): left to
+pytest's final gc pass they crash the interpreter on exit.
+
 **Uncalibrated fallback:** identity mapping, 1 px = 1 mm, `deviation_mm=None`,
 tolerance check disabled. The system runs out of the box.
 
@@ -703,35 +725,11 @@ directly. It still auto-connects (`Application.start`, and again after a
 config save via `Application._on_led_config_saved`, both best-effort with an
 alarm on failure) so a station never sits disconnected without an operator
 pressing Connect. The LED Controller page (admin-gated, nav rail) is
-connection settings, a raw-command tester, a communication log, and two
-brightness panels that look alike and **must stay separate**:
-
-- **Manual Light Control** — ON/OFF per channel and ALL ON/ALL OFF, each at
-  its own *manual* level (`led.json` → `manual_brightness`, one per channel,
-  remembered when a channel is switched on). Nothing else reads those levels,
-  so they **never affect a trigger cycle**; a cycle's strobe or a steady
-  camera's push simply overwrites whatever a channel was left at. Plain
-  single-channel commands through `LedService.manual_*`, clamped to
-  `max_brightness`, fire-and-forget. The buttons are disabled while the link
-  is down.
-- **Camera Light Brightness** — the Camera page's "Light Brightness" itself,
-  per camera or "Set All", through `CameraService.set_brightness`. That
-  rewrites only the `brightness` key in camera.json and saves it with
-  `ConfigManager.save(..., notify=False)`, because the `camera` subscriber
-  would otherwise rebuild and reconnect every camera from the file. Besides
-  costing seconds, that rebuild would reset a machine model's live
-  ROI/exposure to the file baseline. The running camera adopts the value
-  through `CameraBase.set_brightness`, which does **not** push anything to
-  the device, so the next cycle uses it. Its `subscribe_brightness` hook
-  (`Application._on_camera_brightness_set`) does the two things the skipped
-  subscribers would have done that still matter: `sync_active_profile("cameras")`
-  and `AppState.camera_brightness_changed`. The Camera page moves only its
-  Light Brightness field on that signal, so other unsaved edits survive.
-
-`manual_brightness` is also saved with `notify=False`, so remembering a level
-never rebuilds the serial link. Use the raw command box for anything else,
-including the documented multi-channel T/F format. Pinned by
-`tests/test_led_manual_and_camera_brightness.py`.
+connection settings + a raw-command tester + a communication log only —
+per-channel manual controls were deliberately removed once the Camera page
+took over driving brightness; use the raw command box to test the hardware
+directly (including the documented multi-channel T/F format, which nothing
+else in the app sends).
 
 This subsystem superseded an earlier design where `brightness` was pushed to
 a PLC holding register (`camera_brightness`, addresses 156-158/6056) — those

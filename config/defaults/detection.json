@@ -37,24 +37,13 @@
       "template_matching": {
         "template_path": "",
         "match_threshold": 0.8,
-        "method": "TM_CCOEFF_NORMED",
-        "scales": [
-          1.0
-        ],
-        "max_matches": 10,
-        "min_hole_diameter_px": 0,
-        "max_hole_diameter_px": 0
+        "method": "TM_CCOEFF_NORMED"
       },
       "yolo": {
         "model_path": "",
         "confidence": 0.5,
         "iou_threshold": 0.45,
-        "class_id": 0,
-        "device": "",
-        "imgsz": 0,
-        "max_detections": 0,
-        "min_hole_diameter_px": 0,
-        "max_hole_diameter_px": 0
+        "class_id": 0
       }
     },
     "2": {
@@ -94,24 +83,13 @@
       "template_matching": {
         "template_path": "",
         "match_threshold": 0.8,
-        "method": "TM_CCOEFF_NORMED",
-        "scales": [
-          1.0
-        ],
-        "max_matches": 10,
-        "min_hole_diameter_px": 0,
-        "max_hole_diameter_px": 0
+        "method": "TM_CCOEFF_NORMED"
       },
       "yolo": {
         "model_path": "",
         "confidence": 0.5,
         "iou_threshold": 0.45,
-        "class_id": 0,
-        "device": "",
-        "imgsz": 0,
-        "max_detections": 0,
-        "min_hole_diameter_px": 0,
-        "max_hole_diameter_px": 0
+        "class_id": 0
       }
     },
     "3": {
@@ -151,24 +129,13 @@
       "template_matching": {
         "template_path": "",
         "match_threshold": 0.8,
-        "method": "TM_CCOEFF_NORMED",
-        "scales": [
-          1.0
-        ],
-        "max_matches": 10,
-        "min_hole_diameter_px": 0,
-        "max_hole_diameter_px": 0
+        "method": "TM_CCOEFF_NORMED"
       },
       "yolo": {
         "model_path": "",
         "confidence": 0.5,
         "iou_threshold": 0.45,
-        "class_id": 0,
-        "device": "",
-        "imgsz": 0,
-        "max_detections": 0,
-        "min_hole_diameter_px": 0,
-        "max_hole_diameter_px": 0
+        "class_id": 0
       }
     },
     "4": {
@@ -208,24 +175,13 @@
       "template_matching": {
         "template_path": "",
         "match_threshold": 0.8,
-        "method": "TM_CCOEFF_NORMED",
-        "scales": [
-          1.0
-        ],
-        "max_matches": 10,
-        "min_hole_diameter_px": 0,
-        "max_hole_diameter_px": 0
+        "method": "TM_CCOEFF_NORMED"
       },
       "yolo": {
         "model_path": "",
         "confidence": 0.5,
         "iou_threshold": 0.45,
-        "class_id": 0,
-        "device": "",
-        "imgsz": 0,
-        "max_detections": 0,
-        "min_hole_diameter_px": 0,
-        "max_hole_diameter_px": 0
+        "class_id": 0
       }
     }
   }

@@ -204,6 +204,20 @@ def test_write_timeout_never_follows_a_tight_response_timeout(monkeypatch) -> No
     assert created[0].kwargs["write_timeout"] == 1.0
 
 
+def test_a_wedged_output_buffer_fails_the_write_instead_of_hanging(monkeypatch) -> None:
+    """pyserial's Windows ``flush()`` loops on ``out_waiting`` with no
+    deadline; a bridge that never drains must surface as a write failure
+    within the write timeout, not hold the inspection thread forever."""
+    import core.led.serial_led_client as mod
+
+    monkeypatch.setattr(mod, "_MIN_WRITE_TIMEOUT_S", 0.2)
+    monkeypatch.setattr(FakeSerial, "out_waiting", property(lambda self: 8), raising=False)
+    client, _created = _fake_serial_client(monkeypatch, timeout_s=0.05)
+
+    with pytest.raises(LedWriteError):
+        client.send("SA0200#", expect_response=False)
+
+
 # ----------------------------------------------- 3. the waiting call is off-GUI
 def test_worker_reports_a_response_without_raising() -> None:
     seen: list[str] = []

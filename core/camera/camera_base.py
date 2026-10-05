@@ -81,15 +81,25 @@ def crop_roi(frame: np.ndarray, roi: tuple[int, int, int, int]) -> np.ndarray:
     crop" means — :meth:`CameraBase.capture` and the Camera page's ROI view
     both use it, so the view shows exactly what detection will be given.
     """
+    if roi[2] <= 0 or roi[3] <= 0:
+        return frame
+    x0, y0, x1, y1 = roi_rect(frame, roi)
+    return frame[y0:y1, x0:x1]
+
+
+def roi_rect(frame: np.ndarray, roi: tuple[int, int, int, int]) -> tuple[int, int, int, int]:
+    """The ``(x0, y0, x1, y1)`` region of *frame* that :func:`crop_roi` keeps,
+    after the same clamping — so an overlay drawn from it lines up exactly
+    with what detection analysed. ``w``/``h`` <= 0 is the whole frame."""
+    frame_h, frame_w = frame.shape[:2]
     x, y, w, h = roi
     if w <= 0 or h <= 0:
-        return frame
-    frame_h, frame_w = frame.shape[:2]
+        return 0, 0, frame_w, frame_h
     x0 = max(0, min(x, frame_w - 1))
     y0 = max(0, min(y, frame_h - 1))
     x1 = max(x0 + 1, min(x + w, frame_w))
     y1 = max(y0 + 1, min(y + h, frame_h))
-    return frame[y0:y1, x0:x1]
+    return x0, y0, x1, y1
 
 
 def _validated_rotation(value: Any) -> int:
@@ -349,6 +359,18 @@ class CameraBase(ABC):
         """
         self._settings = replace(self._settings, brightness=int(brightness))
         logger.info("%s: light brightness set to %d", self.name, self._settings.brightness)
+        return self._settings
+
+    def set_strobe(self, strobe: bool) -> CameraSettings:
+        """Adopt a new LED strobe mode and nothing else.
+
+        Same contract as :meth:`set_brightness`: no device push, and the
+        settings object is replaced rather than mutated, so the inspection
+        pipeline reads either the old mode or the new one. Returns the new
+        settings.
+        """
+        self._settings = replace(self._settings, led_strobe=bool(strobe))
+        logger.info("%s: LED strobe %s", self.name, "on" if self._settings.led_strobe else "off")
         return self._settings
 
     def detect_resolution(self) -> tuple[int, int]:

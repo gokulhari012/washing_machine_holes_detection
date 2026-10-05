@@ -232,11 +232,11 @@ class FakeCameraManager:
     def health(self, index: int):
         return SimpleNamespace(last_error="camera offline")
 
-    def capture(self, index: int) -> np.ndarray:
+    def capture(self, index: int, *, apply_roi: bool = True) -> np.ndarray:
         self.capture_log.append(index)
         return np.zeros((40, 40, 3), dtype=np.uint8)
 
-    def capture_all(self, indexes=None):
+    def capture_all(self, indexes=None, *, apply_roi: bool = True):
         self.capture_all_calls += 1
         return {}
 
@@ -380,7 +380,7 @@ def test_full_cycle_still_counts(service) -> None:
 def test_camera_fault_degrades_to_error_and_still_answers_the_plc(service) -> None:
     svc, cameras, _app_state, plc = service
 
-    def boom(index: int):
+    def boom(index: int, **_kwargs):
         from core.utilities.exceptions import CameraCaptureError
 
         raise CameraCaptureError("Camera 1: boom")

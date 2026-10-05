@@ -124,12 +124,13 @@ class CameraManager:
         return frame
 
     def capture_all(
-        self, indexes: list[int] | None = None
+        self, indexes: list[int] | None = None, *, apply_roi: bool = True
     ) -> dict[int, np.ndarray | None]:
         """Parallel grab from the given (default: all enabled+connected) cameras.
 
         Returns {index: frame or None-on-failure}; never raises for a single
         camera fault — failures are logged and recorded in health.
+        ``apply_roi`` is passed through to :meth:`capture`.
         """
         if indexes is None:
             indexes = [
@@ -142,7 +143,7 @@ class CameraManager:
 
         def _safe_capture(index: int) -> np.ndarray | None:
             try:
-                return self.capture(index)
+                return self.capture(index, apply_roi=apply_roi)
             except CameraError:
                 return None  # already logged + health-recorded by capture()
 
@@ -168,6 +169,13 @@ class CameraManager:
         or None for a camera that is configured but failed to construct."""
         camera = self._cameras.get(index)
         return None if camera is None else camera.set_brightness(brightness)
+
+    def set_strobe(self, index: int, strobe: bool) -> CameraSettings | None:
+        """Change one camera's LED strobe mode live (see
+        ``CameraBase.set_strobe``). Returns the new settings, or None for a
+        camera that is configured but failed to construct."""
+        camera = self._cameras.get(index)
+        return None if camera is None else camera.set_strobe(strobe)
 
     def detect_resolution(self, index: int) -> tuple[int, int]:
         """(width, height) reported by the device or its image source; raises CameraError."""
