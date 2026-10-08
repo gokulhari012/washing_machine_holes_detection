@@ -18,6 +18,14 @@ station.
 Files land beside that cycle's camera images, in
 ``<image_directory>/<YYYY-MM-DD>/<HHMMSS>_<machine>_dashboard_<RESULT>.png``,
 with the cycle's own start time, so they sort next to the per-camera PNGs.
+
+``storage.auto_align_dashboard_screenshot`` (off by default) resets every
+camera picture to its default view — whole frame fitted and centred, no zoom,
+no pan — immediately before the grab, so an operator who left a panel zoomed
+in does not end up with a cropped picture in the archive. The reset is done
+at grab time rather than when the cycle finishes, so a frame repainted during
+the settle delay is aligned too, and it sticks: the panels stay fitted
+afterwards, exactly as after a double-click.
 """
 
 from __future__ import annotations
@@ -55,7 +63,8 @@ class DashboardSnapshotter:
         if not storage.get("save_dashboard_screenshot", False):
             return
         path = self.path_for(cycle, storage)
-        QTimer.singleShot(SETTLE_MS, lambda: self._grab(path))
+        align = bool(storage.get("auto_align_dashboard_screenshot", False))
+        QTimer.singleShot(SETTLE_MS, lambda: self._grab(path, align))
 
     @staticmethod
     def path_for(cycle, storage_cfg: dict) -> Path:
@@ -67,8 +76,12 @@ class DashboardSnapshotter:
             f"{cycle.started_at:%H%M%S}_{cycle.machine_number}_dashboard_{result}.png"
         )
 
-    def _grab(self, path: Path) -> None:
+    def _grab(self, path: Path, align: bool = False) -> None:
         try:
+            if align:
+                reset = getattr(self._widget, "reset_image_views", None)
+                if reset is not None:
+                    reset()
             image = self._widget.grab().toImage()
         except Exception:  # a screenshot must never break the GUI thread
             logger.exception("Dashboard screenshot grab failed")

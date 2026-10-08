@@ -286,7 +286,12 @@ Settings → Storage & Backup, default `false`): after every **full** cycle
 Dashboard page on the GUI thread `SETTLE_MS` after the cycle is published and
 writes `images/<date>/<HHMMSS>_<machine>_dashboard_<RESULT>.png` on a daemon
 thread. Wired in `main.py` to `InspectionWorker.inspection_finished`; read per
-cycle, so a Save applies from the next part. Tests that build parentless Qt
+cycle, so a Save applies from the next part.
+`storage.auto_align_dashboard_screenshot` (the indented "Auto align images
+before screenshot" box under it, default `false`) calls
+`DashboardPage.reset_image_views` right before the grab, so every camera
+panel is back to its fitted, unzoomed, unscrolled view — and stays fitted
+afterwards, as after a double-click. Tests that build parentless Qt
 widgets must delete them (`_dispose` in `tests/test_theme.py`): left to
 pytest's final gc pass they crash the interpreter on exit.
 

@@ -324,3 +324,71 @@ def test_dashboard_screenshot_after_a_full_cycle_only(
             assert not (tmp_path / "images").exists()
     finally:
         _dispose(widget)
+
+
+@pytest.mark.parametrize("align", [True, False])
+def test_dashboard_screenshot_auto_align_resets_the_views_first(
+    qt_app, tmp_path, align
+) -> None:
+    """With auto-align on, every camera picture is reset to its default view
+    before the grab; with it off, an operator's zoom/pan is left alone."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QLabel
+
+    from ui.dashboard.dashboard_snapshot import DashboardSnapshotter
+
+    config = _config_manager(tmp_path)
+    cfg = config.load("app_config")
+    cfg["storage"]["image_directory"] = str(tmp_path / "images")
+    cfg["storage"]["save_dashboard_screenshot"] = True
+    cfg["storage"]["auto_align_dashboard_screenshot"] = align
+    config.save("app_config", cfg)
+
+    calls: list[str] = []
+
+    class _Dashboard(QLabel):
+        def reset_image_views(self) -> None:
+            calls.append("reset")
+
+        def grab(self, *args):
+            calls.append("grab")
+            return super().grab(*args)
+
+    widget = _Dashboard("dashboard")
+    widget.resize(200, 100)
+    cycle = SimpleNamespace(
+        partial=False,
+        started_at=datetime(2026, 10, 1, 9, 30, 15),
+        machine_number=42,
+        overall_result=SimpleNamespace(value="GOOD"),
+    )
+    DashboardSnapshotter(widget, config).on_inspection_finished(cycle)
+
+    expected = tmp_path / "images" / "2026-10-01" / "093015_42_dashboard_GOOD.png"
+    try:
+        assert _wait_for(expected.exists)
+        assert calls == (["reset", "grab"] if align else ["grab"])
+    finally:
+        _dispose(widget)
+
+
+def test_dashboard_reset_image_views_refits_a_zoomed_panel(qt_app) -> None:
+    import numpy as np
+
+    from ui.dashboard.camera_panel import CameraPanel
+
+    panel = CameraPanel(1, "Camera 1")
+    panel.resize(400, 300)
+    view = panel._view
+    try:
+        view.set_frame(np.zeros((120, 160, 3), dtype=np.uint8))
+        fitted = view.transform().m11()
+        view.scale(3.0, 3.0)
+        view._auto_fit = False
+        panel.reset_view()
+        assert view._auto_fit is True
+        assert view.transform().m11() == pytest.approx(fitted)
+    finally:
+        _dispose(panel)

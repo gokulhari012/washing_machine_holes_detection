@@ -44,6 +44,7 @@
     "save_images": true,
     "save_ng_only": false,
     "save_dashboard_screenshot": false,
+    "auto_align_dashboard_screenshot": false,
     "export_directory": "exports"
   },
   "inspection": {

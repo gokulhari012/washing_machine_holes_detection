@@ -234,6 +234,15 @@ class SettingsPage(QWidget):
             "Dashboard to images/<date>/<time>_<machine>_dashboard_<result>.png. "
             "Single-camera triggers are not captured."
         )
+        self._auto_align_shot = QCheckBox("Auto align images before screenshot")
+        self._auto_align_shot.setToolTip(
+            "Before each dashboard screenshot, reset every camera picture to its "
+            "default view (whole image fitted and centred, no zoom or scroll), "
+            "so a panel left zoomed in is not saved cropped."
+        )
+        self._auto_align_shot.setStyleSheet("margin-left: 20px;")
+        # Only meaningful while screenshots are being taken at all.
+        self._dashboard_shot.toggled.connect(self._auto_align_shot.setEnabled)
         self._auto_backup = QCheckBox("Automatic daily backup")
         self._auto_backup.setToolTip(
             "Checked every 30 minutes; takes at most one backup per calendar day."
@@ -247,6 +256,7 @@ class SettingsPage(QWidget):
         storage.addRow("", self._save_images)
         storage.addRow("", self._ng_only)
         storage.addRow("", self._dashboard_shot)
+        storage.addRow("", self._auto_align_shot)
         storage.addRow("", self._auto_backup)
         storage.addRow("", self._note(
             "Copies the whole inspection database (results, measurements and "
@@ -595,6 +605,10 @@ class SettingsPage(QWidget):
         self._ng_only.setChecked(bool(storage.get("save_ng_only", False)))
         self._ng_only.setEnabled(self._save_images.isChecked())
         self._dashboard_shot.setChecked(bool(storage.get("save_dashboard_screenshot", False)))
+        self._auto_align_shot.setChecked(
+            bool(storage.get("auto_align_dashboard_screenshot", False))
+        )
+        self._auto_align_shot.setEnabled(self._dashboard_shot.isChecked())
         self._auto_backup.setChecked(bool(database.get("auto_backup", True)))
         self._retention.setValue(int(database.get("retention_days", 90)))
 
@@ -630,6 +644,7 @@ class SettingsPage(QWidget):
                 "save_images": self._save_images.isChecked(),
                 "save_ng_only": self._ng_only.isChecked(),
                 "save_dashboard_screenshot": self._dashboard_shot.isChecked(),
+                "auto_align_dashboard_screenshot": self._auto_align_shot.isChecked(),
             }
         )
         cfg.setdefault("database", {}).update(

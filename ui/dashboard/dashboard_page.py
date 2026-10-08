@@ -322,6 +322,12 @@ class DashboardPage(QWidget):
         QTimer.singleShot(budget_ms, lambda: self._set_triggers_enabled(True))
 
     # ------------------------------------------------------------- initial
+    def reset_image_views(self) -> None:
+        """Undo any operator zoom/pan on every camera panel, so each shows its
+        whole frame fitted and centred (used before a dashboard screenshot)."""
+        for panel in self._panels.values():
+            panel.reset_view()
+
     def _load_initial(self) -> None:
         total, good, ng = self._app_state.counters
         self._on_counters(total, good, ng)

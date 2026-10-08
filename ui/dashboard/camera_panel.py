@@ -90,6 +90,10 @@ class CameraPanel(QFrame):
         """Disabled while any inspection is running — one cycle at a time."""
         self._trigger_btn.setEnabled(enabled)
 
+    def reset_view(self) -> None:
+        """Back to the default picture: whole frame fitted, no zoom or pan."""
+        self._view.reset_view()
+
     def update_preview(self, frame: np.ndarray) -> None:
         """Live frame from the acquisition worker; ignored during result hold."""
         if time.monotonic() < self._hold_until:
