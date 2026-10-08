@@ -193,9 +193,8 @@ class CalibrationManager:
         :class:`~core.calibration.calibration_model.CameraCalibration`). Both
         flips belong to the *centre-relative report*, which is why they are
         applied here and not in ``pixel_to_mm``: a call without image
-        dimensions asks for the calibration's own frame — it is the internal
-        hole-ranking helper (``InspectionService._select_hole``), not something
-        anyone reads a sign off — and is left alone.
+        dimensions asks for the calibration's own frame — an internal query,
+        not something anyone reads a sign off — and is left alone.
 
         The tolerance judgement (``deviation_mm``) is computed *before* that
         re-basing, against the reference point in the calibration's own

@@ -225,10 +225,10 @@ history like any other inspection but **does not increment the product counters*
 machine. The inspection worker shares one busy flag across both trigger kinds, so a
 per-camera and a full cycle can never overlap.
 
-**Hole selection** (`_select_hole`): an *uncalibrated* camera keeps the
-highest-confidence candidate. A *calibrated* camera instead picks the candidate
-nearest the reference point — the highest-confidence hole is not necessarily the
-right hole when several real holes are in frame.
+**Hole selection** (`select_hole`): every camera, calibrated or not, judges the
+**highest-confidence** candidate. A calibrated camera used to pick the candidate
+nearest the reference point instead; that reported lower-confidence candidates
+over the real hole on the station and was removed — don't re-add it.
 
 **Coordinate convention (important):** the `x_mm`/`y_mm` reported to PLC, dashboard
 and DB are relative to the **analysed image's own centre** — a hole exactly centred

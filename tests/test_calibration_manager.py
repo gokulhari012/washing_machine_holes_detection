@@ -124,8 +124,8 @@ def test_axis_signs_do_not_shift_deviation_or_the_tolerance_judgement() -> None:
 
 
 def test_evaluate_without_image_dims_ignores_the_axis_signs() -> None:
-    """That call is InspectionService._select_hole's ranking helper, which reads
-    only the deviation — it asks for the calibration's own frame, not a report."""
+    """A call without image dimensions asks for the calibration's own frame,
+    not a centre-relative report, so the axis signs do not apply."""
     assert _inverted(True, True).evaluate(1, 500.0, 400.0)[:2] == pytest.approx((50.0, 40.0))
 
 
