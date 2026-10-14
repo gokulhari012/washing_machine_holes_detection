@@ -106,6 +106,7 @@ def _verdict(*, tolerance: float, calibrated: bool = True, expected: int = 1,
         _tolerance=SimpleNamespace(value=lambda: tolerance),
         _calibration=_calibration(calibrated),
         _set_verdict=lambda result, text: shown.update(result=result, text=text),
+        _rerun_note=lambda: "",  # "Required another run" off
     )
     DetectionPage._refresh_verdict(page)
     return shown["result"], shown["text"]

@@ -20,13 +20,44 @@ off): when true, ``detect``/``debug_stages`` run the frame through
 stretch) before handing it to the strategy. It is a per-camera choice, not a
 global one, because turning it on changes what a strategy's own contrast
 thresholds mean.
+
+Downscale
+---------
+``common.downscale_enabled`` + ``common.downscale_factor`` (default off, 2.0)
+shrink the frame by that factor on each side before the strategy sees it —
+the station's 12-20 MP frames make detection the slow part of a cycle, and
+most bores are far larger than the precision the PLC needs. Two rules make it
+safe to switch on without re-tuning anything:
+
+- **results come back in full-resolution pixels.** Hole centres, diameters
+  and search regions are mapped back onto the frame that was passed in, so
+  ``x_px``, the calibration's px->mm mapping, the overlay and the PLC position
+  are exactly what they would be without it — only less precise.
+- **parameters keep their full-resolution meaning.** The strategy is built
+  from its block converted by :meth:`HoleDetector.downscaled_params` (diameter
+  gates, kernel sizes, template scales divided by the factor), so "Min Hole
+  Diameter 80 px" still means 80 px of the camera's own image.
+
+A factor below 1 would be an *up*scale and is treated as off (with a
+warning) rather than raised, because ``VisionEngine`` is built at startup and
+a typo in a tuning field must not stop the station booting.
+``debug_stages`` returns its images scaled back up to the input's size, since
+``draw_debug_overlay`` composites them pixel-for-pixel onto the full frame.
+
+NG re-run
+---------
+``common.ng_rerun_enabled`` + ``common.ng_rerun_count`` are judged here only
+in the sense that the engine stores and serves them
+(:meth:`VisionEngine.ng_rerun_count`); the re-run itself — a fresh capture
+and a fresh detection — is the pipeline's job (``InspectionService``), since
+re-detecting the same frame would only ever repeat the same answer.
 """
 
 from __future__ import annotations
 
 import copy
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Iterable
 
 import cv2
@@ -36,11 +67,12 @@ from core.logging import get_logger
 from core.utilities.enums import DetectorType, LogSource
 from core.utilities.exceptions import ConfigurationError
 from core.vision.dark_hole_detector import DarkHoleDetector
-from core.vision.detection_result import DetectionResult
+from core.vision.detection_result import DetectionResult, SearchRegion
 from core.vision.detector_base import HoleDetector
 from core.vision.normalization import normalize_image
 from core.vision.opencv_hole_detector import OpenCVHoleDetector
 from core.vision.template_matching_detector import TemplateMatchingDetector
+from core.vision.template_opencv_detector import TemplateOpenCVDetector
 from core.vision.yolo_hole_detector import YoloHoleDetector
 
 logger = get_logger(LogSource.VISION)
@@ -50,7 +82,86 @@ _REGISTRY: dict[DetectorType, type[HoleDetector]] = {
     DetectorType.TEMPLATE_MATCHING: TemplateMatchingDetector,
     DetectorType.YOLO: YoloHoleDetector,
     DetectorType.DARK_HOLE: DarkHoleDetector,
+    DetectorType.TEMPLATE_OPENCV: TemplateOpenCVDetector,
 }
+
+#: Largest accepted downscale factor — beyond this a bore is a handful of pixels.
+MAX_DOWNSCALE_FACTOR = 16.0
+DEFAULT_DOWNSCALE_FACTOR = 2.0
+
+#: Most re-runs an NG may trigger: each is a full capture plus detection.
+MAX_NG_RERUNS = 10
+
+
+def _downscale_factor(common: dict[str, Any]) -> float:
+    """The effective factor for one camera's ``common`` block; 1.0 = off."""
+    if not common.get("downscale_enabled", False):
+        return 1.0
+    raw = common.get("downscale_factor", DEFAULT_DOWNSCALE_FACTOR)
+    try:
+        factor = float(raw)
+    except (TypeError, ValueError):
+        factor = 0.0
+    if factor < 1.0:
+        logger.warning("downscale_factor %r is not >= 1 - downscale is off for this camera", raw)
+        return 1.0
+    return min(factor, MAX_DOWNSCALE_FACTOR)
+
+
+def _ng_rerun_count(common: dict[str, Any]) -> int:
+    """How many extra capture+detect runs an NG gets; 0 = off."""
+    if not common.get("ng_rerun_enabled", False):
+        return 0
+    try:
+        count = int(common.get("ng_rerun_count", 1))
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(count, MAX_NG_RERUNS))
+
+
+def _shrink(image: np.ndarray, factor: float) -> tuple[np.ndarray, float, float]:
+    """*image* reduced by *factor* per side, plus the exact x/y ratios used.
+
+    The sizes are rounded to whole pixels, so the true ratio on each axis is
+    returned rather than *factor* — mapping back by *factor* itself would put
+    a hole near the far edge of a 5471 px frame a pixel or two off.
+    """
+    if factor <= 1.0:
+        return image, 1.0, 1.0
+    height, width = image.shape[:2]
+    small_w = max(1, int(round(width / factor)))
+    small_h = max(1, int(round(height / factor)))
+    small = cv2.resize(image, (small_w, small_h), interpolation=cv2.INTER_AREA)
+    return small, width / small_w, height / small_h
+
+
+def _grow_result(result: DetectionResult, sx: float, sy: float) -> None:
+    """Map a result found on a shrunk frame back onto the original, in place.
+
+    A pixel *centre* at ``u`` on the small frame covers ``[u*s, (u+1)*s)`` on
+    the original, whose centre is ``(u + 0.5)*s - 0.5``; region corners are
+    edges, not centres, and scale plainly.
+    """
+    mean = (sx + sy) / 2.0
+    result.holes = [
+        replace(
+            hole,
+            x_px=(hole.x_px + 0.5) * sx - 0.5,
+            y_px=(hole.y_px + 0.5) * sy - 0.5,
+            diameter_px=hole.diameter_px * mean,
+        )
+        for hole in result.holes
+    ]
+    result.regions = [
+        SearchRegion(
+            x=int(round(region.x * sx)),
+            y=int(round(region.y * sy)),
+            width=int(round(region.width * sx)),
+            height=int(round(region.height * sy)),
+            score=region.score,
+        )
+        for region in result.regions
+    ]
 
 
 def migrate_legacy_detection_config(
@@ -81,6 +192,7 @@ class _CameraDetector:
     # without persisting (see MachineModelService.apply_profile), so the file
     # and the live engine legitimately disagree after one.
     config: dict[str, Any]
+    downscale: float = 1.0  # effective factor; 1.0 = full resolution
 
 
 class VisionEngine:
@@ -139,15 +251,20 @@ class VisionEngine:
         except ValueError as exc:
             raise ConfigurationError(f"Unknown active_detector: {active_name!r}") from exc
 
-        params = dict(camera_config.get(detector_type.value, {}))
-        detector = _REGISTRY[detector_type](params)
+        detector_cls = _REGISTRY[detector_type]
         common = dict(camera_config.get("common", {}))
+        params = detector_cls.params_from_camera_config(camera_config)
+        downscale = _downscale_factor(common)
+        if downscale > 1.0:
+            params = detector_cls.downscaled_params(params, downscale)
+        detector = detector_cls(params)
         detect_lock = None if detector.thread_safe else threading.Lock()
         return _CameraDetector(
             detector=detector,
             common=common,
             detect_lock=detect_lock,
             config=copy.deepcopy(camera_config),
+            downscale=downscale,
         )
 
     def _camera(self, camera_index: int) -> _CameraDetector:
@@ -191,23 +308,38 @@ class VisionEngine:
         is set — see the module docstring on why this isn't on by default."""
         return bool(self._camera(camera_index).common.get("normalize_image", False))
 
+    def downscale_factor(self, camera_index: int) -> float:
+        """Per-side shrink *camera_index* detects at; 1.0 when downscale is
+        off (see the module docstring)."""
+        return self._camera(camera_index).downscale
+
+    def ng_rerun_count(self, camera_index: int) -> int:
+        """Extra capture+detect runs an NG on *camera_index* gets before it
+        is reported; 0 when "Required another run" is off."""
+        return _ng_rerun_count(self._camera(camera_index).common)
+
     # ---------------------------------------------------------------- detect
     def detect(self, image: np.ndarray, camera_index: int) -> DetectionResult:
         """Run *camera_index*'s strategy; candidates below its own confidence
         threshold are dropped so callers only ever see viable holes.
+
+        Coordinates are always in *image*'s own pixels, downscaled or not.
 
         Raises:
             ConfigurationError: no detector configured for this camera.
             DetectionError
         """
         camera = self._camera(camera_index)
+        small, sx, sy = _shrink(image, camera.downscale)
         if camera.common.get("normalize_image", False):
-            image = normalize_image(image)
+            small = normalize_image(small)
         if camera.detect_lock is None:
-            result = camera.detector.detect(image)
+            result = camera.detector.detect(small)
         else:
             with camera.detect_lock:
-                result = camera.detector.detect(image)
+                result = camera.detector.detect(small)
+        if small is not image:
+            _grow_result(result, sx, sy)
 
         threshold = float(camera.common.get("confidence_threshold", 0.6))
         result.holes = [hole for hole in result.holes if hole.confidence >= threshold]
@@ -215,16 +347,25 @@ class VisionEngine:
 
     def debug_stages(self, image: np.ndarray, camera_index: int) -> dict[str, np.ndarray]:
         """Intermediate mask/edges from *camera_index*'s strategy; ``{}`` when
-        it has none to show (see :meth:`HoleDetector.debug_stages`).
+        it has none to show (see :meth:`HoleDetector.debug_stages`). Always
+        *image*-sized, downscaled or not.
 
         Raises:
             ConfigurationError: no detector configured for this camera.
             DetectionError
         """
         camera = self._camera(camera_index)
+        small, _sx, _sy = _shrink(image, camera.downscale)
         if camera.common.get("normalize_image", False):
-            image = normalize_image(image)
-        return camera.detector.debug_stages(image)
+            small = normalize_image(small)
+        stages = camera.detector.debug_stages(small)
+        if small is image:
+            return stages
+        height, width = image.shape[:2]
+        return {
+            name: cv2.resize(stage, (width, height), interpolation=cv2.INTER_NEAREST)
+            for name, stage in stages.items()
+        }
 
 
 # --------------------------------------------------------------------------- #
@@ -237,6 +378,7 @@ _WHITE = (235, 235, 235)
 _OUTLINE = (0, 0, 0)
 _ROI_COLOR = (255, 170, 0)   # BGR: azure — the analysed region's frame
 _ROI_CENTER = (255, 0, 255)  # BGR: magenta — the (0, 0) mm reference point
+_REGION_COLOR = (0, 140, 255)  # BGR: orange — where a two-stage strategy searched
 
 # Annotation size is proportional to the frame, not fixed in pixels: the
 # station's 12-20 MP frames are shown fitted into a few-hundred-pixel panel
@@ -297,6 +439,11 @@ def draw_detection_overlay(
     region is outlined, its centre (the point every reported x_mm/y_mm is
     measured from) is marked, and the holes are shifted into place. The px
     label keeps the hole's own ROI-relative coordinates, the ones stored.
+
+    ``result.regions`` (``template_opencv``'s template matches) are outlined
+    in orange with their match score, under the holes — so a "NO HOLE" with a
+    box drawn means the template was found but held no hole, and one without
+    means the template itself was not found.
     """
     out = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR) if frame.ndim == 2 else frame.copy()
     scale = _overlay_scale(out)
@@ -330,6 +477,19 @@ def draw_detection_overlay(
         )
 
     if result is not None:
+        for region in result.regions:
+            rx, ry = region.x + ox, region.y + oy
+            cv2.rectangle(
+                out, (rx, ry), (rx + region.width - 1, ry + region.height - 1),
+                _REGION_COLOR, max(2, stroke * 2 // 3), cv2.LINE_AA,
+            )
+            # Inside the top-left corner: the ROI's own label sits just above
+            # it, and a match is often flush with the ROI's edge.
+            _put_outlined_text(
+                out, f"template {region.score:.2f}",
+                (rx + stroke + 4, ry + stroke + line_gap),
+                _REGION_COLOR, font * 0.9, text_stroke,
+            )
         for hole in result.holes[1:]:  # secondary candidates
             cx, cy = int(hole.x_px) + ox, int(hole.y_px) + oy
             radius = max(3, int(hole.diameter_px / 2))

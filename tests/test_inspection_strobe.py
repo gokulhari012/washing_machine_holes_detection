@@ -108,6 +108,10 @@ class FakeVision:
         return 0.0
 
     @staticmethod
+    def ng_rerun_count(camera_index: int) -> int:
+        return 0  # "Required another run" off
+
+    @staticmethod
     def detect(frame, camera_index: int) -> DetectionResult:
         return DetectionResult(holes=[Hole(10.0, 12.0, 30.0, 0.9, 0.8)])
 

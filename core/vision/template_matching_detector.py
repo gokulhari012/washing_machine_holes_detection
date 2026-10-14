@@ -36,6 +36,15 @@ Note on ``method``: ``TM_CCORR_NORMED`` does not subtract the mean, so on a
 bright, low-contrast plate it scores near 1.0 almost everywhere and is
 effectively unusable; ``TM_CCOEFF_NORMED`` is the default for that reason.
 All parameters come from the ``template_matching`` block of detection.json.
+
+Steps 2-5 are :meth:`TemplateMatchingDetector.find_matches`, which returns
+each match's full rectangle rather than a hole: ``template_opencv`` runs this
+same stage to *locate a region* and then searches for the hole inside it, so
+the two strategies can never disagree about where the template is.
+
+Under downscale (``common.downscale_factor``, see ``VisionEngine``) the
+template file is not resized on disk — its ``scales`` are divided by the
+factor instead, which shrinks the template exactly as much as the frame.
 """
 
 from __future__ import annotations
@@ -43,6 +52,7 @@ from __future__ import annotations
 import math
 import os
 import time
+from dataclasses import dataclass
 from typing import Any, ClassVar
 
 import cv2
@@ -126,6 +136,32 @@ def template_mean_side(template_path: str) -> float:
     return (height + width) / 2.0
 
 
+@dataclass(frozen=True)
+class TemplateMatch:
+    """One accepted template match: the matched template's rectangle in the
+    searched image (top-left corner plus size, at the scale it matched at)
+    and its correlation score, clamped to 0..1."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+    score: float
+
+    @property
+    def center_x(self) -> float:
+        return self.x + self.width / 2.0
+
+    @property
+    def center_y(self) -> float:
+        return self.y + self.height / 2.0
+
+    @property
+    def diameter(self) -> float:
+        """Mean side — the ``diameter_px`` a match reports as a hole."""
+        return (self.width + self.height) / 2.0
+
+
 class TemplateMatchingDetector(HoleDetector):
     """Normalised cross-correlation against a golden hole template."""
 
@@ -138,6 +174,14 @@ class TemplateMatchingDetector(HoleDetector):
         self._scaled: list[np.ndarray] = []  # template resized by each entry in _scales
         self._scales: list[float] = [1.0]
         super().__init__(params)
+
+    @classmethod
+    def downscaled_params(cls, params: dict[str, Any], factor: float) -> dict[str, Any]:
+        """Diameter gates, plus every search scale divided by *factor* — the
+        template has to shrink with the frame or it stops fitting the bore."""
+        scaled = super().downscaled_params(params, factor)
+        scaled["scales"] = [scale / factor for scale in parse_scales(params.get("scales"))]
+        return scaled
 
     # ----------------------------------------------------------- configure
     def configure(self, params: dict[str, Any]) -> None:
@@ -208,16 +252,38 @@ class TemplateMatchingDetector(HoleDetector):
     # -------------------------------------------------------------- detect
     def detect(self, image: np.ndarray) -> DetectionResult:
         started = time.perf_counter()
+        holes = [
+            Hole(
+                x_px=match.center_x,
+                y_px=match.center_y,
+                diameter_px=match.diameter,
+                circularity=1.0,  # not measured by this strategy
+                confidence=match.score,
+            )
+            for match in self.find_matches(image)
+        ]
+        return DetectionResult(
+            holes=holes,
+            processing_ms=(time.perf_counter() - started) * 1000.0,
+        )
+
+    def find_matches(self, image: np.ndarray) -> list[TemplateMatch]:
+        """Every accepted match in *image*, best score first (pipeline steps 2-5).
+
+        Raises:
+            DetectionError: no template configured, unknown method, inverted
+                size gate, or the template is larger than *image* at every scale.
+        """
         threshold = float(self._params.get("match_threshold", 0.8))
         max_matches = max(1, int(self._params.get("max_matches", DEFAULT_MAX_MATCHES)))
         min_diameter, max_diameter = self._diameter_gate()
 
         maps = self._score_maps(image)
-        holes: list[Hole] = []
+        matches: list[TemplateMatch] = []
         # One extra round per size-gated reject, so a rejected match does not
         # consume a slot a real hole further down the ranking could have used.
         for _ in range(max_matches * 2):
-            if len(holes) >= max_matches:
+            if len(matches) >= max_matches:
                 break
             peak = self._best_peak(maps)
             if peak is None:
@@ -226,29 +292,22 @@ class TemplateMatchingDetector(HoleDetector):
             if score < threshold:
                 break
             template_h, template_w = maps[map_index][1].shape[:2]
-            center_x = x + template_w / 2.0
-            center_y = y + template_h / 2.0
-            diameter = (template_w + template_h) / 2.0
-            self._suppress(maps, center_x, center_y, diameter)
-            if min_diameter and diameter < min_diameter:
-                continue
-            if max_diameter and diameter > max_diameter:
-                continue
-            holes.append(
-                Hole(
-                    x_px=center_x,
-                    y_px=center_y,
-                    diameter_px=diameter,
-                    circularity=1.0,  # not measured by this strategy
-                    confidence=float(min(1.0, max(0.0, score))),
-                )
+            match = TemplateMatch(
+                x=x,
+                y=y,
+                width=template_w,
+                height=template_h,
+                score=float(min(1.0, max(0.0, score))),
             )
+            self._suppress(maps, match.center_x, match.center_y, match.diameter)
+            if min_diameter and match.diameter < min_diameter:
+                continue
+            if max_diameter and match.diameter > max_diameter:
+                continue
+            matches.append(match)
 
-        holes.sort(key=lambda hole: hole.confidence, reverse=True)
-        return DetectionResult(
-            holes=holes,
-            processing_ms=(time.perf_counter() - started) * 1000.0,
-        )
+        matches.sort(key=lambda match: match.score, reverse=True)
+        return matches
 
     def debug_stages(self, image: np.ndarray) -> dict[str, np.ndarray]:
         """Every location whose correlation clears ``match_threshold``, at any

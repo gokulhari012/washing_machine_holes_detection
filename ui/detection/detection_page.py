@@ -62,6 +62,24 @@ the model is one "Save & Apply" from being what the station runs. The
 dialog's folder/model choices persist in ``app_config.json``'s
 ``yolo_training`` block.
 
+**template_opencv** (template matching, then OpenCV inside each match) has
+only two parameters of its own; its two stages run the camera's
+``template_matching`` and ``opencv`` blocks. Selecting it therefore shows
+three forms — its own, then those two retitled as Stage 1 / Stage 2 — rather
+than one, which is why the forms are shown by an explicit strategy -> forms
+map (``_FORMS_SHOWN``) instead of a QStackedWidget indexed by the combo's
+position. Auto Sweep is off for it (``_UNSWEEPABLE_REASON``): sweep each stage
+under its own strategy, then switch back.
+
+The **Judgement** box also carries two per-camera switches the engine and the
+pipeline act on: **Downscale** (detect on a frame shrunk by the factor; see
+``VisionEngine``'s module docstring — results and every pixel parameter stay
+in full-resolution pixels, so nothing here needs re-tuning) and **On NG ->
+Required another run** (re-capture and re-check an NG up to N more times; see
+``InspectionService``). "Test on Camera" honours downscale, because it runs
+the engine; it does *not* re-run an NG — it is one capture by design — and
+says in the verdict what a real cycle would do instead.
+
 ``opencv``, ``dark_hole`` and ``template_matching`` are sweepable. For
 ``template_matching`` the ROI does more than bound the search: the diameter
 gates it implies are divided by the template's own size to give the **scale
@@ -96,7 +114,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSpinBox,
-    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -121,6 +138,11 @@ from core.vision import (
     normalize_image,
 )
 from core.vision.template_matching_detector import parse_scales, template_mean_side
+from core.vision.vision_engine import (
+    DEFAULT_DOWNSCALE_FACTOR,
+    MAX_DOWNSCALE_FACTOR,
+    MAX_NG_RERUNS,
+)
 from models.app_state import AppState
 from services.camera_service import CameraService
 from services.inspection_service import select_hole
@@ -157,6 +179,35 @@ _UNSWEEPABLE_REASON = {
         "crop, which is not what the model saw in training — the result would "
         "mislead rather than tune. Use 'Test on Camera' and read the confidence."
     ),
+    # Its two stages *are* the template_matching and opencv blocks, and each
+    # already has a sweep; a joint grid would be their product — far too big.
+    "template_opencv": (
+        "Auto sweep tunes one strategy at a time. 'template_opencv' runs the "
+        "'template_matching' and 'opencv' parameters as its two stages: switch "
+        "Active Detector to either one to sweep that stage, 'Apply Best', then "
+        "switch back — the values carry over, and Save writes them all."
+    ),
+}
+
+#: Which parameter forms each strategy shows, top to bottom; a strategy not
+#: listed shows just its own. template_opencv runs the camera's own
+#: template_matching and opencv blocks as its two stages, so it shows (and
+#: Save writes) those two forms under its own small one.
+_FORMS_SHOWN: dict[str, tuple[str, ...]] = {
+    DetectorType.TEMPLATE_OPENCV.value: (
+        DetectorType.TEMPLATE_OPENCV.value,
+        DetectorType.TEMPLATE_MATCHING.value,
+        DetectorType.OPENCV.value,
+    ),
+}
+
+#: Titles the stage forms carry while a multi-form strategy is selected, so
+#: it is obvious which stage each block of parameters drives.
+_STAGE_TITLES: dict[str, dict[str, str]] = {
+    DetectorType.TEMPLATE_OPENCV.value: {
+        DetectorType.TEMPLATE_MATCHING.value: "Stage 1 — Template Matching (finds the region)",
+        DetectorType.OPENCV.value: "Stage 2 — OpenCV (finds the hole inside the region)",
+    },
 }
 
 # Auto Sweep discretization: every value each gating parameter is tried at.
@@ -346,6 +397,17 @@ def _spin(minimum: int, maximum: int) -> QSpinBox:
     return spin
 
 
+def _inline(*widgets: QWidget) -> QWidget:
+    """Several widgets side by side in one form row, left-aligned."""
+    row = QWidget()
+    layout = QHBoxLayout(row)
+    layout.setContentsMargins(0, 0, 0, 0)
+    for widget in widgets:
+        layout.addWidget(widget)
+    layout.addStretch()
+    return row
+
+
 def _format_scales(value: object) -> str:
     """Render a ``scales`` value for the form's line edit.
 
@@ -423,32 +485,85 @@ class DetectionPage(QWidget):
             "frame's current contrast, so turning this on may need them "
             "re-tuned."
         )
+        # Downscale: the engine shrinks the frame before the strategy runs and
+        # maps every result back, converting each pixel parameter as it goes,
+        # so switching it on needs nothing on this page re-tuned.
+        self._downscale = QCheckBox("Enabled")
+        self._downscale.setToolTip(
+            "Detect on a smaller copy of the frame — faster on a high-resolution "
+            "camera. Positions, diameters and every pixel setting on this page "
+            "stay in full-resolution pixels, so nothing needs re-tuning; only "
+            "the precision drops, by about the factor in pixels."
+        )
+        self._downscale_factor = _dspin(1.0, MAX_DOWNSCALE_FACTOR, 0.5, 1)
+        self._downscale_factor.setPrefix("÷ ")
+        self._downscale_factor.setToolTip(
+            "Each side of the frame is divided by this before detection: 2 = half "
+            "the width and half the height (a quarter of the pixels)."
+        )
+        self._downscale_factor.setEnabled(False)  # follows the checkbox
+        self._downscale.toggled.connect(self._downscale_factor.setEnabled)
+
+        # "Required another run": the pipeline re-captures and re-checks an NG.
+        self._rerun = QCheckBox("Required another run")
+        self._rerun.setToolTip(
+            "When this camera's result is NG, take a fresh picture and check "
+            "again, up to the number of times set here, before reporting NG. "
+            "The first GOOD wins; a failed re-capture keeps the NG. Each run is "
+            "a full capture, so it lengthens the cycle the PLC waits on."
+        )
+        self._rerun_count = _spin(1, MAX_NG_RERUNS)
+        self._rerun_count.setSuffix(" time(s)")
+        self._rerun_count.setToolTip("How many more times an NG is re-captured and re-checked")
+        self._rerun_count.setEnabled(False)  # follows the checkbox
+        self._rerun.toggled.connect(self._rerun_count.setEnabled)
+
         common.addRow("Confidence Threshold", self._confidence)
         common.addRow("Expected Hole Count", self._expected)
         common.addRow("Position Tolerance", self._tolerance)
         # Re-judge the last Test against the new threshold, no new capture.
         self._expected.valueChanged.connect(self._refresh_verdict)
         self._tolerance.valueChanged.connect(self._refresh_verdict)
+        self._rerun.toggled.connect(self._refresh_verdict)
+        self._rerun_count.valueChanged.connect(self._refresh_verdict)
         common.addRow("", self._normalize)
+        common.addRow("Downscale", _inline(self._downscale, self._downscale_factor))
+        common.addRow("On NG", _inline(self._rerun, self._rerun_count))
         left.addWidget(common_box)
 
         strategy_row = QHBoxLayout()
         strategy_row.addWidget(QLabel("Active Detector"))
         self._strategy = QComboBox()
         self._strategy.addItems([d.value for d in DetectorType])
-        self._strategy.currentIndexChanged.connect(
-            lambda index: self._stack.setCurrentIndex(index)
+        self._strategy.setItemData(
+            self._strategy.findText(DetectorType.TEMPLATE_OPENCV.value),
+            "Template matching and OpenCV detection: find the template first, "
+            "then the hole with OpenCV inside it",
+            Qt.ItemDataRole.ToolTipRole,
         )
-        self._strategy.currentTextChanged.connect(self._update_sweep_availability)
         strategy_row.addWidget(self._strategy, stretch=1)
         left.addLayout(strategy_row)
 
-        self._stack = QStackedWidget()
-        self._stack.addWidget(self._build_opencv_form())
-        self._stack.addWidget(self._build_template_form())
-        self._stack.addWidget(self._build_yolo_form())
-        self._stack.addWidget(self._build_dark_hole_form())
-        left.addWidget(self._stack)
+        # One form per strategy; _show_forms decides which are visible.
+        self._forms: dict[str, QGroupBox] = {
+            DetectorType.OPENCV.value: self._build_opencv_form(),
+            DetectorType.TEMPLATE_MATCHING.value: self._build_template_form(),
+            DetectorType.YOLO.value: self._build_yolo_form(),
+            DetectorType.DARK_HOLE.value: self._build_dark_hole_form(),
+            DetectorType.TEMPLATE_OPENCV.value: self._build_template_opencv_form(),
+        }
+        self._form_titles = {name: form.title() for name, form in self._forms.items()}
+        # The combined form sits above its two stage forms.
+        for name in (
+            DetectorType.TEMPLATE_OPENCV.value,
+            DetectorType.TEMPLATE_MATCHING.value,
+            DetectorType.OPENCV.value,
+            DetectorType.YOLO.value,
+            DetectorType.DARK_HOLE.value,
+        ):
+            left.addWidget(self._forms[name])
+        self._strategy.currentTextChanged.connect(self._show_forms)
+        self._strategy.currentTextChanged.connect(self._update_sweep_availability)
 
         # param key -> form widget, per sweepable strategy — lets "Apply Best"
         # write an arbitrary winning combination back onto the form generically
@@ -537,9 +652,55 @@ class DetectionPage(QWidget):
         self._sweep_cancel_requested = False
 
         self._load()
+        # _load only emits currentTextChanged if the strategy actually changed.
+        self._show_forms(self._strategy.currentText())
         self._update_sweep_availability(self._strategy.currentText())
 
     # ------------------------------------------------------- strategy forms
+    def _show_forms(self, strategy: str) -> None:
+        """Show the parameter forms *strategy* runs (``_FORMS_SHOWN``), and
+        title the stage forms of a multi-stage strategy as its stages."""
+        shown = _FORMS_SHOWN.get(strategy, (strategy,))
+        stage_titles = _STAGE_TITLES.get(strategy, {})
+        for name, form in self._forms.items():
+            form.setTitle(stage_titles.get(name, self._form_titles[name]))
+            form.setVisible(name in shown)
+
+    def _visible_forms(self) -> list[str]:
+        """Names of the forms currently shown — what a test asserts on, since
+        ``isVisible`` is False for every widget of a page never shown."""
+        return [name for name, form in self._forms.items() if not form.isHidden()]
+
+    def _build_template_opencv_form(self) -> QGroupBox:
+        box = QGroupBox("Template Matching + OpenCV Parameters")
+        form = QFormLayout(box)
+        hint = QLabel(
+            "Stage 1 finds the template in the frame; stage 2 looks for the hole "
+            "with OpenCV only inside the matched area — a hole anywhere else is "
+            "ignored. Crop the template around the feature that holds the hole, "
+            "not around the hole alone. Both stages use the forms below, which "
+            "are the same parameters the 'template_matching' and 'opencv' "
+            "strategies use; Stage 1's diameter gate applies to the matched area."
+        )
+        hint.setWordWrap(True)
+        hint.setProperty("class", "dim")
+        self._to_regions = _spin(1, 10)
+        self._to_regions.setToolTip(
+            "How many of the best template matches are searched for a hole — "
+            "1 searches only the best one. Raise it only if the part really "
+            "carries the feature more than once."
+        )
+        self._to_padding = _spin(0, 4000)
+        self._to_padding.setSuffix(" px")
+        self._to_padding.setToolTip(
+            "Grows each matched area by this much on every side before the hole "
+            "search — for a hole at, or just past, the template's edge."
+        )
+        form.addRow(hint)
+        form.addRow("Regions Searched", self._to_regions)
+        form.addRow("Region Padding", self._to_padding)
+        return box
+
     def _build_opencv_form(self) -> QWidget:
         box = QGroupBox("OpenCV Parameters")
         form = QFormLayout(box)
@@ -832,7 +993,17 @@ class DetectionPage(QWidget):
         self._expected.setValue(int(common.get("expected_hole_count", 1)))
         self._tolerance.setValue(float(common.get("position_tolerance_mm", 0.0)))
         self._normalize.setChecked(bool(common.get("normalize_image", False)))
+        self._downscale.setChecked(bool(common.get("downscale_enabled", False)))
+        self._downscale_factor.setValue(
+            float(common.get("downscale_factor", DEFAULT_DOWNSCALE_FACTOR))
+        )
+        self._rerun.setChecked(bool(common.get("ng_rerun_enabled", False)))
+        self._rerun_count.setValue(int(common.get("ng_rerun_count", 1)))
         self._strategy.setCurrentText(cfg.get("active_detector", "opencv"))
+
+        combined = cfg.get("template_opencv", {})
+        self._to_regions.setValue(int(combined.get("max_regions", 1)))
+        self._to_padding.setValue(int(combined.get("region_padding_px", 0)))
 
         opencv = cfg.get("opencv", {})
         self._cv_threshold.setValue(int(opencv.get("detection_threshold", 60)))
@@ -888,6 +1059,12 @@ class DetectionPage(QWidget):
                 "expected_hole_count": self._expected.value(),
                 "position_tolerance_mm": self._tolerance.value(),
                 "normalize_image": self._normalize.isChecked(),
+                # The factor and count are kept while switched off, so turning
+                # either back on restores the value it had.
+                "downscale_enabled": self._downscale.isChecked(),
+                "downscale_factor": self._downscale_factor.value(),
+                "ng_rerun_enabled": self._rerun.isChecked(),
+                "ng_rerun_count": self._rerun_count.value(),
             },
             "opencv": {
                 "detection_threshold": self._cv_threshold.value(),
@@ -914,6 +1091,10 @@ class DetectionPage(QWidget):
                 "max_matches": self._tm_max_matches.value(),
                 "min_hole_diameter_px": self._tm_min_diameter.value(),
                 "max_hole_diameter_px": self._tm_max_diameter.value(),
+            },
+            "template_opencv": {
+                "max_regions": self._to_regions.value(),
+                "region_padding_px": self._to_padding.value(),
             },
             "dark_hole": {
                 "channel": self._dh_channel.currentText(),
@@ -1003,16 +1184,31 @@ class DetectionPage(QWidget):
         self._last_result = result
         self._last_camera_index = camera_index
         self._render_preview()
+        factor = self._engine.downscale_factor(camera_index)
+        timing = f"{result.processing_ms:.1f} ms" + (
+            f" (detected at ÷{factor:g})" if factor > 1.0 else ""
+        )
         best = result.best
         if best is not None:
             self._result_label.setText(
                 f"{len(result.holes)} hole(s) — best ({best.x_px:.1f}, {best.y_px:.1f}) px, "
                 f"Ø {best.diameter_px:.1f} px, conf {best.confidence:.2f} "
-                f"— {result.processing_ms:.1f} ms"
+                f"— {timing}"
             )
         else:
-            self._result_label.setText(f"No hole found — {result.processing_ms:.1f} ms")
+            self._result_label.setText(f"No hole found{self._where_searched(result)} — {timing}")
         self._refresh_verdict()
+
+    def _where_searched(self, result: DetectionResult) -> str:
+        """For a two-stage strategy, *which* stage came up empty: the
+        template not being found and an empty template match need opposite
+        fixes, and the overlay alone does not say so in words."""
+        if result.regions:
+            best = max(region.score for region in result.regions)
+            return f" inside the template match (score {best:.2f})"
+        if self._strategy.currentText() == DetectorType.TEMPLATE_OPENCV.value:
+            return " — the template itself was not found"
+        return ""
 
     def _on_open_training(self) -> None:
         """Open the labelling/training dialog for the selected camera.
@@ -1078,7 +1274,7 @@ class DetectionPage(QWidget):
             self._set_verdict(
                 "NG",
                 f"NG — {len(result.holes)} of {expected} expected hole(s) found; "
-                f"position tolerance not reached.",
+                f"position tolerance not reached.{self._rerun_note()}",
             )
             return
 
@@ -1109,7 +1305,8 @@ class DetectionPage(QWidget):
             self._set_verdict(
                 "NG",
                 f"NG — deviation {deviation:.2f} mm exceeds the {tolerance:.2f} mm "
-                f"tolerance by {deviation - tolerance:.2f} mm. {position}",
+                f"tolerance by {deviation - tolerance:.2f} mm. {position}"
+                f"{self._rerun_note()}",
             )
         else:
             self._set_verdict(
@@ -1117,6 +1314,16 @@ class DetectionPage(QWidget):
                 f"GOOD — deviation {deviation:.2f} mm within the {tolerance:.2f} mm "
                 f"tolerance ({tolerance - deviation:.2f} mm margin). {position}",
             )
+
+    def _rerun_note(self) -> str:
+        """What a real cycle does next with this NG, when "Required another
+        run" is on — Test itself is a single capture and never re-runs."""
+        if not self._rerun.isChecked():
+            return ""
+        return (
+            f" (A real cycle would take a new picture and check again, up to "
+            f"{self._rerun_count.value()} more time(s), before reporting NG.)"
+        )
 
     def _set_verdict(self, result: str, text: str) -> None:
         """``result`` drives the theme's ``QLabel[result=...]`` colour."""

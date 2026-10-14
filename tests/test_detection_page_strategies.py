@@ -1,9 +1,9 @@
 """Detection page wiring for every strategy in the Active Detector list.
 
-The page holds one parameter form per strategy in a QStackedWidget, indexed
-by the combo's position — so a form added or reordered without matching the
-``DetectorType`` order silently shows the wrong parameters, and a parameter
-missing from ``_load``/``_collect`` silently reverts on every save. Neither
+The page holds one parameter form per strategy and shows the ones the
+selected strategy runs (``_FORMS_SHOWN``) — so a strategy without a form, or a
+form shown for the wrong strategy, silently edits parameters nothing uses, and
+a parameter missing from ``_load``/``_collect`` silently reverts on every save. Neither
 shows up in a detector's own unit tests, which is what these cover: pick a
 strategy, fill its form, Save, and check both the running engine and the
 persisted JSON got exactly what was on screen.
@@ -21,7 +21,7 @@ from core.camera import CameraManager
 from core.led import LedControllerSettings, LedManager, SimulatedLedClient
 from core.utilities.config_manager import ConfigManager
 from core.utilities.enums import DetectorType
-from core.vision import VisionEngine
+from core.vision import DetectionResult, VisionEngine
 from models.app_state import AppState
 from services.camera_service import CameraService
 from services.led_service import LedService
@@ -117,19 +117,21 @@ def template_file(tmp_path) -> str:
     return str(path)
 
 
-# --------------------------------------------------------- stack wiring
+# ---------------------------------------------------------- form wiring
 def test_every_strategy_has_its_own_form(page) -> None:
-    assert page.widget._stack.count() == len(DetectorType)
+    assert set(page.widget._forms) == {d.value for d in DetectorType}
 
 
 @pytest.mark.parametrize("strategy", [d.value for d in DetectorType])
 def test_selecting_a_strategy_shows_its_own_form(page, strategy) -> None:
-    """The stack is indexed by the combo's position, so a form added out of
-    DetectorType order would quietly show another strategy's parameters."""
+    """Exactly the forms that strategy runs are on screen — a single-stage
+    strategy shows its own and nothing else."""
     widget = page.widget
     widget._strategy.setCurrentText(strategy)
-    shown = widget._stack.currentWidget().title().lower()
-    assert strategy.split("_")[0] in shown.replace(" ", "_")
+    shown = widget._visible_forms()
+    assert strategy in shown
+    if strategy != "template_opencv":
+        assert shown == [strategy]
 
 
 # ------------------------------------------------- template_matching form
@@ -284,11 +286,113 @@ def test_sweep_button_follows_the_selected_strategy(page) -> None:
         ("dark_hole", True),
         ("template_matching", True),
         ("yolo", False),
+        ("template_opencv", False),
     ]:
         widget._strategy.setCurrentText(strategy)
         assert widget._sweep_btn.isEnabled() is enabled, strategy
     widget._strategy.setCurrentText("yolo")
     assert "crop" in widget._sweep_btn.toolTip()
+    widget._strategy.setCurrentText("template_opencv")
+    assert "one strategy at a time" in widget._sweep_btn.toolTip()
+
+
+# ------------------------------------------------- template_opencv form
+def test_template_opencv_shows_its_own_form_over_both_stage_forms(page) -> None:
+    """Its stages are the camera's template_matching and opencv blocks, so
+    those two forms are on screen with it, retitled as the stages."""
+    widget = page.widget
+    widget._strategy.setCurrentText("template_opencv")
+    assert set(widget._visible_forms()) == {"template_opencv", "template_matching", "opencv"}
+    assert widget._forms["template_matching"].title().startswith("Stage 1")
+    assert widget._forms["opencv"].title().startswith("Stage 2")
+
+    widget._strategy.setCurrentText("opencv")  # titles go back on their own
+    assert widget._forms["opencv"].title() == "OpenCV Parameters"
+    assert widget._forms["template_matching"].title() == "Template Matching Parameters"
+
+
+def test_template_opencv_round_trips_through_save_and_load(page) -> None:
+    widget = page.widget
+    path = template_file(page.tmp_path)
+    widget._strategy.setCurrentText("template_opencv")
+    widget._tm_path.setText(path)
+    widget._cv_threshold.setValue(77)
+    widget._to_regions.setValue(2)
+    widget._to_padding.setValue(15)
+    widget._on_save()
+
+    saved = stored(page)
+    assert saved["active_detector"] == "template_opencv"
+    assert saved["template_opencv"] == {"max_regions": 2, "region_padding_px": 15}
+    assert saved["template_matching"]["template_path"] == path  # stage 1
+    assert saved["opencv"]["detection_threshold"] == 77  # stage 2
+    assert page.engine.active_detector_name(1) == "template_opencv"
+
+    widget._to_regions.setValue(1)
+    widget._to_padding.setValue(0)
+    widget._load()
+    assert widget._to_regions.value() == 2
+    assert widget._to_padding.value() == 15
+
+
+# ---------------------------------------------- downscale / NG re-run
+def test_an_older_detection_json_loads_with_both_switched_off(page) -> None:
+    """The fixture's common block predates both keys."""
+    widget = page.widget
+    assert widget._downscale.isChecked() is False
+    assert widget._downscale_factor.isEnabled() is False
+    assert widget._rerun.isChecked() is False
+    assert widget._rerun_count.isEnabled() is False
+
+
+def test_downscale_and_rerun_round_trip_and_reach_the_engine(page) -> None:
+    widget = page.widget
+    widget._downscale.setChecked(True)
+    widget._downscale_factor.setValue(3.0)
+    widget._rerun.setChecked(True)
+    widget._rerun_count.setValue(4)
+    widget._on_save()
+
+    common = stored(page)["common"]
+    assert common["downscale_enabled"] is True
+    assert common["downscale_factor"] == 3.0
+    assert common["ng_rerun_enabled"] is True
+    assert common["ng_rerun_count"] == 4
+    assert page.engine.downscale_factor(1) == 3.0
+    assert page.engine.ng_rerun_count(1) == 4
+
+    widget._downscale.setChecked(False)
+    widget._rerun.setChecked(False)
+    widget._load()
+    assert widget._downscale.isChecked() and widget._downscale_factor.value() == 3.0
+    assert widget._rerun.isChecked() and widget._rerun_count.value() == 4
+
+
+def test_switching_off_keeps_the_value_for_next_time(page) -> None:
+    widget = page.widget
+    widget._downscale.setChecked(True)
+    widget._downscale_factor.setValue(4.0)
+    widget._downscale.setChecked(False)
+    assert widget._downscale_factor.isEnabled() is False
+    widget._on_save()
+    common = stored(page)["common"]
+    assert common["downscale_enabled"] is False
+    assert common["downscale_factor"] == 4.0
+    assert page.engine.downscale_factor(1) == 1.0  # off means off
+
+
+def test_an_ng_verdict_says_what_a_real_cycle_would_do(page) -> None:
+    """Test is one capture; the verdict says a cycle would re-run instead."""
+    widget = page.widget
+    widget._last_frame = np.zeros((40, 40), np.uint8)
+    widget._last_result = DetectionResult(holes=[])
+    widget._last_camera_index = 1
+    widget._rerun.setChecked(True)
+    widget._rerun_count.setValue(2)
+    assert "up to 2 more time(s)" in widget._verdict_label.text()
+    widget._rerun.setChecked(False)
+    assert "more time(s)" not in widget._verdict_label.text()
+    assert widget._verdict_label.text().startswith("NG")
 
 
 # ------------------------------------------------ yolo training tooling
@@ -303,13 +407,12 @@ def test_training_button_lives_on_the_yolo_form_only(page) -> None:
     """It is reachable only while yolo is the selected strategy, because it
     is the one strategy that needs a trained file to do anything."""
     widget = page.widget
-    yolo_form = widget._stack.widget([d.value for d in DetectorType].index("yolo"))
-    assert widget._train_btn.parent() is yolo_form
+    assert widget._train_btn.parent() is widget._forms["yolo"]
 
     widget._strategy.setCurrentText("opencv")
-    assert widget._stack.currentWidget() is not yolo_form
+    assert "yolo" not in widget._visible_forms()
     widget._strategy.setCurrentText("yolo")
-    assert widget._stack.currentWidget() is yolo_form
+    assert widget._visible_forms() == ["yolo"]
 
 
 def test_training_button_is_enabled_when_the_service_is_wired(tmp_path, qt_app) -> None:

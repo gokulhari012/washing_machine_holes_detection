@@ -21,7 +21,7 @@ over Ethernet; every cycle is stored in SQLite with an annotated PNG.
 ```bash
 python main.py                # normal start
 python main.py --selftest 8   # start hidden, run 8 s, save logs/selftest.png, exit 0
-pytest                        # 492 tests, ~16 s (as of 2026-09-17; all passing)
+pytest                        # 774 tests, ~45 s (as of 2026-10-15; 2 known failures in test_yolo_training.py: live app_config.json's yolo_training block lacks the `labeling_tool` key defaults/ has)
 python tools/hole_debug.py path/to/images/   # detector tuner; --camera N applies that camera's ROI
 python scripts/build_exe.py   # PyInstaller onedir -> dist/WMHoleDetection/
 ```
@@ -69,7 +69,7 @@ Workers own **threads only** — zero business logic. Business logic lives in se
 | [core/plc/](core/plc/) | `PlcClientBase`, Modbus/SLMP/Simulated adapters, `RegisterMap`, `PlcManager` | protocol or register work |
 | [core/led/](core/led/) | `protocol.py` (KDC-24V60W-4T wire format), `LedClientBase`, Serial/Simulated adapters, `LedManager` | LED Controller (per-camera light) work |
 | [core/camera/](core/camera/) | `CameraBase`, 5 drivers, `CameraManager` | camera driver work |
-| [core/vision/](core/vision/) | `HoleDetector` ABC, 4 detectors, `VisionEngine`, overlay drawing | detection algorithm work |
+| [core/vision/](core/vision/) | `HoleDetector` ABC, 5 detectors (incl. two-stage `template_opencv`), `VisionEngine` (incl. per-camera downscale), overlay drawing | detection algorithm work |
 | [core/calibration/](core/calibration/) | px→mm scale / homography, reference point, per-camera axis signs | coordinate math |
 | [core/database/](core/database/) | SQLAlchemy engine (WAL), ORM models, repositories | schema/query work |
 | [models/](models/) | `AppState` (observable QObject) + frozen DTOs | new cross-thread signal or payload field |
@@ -118,8 +118,16 @@ inspection pipeline both grab the same device.
    in both `config/detection.json` and `config/defaults/detection.json` (each
    camera keeps a full set of blocks for every strategy, not just its active one —
    see the per-camera shape in [§8](#8-config-system)).
+5. If the strategy has pixel-sized parameters beyond `min/max_hole_diameter_px`
+   (kernels, template scales...), override the classmethod
+   `downscaled_params(params, factor)` so per-camera downscale keeps them meaning
+   full-resolution pixels (see [Downscale](#9-gotchas--traps)). A strategy that
+   reads more than its own block overrides `params_from_camera_config` — the way
+   `template_opencv` pulls in its two stage blocks.
+6. Add its form to the Detection page's `_forms` dict (`ui/detection/detection_page.py`),
+   plus a `_FORMS_SHOWN` entry if it should show other strategies' forms too.
 
-No UI or PLC changes needed. `detect()` raising `DetectionError` means *algorithm
+No PLC changes needed. `detect()` raising `DetectionError` means *algorithm
 failure*; returning an empty `holes` list means *no hole present* (a legitimate NG).
 
 ### Add a PLC protocol
@@ -198,6 +206,21 @@ are themselves per-camera (`VisionEngine.expected_hole_count(camera_index)` etc.
 - `best is None` **or** `len(holes) < expected_hole_count` → `NG`, `hole_found=False`
 - deviation > `position_tolerance_mm` (and tolerance > 0 and camera calibrated) → `NG`
 - else `GOOD`
+
+**NG re-run** (`InspectionService._rerun_on_ng`, Detection page → Judgement → "On
+NG: Required another run", `common.ng_rerun_enabled`/`ng_rerun_count`, per camera,
+off by default): an NG camera takes a **fresh capture** and is judged again, up to
+N more times; the first non-NG run is reported, else the last NG. It re-captures
+because re-detecting the same frame can only repeat the same answer — it is for
+transients (part settling, reflections). Only NG re-runs, never ERROR; a re-run
+that itself ends in ERROR (grab failed) stops the loop and the measured NG stands.
+All three paths do it — sequential (before the next camera), parallel (inside that
+camera's own pool task) and the per-camera trigger (re-strobing each grab; the
+global cycle's grouped strobe is already on). Each re-run is published to the
+dashboard and labelled `Camera N (re-run k/N)` on the frame, and its time counts
+in that camera's `cycle_time_ms` — the PLC waits for it. The Detection page's
+"Test on Camera" is one capture and never re-runs; its verdict says what a cycle
+would do instead. Duck-typed vision fakes in tests need `ng_rerun_count`.
 
 **Gantry gating** (`_resolve_gantries`, both cycle kinds): before anything is
 captured, each camera's `gantry_status` register is read live on the inspection
@@ -821,6 +844,9 @@ Six domains in `KNOWN_CONFIGS`: `app_config`, `plc`, `led`, `camera`, `detection
 "common": {...}, "opencv": {...}, "dark_hole": {...}, ...}, "2": {...}, ...}}` — each
 camera carries its own active-strategy choice, its own common judgement thresholds,
 and a full set of every strategy's parameter block (not just its active one).
+`common` also holds the per-camera `downscale_enabled`/`downscale_factor` and
+`ng_rerun_enabled`/`ng_rerun_count` switches (all read with `.get` defaults, so an
+older file or machine-model profile without them loads with both off).
 `VisionEngine` holds one independent `HoleDetector` instance per camera index;
 `apply_config(doc)` atomically rebuilds every camera's strategy at once (all-or-nothing:
 one malformed camera block leaves every camera's previous strategy running),
@@ -1011,6 +1037,43 @@ resolution fit. Cameras with different fields of view need different numbers, an
 since detection parameters are per-camera, each camera's Detection-page block can
 (and generally should) carry its own gates for the optics it actually looks through —
 there is no "keep all four consistent" constraint anymore.
+
+**Downscale keeps every pixel number at full resolution — on purpose.**
+`common.downscale_enabled`/`downscale_factor` (Detection page → Judgement →
+Downscale, per camera, off by default) make `VisionEngine.detect` shrink the frame
+by that factor per side (`INTER_AREA`) before the strategy runs — ~3x faster at ÷2
+and ~13x at ÷4 on a 20 MP frame. Two rules make it safe to toggle with no
+re-tune; don't "simplify" either away: (1) holes and search regions are mapped
+**back to the input frame's pixels** (`_grow_result`, pixel-centre correct), so
+calibration, overlay, `x_mm` and the PLC position never see a shrunk coordinate;
+(2) the strategy is **built from converted parameters**
+(`HoleDetector.downscaled_params`: diameter gates, opencv/dark_hole blur and
+morphology kernels, template `scales` all divided by the factor), so "Min Hole
+Diameter 80 px" still means 80 px of the camera's image. `camera_config(i)` keeps
+the typed values — the page must never show the ÷N ones. `debug_stages` is resized
+back up (`INTER_NEAREST`), since `draw_debug_overlay` indexes the full frame with
+the mask. A factor < 1 (an upscale) or non-numeric is treated as **off** with a
+warning, never raised — the engine is built at startup. Auto Sweep still runs at
+full resolution, which is consistent with rule (2).
+
+**`template_opencv` has two parameters of its own; its stages are the camera's
+`template_matching` and `opencv` blocks.** `TemplateOpenCVDetector` runs
+`TemplateMatchingDetector.find_matches` over the frame, takes the best
+`max_regions` matches (padded by `region_padding_px`), runs `OpenCVHoleDetector`
+only inside each, and shifts the holes back to frame pixels — a hole outside every
+match is never reported, and no match is an empty result (NG), not an error. It
+reads the sibling blocks via `params_from_camera_config`, so tuning either stage
+under its own strategy (Auto Sweep included — the combined one has none, see
+`_UNSWEEPABLE_REASON`) carries straight over. The Detection page therefore shows
+**three forms** for it (`_FORMS_SHOWN`), retitled Stage 1 / Stage 2, which is why
+the forms are a visibility map rather than a combo-indexed `QStackedWidget`.
+Hole confidence is the OpenCV score alone: the template score is a gate
+(`match_threshold`), not a multiplier. Each match rides `DetectionResult.regions`
+(`SearchRegion`) and is drawn in orange with its score by `draw_detection_overlay`,
+so "NO HOLE" with a box means *template found, no hole in it*. Crop the template
+around the **feature** that holds the hole: cropped around the bore alone (or on a
+featureless panel) the dark bore dominates the correlation and the template matches
+any bore — `tests/test_template_opencv_detector.py` documents the numbers.
 
 **A detector's missing resource is a *detect-time* error, never a construct-time
 one.** `template_matching` with no `template_path`, and `yolo` with no

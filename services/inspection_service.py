@@ -93,6 +93,32 @@ read is also treated as active, deliberately: a comms glitch that silently
 stopped inspecting a camera would ship an un-inspected part, which is worse
 than capturing one whose gantry happens to be parked.
 
+NG re-run ("Required another run")
+----------------------------------
+A camera whose detection block sets ``common.ng_rerun_enabled`` (Detection
+page) does not report its first NG: it **captures a fresh frame and detects
+again**, up to ``ng_rerun_count`` more times, and reports the first non-NG
+result — or the last NG if every run was NG. Re-detecting the frame it
+already has would be pointless (same pixels, same parameters, same answer);
+what a re-run is for is a *transient* — the part still settling, a gantry
+not quite stopped, a reflection, a flicker. See ``_rerun_on_ng``. Rules:
+
+- only **NG** re-runs. ERROR is a fault, not a verdict, and is not retried;
+  and a re-run that itself ends in ERROR (the recapture failed) stops the
+  re-runs and the earlier NG stands, since a failed grab measured nothing
+  that could overturn it. The fault still raises its alarm as usual.
+- every re-run is a real capture, so it is published to the dashboard like
+  any other picture, and the annotated frame's label says which run it was
+  (``Camera 2 (re-run 1/3)``). Strobe lights stay on through a global
+  cycle's re-runs (they are inside the grouped bracket); a per-camera
+  trigger re-strobes around each recapture.
+- the time a re-run takes is part of that camera's ``cycle_time_ms`` and the
+  cycle's detection time, and the PLC waits for it: three re-runs on a
+  20 MP camera are three more full-resolution grabs before
+  ``vision_complete``.
+- parallel mode re-runs inside each camera's own detection task, so two
+  cameras re-running do not queue behind each other.
+
 Fault policy (a production line must keep moving):
 - one dead camera            → that camera reports ERROR, others proceed
 - detection algorithm error  → that camera reports ERROR
@@ -449,18 +475,15 @@ class InspectionService:
         self._app_state.post_status(f"Capturing {camera.name} (single)")
 
         camera_started = time.perf_counter()
-        lit = self._strobe_on([camera_index])
-        try:
-            full = self._cameras.capture(camera_index, apply_roi=False)
-        except CameraError:
-            full = None  # already logged and recorded in health by capture()
-        finally:
-            self._strobe_off(lit)
+        full = self._strobed_capture(camera_index)
         if full is not None:
             self._publish_capture(camera_index, full)
 
         detect_started = time.perf_counter()
         data = self._inspect_one(camera_index, full)
+        data = self._rerun_on_ng(
+            camera_index, data, lambda: self._strobed_capture(camera_index)
+        )
         now = time.perf_counter()
         detection_ms = (now - detect_started) * 1000.0
         data.cycle_time_ms = (now - camera_started) * 1000.0
@@ -640,15 +663,15 @@ class InspectionService:
                 f"Capturing {camera.name} ({position}/{len(enabled)})"
             )
             camera_started = time.perf_counter()
-            try:
-                full = self._cameras.capture(index, apply_roi=False)
-            except CameraError:
-                full = None  # already logged and recorded in health by capture()
+            full = self._capture(index)
             if full is not None:
                 self._publish_capture(index, full)
 
             detect_started = time.perf_counter()
             data = self._inspect_one(index, full)
+            # Lights are already on for the whole cycle (grouped strobe), so a
+            # re-run's recapture needs no bracket of its own.
+            data = self._rerun_on_ng(index, data, lambda: self._capture(index))
             now = time.perf_counter()
             detection_ms += (now - detect_started) * 1000.0
             data.cycle_time_ms = (now - camera_started) * 1000.0  # this camera's own capture+detect
@@ -699,10 +722,74 @@ class InspectionService:
     ) -> tuple[CameraInspectionData, float]:
         """``_inspect_one`` plus its own wall time, measured inside the worker
         thread — timing it from the submitting thread instead would measure
-        queue wait, not the task's actual duration, once several run at once."""
+        queue wait, not the task's actual duration, once several run at once.
+
+        An NG re-runs here too, inside this camera's own task, so cameras
+        re-running at the same time do not wait for each other."""
         started = time.perf_counter()
         data = self._inspect_one(camera_index, frame)
+        data = self._rerun_on_ng(camera_index, data, lambda: self._capture(camera_index))
         return data, (time.perf_counter() - started) * 1000.0
+
+    # ---------------------------------------------------------- NG re-run
+    def _capture(self, camera_index: int) -> np.ndarray | None:
+        """One full (uncropped) frame, or None if the grab failed — the
+        failure is already logged and recorded in health by ``capture()``."""
+        try:
+            return self._cameras.capture(camera_index, apply_roi=False)
+        except CameraError:
+            return None
+
+    def _strobed_capture(self, camera_index: int) -> np.ndarray | None:
+        """:meth:`_capture` with that camera's strobe lit for the grab only —
+        the per-camera trigger's bracket (see ``_strobe_on``)."""
+        lit = self._strobe_on([camera_index])
+        try:
+            return self._capture(camera_index)
+        finally:
+            self._strobe_off(lit)
+
+    def _rerun_on_ng(
+        self,
+        camera_index: int,
+        data: CameraInspectionData,
+        capture: Callable[[], np.ndarray | None],
+    ) -> CameraInspectionData:
+        """Re-capture and re-judge an NG up to the camera's ``ng_rerun_count``.
+
+        Returns the first non-NG run, or the last NG when every run was NG.
+        A re-run ending in ERROR stops the loop and *data*'s NG stands — see
+        the module docstring's NG re-run section. A no-op for anything that is
+        not NG, and for a camera with "Required another run" switched off.
+        """
+        if data.result is not InspectionResult.NG:
+            return data
+        reruns = self._vision.ng_rerun_count(camera_index)
+        for run in range(1, reruns + 1):
+            logger.info(
+                "%s: NG - re-running (%d of %d)", data.camera_name, run, reruns
+            )
+            self._app_state.post_status(f"Re-checking {data.camera_name} ({run}/{reruns})")
+            full = capture()
+            if full is not None:
+                self._publish_capture(camera_index, full)
+            rerun = self._inspect_one(camera_index, full, run=(run, reruns))
+            if rerun.result is InspectionResult.ERROR:
+                logger.warning(
+                    "%s: re-run %d of %d failed (%s) - keeping the earlier NG",
+                    data.camera_name, run, reruns, rerun.error,
+                )
+                return data
+            data = rerun
+            if data.result is not InspectionResult.NG:
+                logger.info(
+                    "%s: %s on re-run %d of %d",
+                    data.camera_name, data.result.value, run, reruns,
+                )
+                return data
+        if reruns:
+            logger.info("%s: still NG after %d re-run(s)", data.camera_name, reruns)
+        return data
 
     # ------------------------------------------------------------ per camera
     def _roi_of(self, camera_index: int, full: np.ndarray) -> tuple[int, int, int, int]:
@@ -737,7 +824,10 @@ class InspectionService:
         return draw_detection_overlay(crop, detection, label=label)
 
     def _inspect_one(
-        self, camera_index: int, full: np.ndarray | None
+        self,
+        camera_index: int,
+        full: np.ndarray | None,
+        run: tuple[int, int] | None = None,
     ) -> CameraInspectionData:
         """Capture-to-judgement for a single camera. Never raises.
 
@@ -746,8 +836,12 @@ class InspectionService:
         its default ``apply_roi`` would have returned, so ``x_px``/``x_mm``
         and the verdict are unchanged — while the annotated ``frame`` shown
         on the dashboard and saved to disk is the whole picture, with the
-        ROI, its centre and the holes drawn in place."""
+        ROI, its centre and the holes drawn in place.
+
+        *run* is ``(n, of)`` for an NG re-run (see :meth:`_rerun_on_ng`); it
+        only changes the label drawn on the frame."""
         camera_name = self._cameras.get(camera_index).name
+        label = camera_name if run is None else f"{camera_name} (re-run {run[0]}/{run[1]})"
 
         if full is None:
             health = self._cameras.health(camera_index)
@@ -776,11 +870,11 @@ class InspectionService:
                 camera_name=camera_name,
                 result=InspectionResult.ERROR,
                 error=str(exc),
-                frame=self._annotate(full, frame, rect, None, camera_name),
+                frame=self._annotate(full, frame, rect, None, label),
             )
 
         self._select_hole(camera_index, detection)
-        annotated = self._annotate(full, frame, rect, detection, camera_name)
+        annotated = self._annotate(full, frame, rect, detection, label)
         best = detection.best
         if best is None or len(detection.holes) < self._vision.expected_hole_count(camera_index):
             return CameraInspectionData(

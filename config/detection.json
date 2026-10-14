@@ -6,7 +6,11 @@
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
         "position_tolerance_mm": 100.0,
-        "normalize_image": true
+        "normalize_image": true,
+        "downscale_enabled": false,
+        "downscale_factor": 2.0,
+        "ng_rerun_enabled": false,
+        "ng_rerun_count": 1
       },
       "opencv": {
         "detection_threshold": 70,
@@ -33,6 +37,10 @@
         "max_matches": 10,
         "min_hole_diameter_px": 0,
         "max_hole_diameter_px": 0
+      },
+      "template_opencv": {
+        "max_regions": 1,
+        "region_padding_px": 0
       },
       "dark_hole": {
         "channel": "auto",
@@ -63,7 +71,11 @@
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
         "position_tolerance_mm": 100.0,
-        "normalize_image": true
+        "normalize_image": true,
+        "downscale_enabled": false,
+        "downscale_factor": 2.0,
+        "ng_rerun_enabled": false,
+        "ng_rerun_count": 1
       },
       "opencv": {
         "detection_threshold": 190,
@@ -90,6 +102,10 @@
         "max_matches": 10,
         "min_hole_diameter_px": 0,
         "max_hole_diameter_px": 0
+      },
+      "template_opencv": {
+        "max_regions": 1,
+        "region_padding_px": 0
       },
       "dark_hole": {
         "channel": "auto",
@@ -120,7 +136,11 @@
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
         "position_tolerance_mm": 100.0,
-        "normalize_image": true
+        "normalize_image": true,
+        "downscale_enabled": false,
+        "downscale_factor": 2.0,
+        "ng_rerun_enabled": false,
+        "ng_rerun_count": 1
       },
       "opencv": {
         "detection_threshold": 120,
@@ -147,6 +167,10 @@
         "max_matches": 10,
         "min_hole_diameter_px": 0,
         "max_hole_diameter_px": 0
+      },
+      "template_opencv": {
+        "max_regions": 1,
+        "region_padding_px": 0
       },
       "dark_hole": {
         "channel": "green",
@@ -177,7 +201,11 @@
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
         "position_tolerance_mm": 100.0,
-        "normalize_image": true
+        "normalize_image": true,
+        "downscale_enabled": false,
+        "downscale_factor": 2.0,
+        "ng_rerun_enabled": false,
+        "ng_rerun_count": 1
       },
       "opencv": {
         "detection_threshold": 110,
@@ -204,6 +232,10 @@
         "max_matches": 10,
         "min_hole_diameter_px": 0,
         "max_hole_diameter_px": 0
+      },
+      "template_opencv": {
+        "max_regions": 1,
+        "region_padding_px": 0
       },
       "dark_hole": {
         "channel": "auto",

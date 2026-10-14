@@ -16,6 +16,19 @@ class Hole:
     confidence: float   # 0..1 composite score, strategy-specific
 
 
+@dataclass(frozen=True)
+class SearchRegion:
+    """An area a two-stage strategy confined its hole search to — for
+    ``template_opencv``, one template match. Pixel coordinates of the analysed
+    image, top-left corner plus size; ``score`` is how well the area matched."""
+
+    x: int
+    y: int
+    width: int
+    height: int
+    score: float
+
+
 @dataclass
 class DetectionResult:
     """Outcome of one detector run on one image.
@@ -24,10 +37,16 @@ class DetectionResult:
     :class:`~core.utilities.exceptions.DetectionError` — not an empty result —
     signals an algorithm *failure*; an empty ``holes`` list is a legitimate
     "no hole present" answer.
+
+    ``regions`` is empty for single-stage strategies. A two-stage one lists
+    every area it searched, so the overlay can show *where* it looked — which
+    is the only way to tell "the template was not found" from "the template
+    was found but held no hole".
     """
 
     holes: list[Hole] = field(default_factory=list)
     processing_ms: float = 0.0
+    regions: list[SearchRegion] = field(default_factory=list)
 
     @property
     def found(self) -> bool:

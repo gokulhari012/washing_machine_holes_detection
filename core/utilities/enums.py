@@ -75,6 +75,8 @@ class DetectorType(StrEnum):
     TEMPLATE_MATCHING = "template_matching"
     YOLO = "yolo"
     DARK_HOLE = "dark_hole"  # local-contrast; copes with partially visible bores
+    # two-stage: template_matching locates the region, opencv finds the hole inside it
+    TEMPLATE_OPENCV = "template_opencv"
 
 
 class LogSource(StrEnum):

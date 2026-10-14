@@ -1,11 +1,12 @@
 """Vision layer: strategy interface, detectors, engine, result types."""
 
 from core.vision.dark_hole_detector import DarkHoleDetector
-from core.vision.detection_result import DetectionResult, Hole
+from core.vision.detection_result import DetectionResult, Hole, SearchRegion
 from core.vision.detector_base import HoleDetector
 from core.vision.normalization import normalize_image
 from core.vision.opencv_hole_detector import OpenCVHoleDetector
 from core.vision.template_matching_detector import TemplateMatchingDetector
+from core.vision.template_opencv_detector import TemplateOpenCVDetector
 from core.vision.vision_engine import (
     VisionEngine,
     draw_debug_overlay,
@@ -20,7 +21,9 @@ __all__ = [
     "Hole",
     "HoleDetector",
     "OpenCVHoleDetector",
+    "SearchRegion",
     "TemplateMatchingDetector",
+    "TemplateOpenCVDetector",
     "VisionEngine",
     "YoloHoleDetector",
     "draw_debug_overlay",

@@ -151,9 +151,36 @@ pytest
    active strategy, that strategy's parameters, and its own judgement
    thresholds — selected with the "Camera" picker at the top of the page;
    "Save & Apply" and "Restore Defaults" only ever touch the selected camera.
-   Strategies (`dark_hole`, `opencv`, `template_matching`, `yolo`) are
-   hot-swappable per camera; adding one means implementing `HoleDetector` and
-   registering it in `core/vision/vision_engine.py` — no UI/PLC changes.
+   Strategies (`dark_hole`, `opencv`, `template_matching`, `yolo`,
+   `template_opencv`) are hot-swappable per camera; adding one means
+   implementing `HoleDetector` and registering it in
+   `core/vision/vision_engine.py` — no PLC changes.
+
+   `template_opencv` ("template matching and OpenCV detection") first finds the
+   template in the frame, then looks for the hole with OpenCV **only inside the
+   matched area** — a round dark blob anywhere else is ignored. Selecting it
+   shows its own two settings (how many matches to search, and how much to pad
+   each one) above the Template Matching and OpenCV forms, which are its two
+   stages: tune each (Auto Sweep included) under its own strategy, then switch
+   back. Crop the template around the *feature* that holds the hole (a boss,
+   a bracket), not around the bore alone — a template that is mostly a dark
+   bore matches any bore. The result view outlines the match in orange with
+   its score, so "NO HOLE" with a box means the template was found but held no
+   hole, and without one means the template itself was not found.
+
+   Two more per-camera switches sit in the Judgement box:
+
+   - **Downscale** — detect on a copy of the frame shrunk by the factor
+     (÷2 = half width and height). On a 20 MP frame detection drops from
+     ~310 ms to ~95 ms at ÷2 and ~25 ms at ÷4. Positions, diameters and every
+     pixel setting on the page stay in full-resolution pixels, so nothing
+     needs re-tuning when it is switched on; only the precision drops, by
+     about the factor in pixels.
+   - **On NG → Required another run** — when the camera's result is NG, take a
+     new picture and check again, up to the set number of times, before
+     reporting NG. The first GOOD wins; a failed re-capture keeps the NG.
+     Each re-run is a full capture, so it lengthens the cycle the PLC waits
+     on. "Test on Camera" is a single capture and does not re-run.
 
    `dark_hole` is the default and the one to use on real parts. It scores each
    pixel by how much darker it is than its *own surroundings*, so uneven

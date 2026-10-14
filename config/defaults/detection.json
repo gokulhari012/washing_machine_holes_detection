@@ -6,7 +6,11 @@
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
         "position_tolerance_mm": 2.5,
-        "normalize_image": false
+        "normalize_image": false,
+        "downscale_enabled": false,
+        "downscale_factor": 2.0,
+        "ng_rerun_enabled": false,
+        "ng_rerun_count": 1
       },
       "dark_hole": {
         "channel": "auto",
@@ -44,6 +48,10 @@
         "max_matches": 10,
         "min_hole_diameter_px": 0,
         "max_hole_diameter_px": 0
+      },
+      "template_opencv": {
+        "max_regions": 1,
+        "region_padding_px": 0
       },
       "yolo": {
         "model_path": "",
@@ -63,7 +71,11 @@
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
         "position_tolerance_mm": 2.5,
-        "normalize_image": false
+        "normalize_image": false,
+        "downscale_enabled": false,
+        "downscale_factor": 2.0,
+        "ng_rerun_enabled": false,
+        "ng_rerun_count": 1
       },
       "dark_hole": {
         "channel": "auto",
@@ -101,6 +113,10 @@
         "max_matches": 10,
         "min_hole_diameter_px": 0,
         "max_hole_diameter_px": 0
+      },
+      "template_opencv": {
+        "max_regions": 1,
+        "region_padding_px": 0
       },
       "yolo": {
         "model_path": "",
@@ -120,7 +136,11 @@
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
         "position_tolerance_mm": 2.5,
-        "normalize_image": false
+        "normalize_image": false,
+        "downscale_enabled": false,
+        "downscale_factor": 2.0,
+        "ng_rerun_enabled": false,
+        "ng_rerun_count": 1
       },
       "dark_hole": {
         "channel": "auto",
@@ -158,6 +178,10 @@
         "max_matches": 10,
         "min_hole_diameter_px": 0,
         "max_hole_diameter_px": 0
+      },
+      "template_opencv": {
+        "max_regions": 1,
+        "region_padding_px": 0
       },
       "yolo": {
         "model_path": "",
@@ -177,7 +201,11 @@
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
         "position_tolerance_mm": 2.5,
-        "normalize_image": false
+        "normalize_image": false,
+        "downscale_enabled": false,
+        "downscale_factor": 2.0,
+        "ng_rerun_enabled": false,
+        "ng_rerun_count": 1
       },
       "dark_hole": {
         "channel": "auto",
@@ -215,6 +243,10 @@
         "max_matches": 10,
         "min_hole_diameter_px": 0,
         "max_hole_diameter_px": 0
+      },
+      "template_opencv": {
+        "max_regions": 1,
+        "region_padding_px": 0
       },
       "yolo": {
         "model_path": "",

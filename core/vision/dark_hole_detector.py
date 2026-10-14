@@ -51,13 +51,13 @@ from __future__ import annotations
 import math
 import time
 from dataclasses import dataclass
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import cv2
 import numpy as np
 
 from core.vision.detection_result import DetectionResult, Hole
-from core.vision.detector_base import HoleDetector
+from core.vision.detector_base import HoleDetector, shrink_kernel
 from core.utilities.exceptions import DetectionError
 
 _CHANNELS = {"blue": 0, "green": 1, "red": 2}
@@ -69,6 +69,8 @@ _TRIM_ROUNDS = 2
 _MIN_FIT_POINTS = 8
 _MAX_KERNEL_PX = 31              # above this the background closing is downscaled
 _MAX_BACKGROUND_SCALE = 8
+#: Pixel-sized parameters beyond the diameter gates — see downscaled_params.
+_KERNEL_KEYS = ("blur_kernel_size", "morphology_kernel_size")
 
 
 @dataclass(frozen=True)
@@ -117,6 +119,17 @@ class DarkHoleDetector(HoleDetector):
 
     name: ClassVar[str] = "dark_hole"
     thread_safe: ClassVar[bool] = True
+
+    @classmethod
+    def downscaled_params(cls, params: dict[str, Any], factor: float) -> dict[str, Any]:
+        """Diameter gates plus the blur/morphology kernels, which are pixel
+        sizes too: left alone, a 5 px blur on a half-size frame smooths as
+        much as a 10 px one did at full resolution."""
+        scaled = super().downscaled_params(params, factor)
+        for key in _KERNEL_KEYS:
+            if key in scaled:
+                scaled[key] = shrink_kernel(scaled[key], factor)
+        return scaled
 
     def detect(self, image: np.ndarray) -> DetectionResult:
         started = time.perf_counter()
