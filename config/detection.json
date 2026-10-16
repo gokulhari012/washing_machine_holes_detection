@@ -1,7 +1,7 @@
 {
   "cameras": {
     "1": {
-      "active_detector": "opencv",
+      "active_detector": "template_opencv",
       "common": {
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
@@ -9,34 +9,34 @@
         "normalize_image": true,
         "downscale_enabled": false,
         "downscale_factor": 2.0,
-        "ng_rerun_enabled": false,
+        "ng_rerun_enabled": true,
         "ng_rerun_count": 1
       },
       "opencv": {
-        "detection_threshold": 70,
+        "detection_threshold": 45,
         "adaptive_threshold": false,
-        "blur_kernel_size": 5,
+        "blur_kernel_size": 1,
         "edge_threshold_low": 50,
         "edge_threshold_high": 150,
         "morphology_operation": "open",
-        "morphology_kernel_size": 12,
-        "morphology_iterations": 7,
-        "min_hole_diameter_px": 75,
-        "max_hole_diameter_px": 282,
-        "min_circularity": 0.2,
+        "morphology_kernel_size": 5,
+        "morphology_iterations": 2,
+        "min_hole_diameter_px": 64,
+        "max_hole_diameter_px": 201,
+        "min_circularity": 0.3,
         "min_aspect_ratio": 0.15,
         "contour_retrieval_mode": "external"
       },
       "template_matching": {
-        "template_path": "",
-        "match_threshold": 0.8,
-        "method": "TM_CCOEFF_NORMED",
+        "template_path": "C:/Users/Admin/Pictures/Top Left.bmp",
+        "match_threshold": 0.95,
+        "method": "TM_CCORR_NORMED",
         "scales": [
-          1.0
+          1.033
         ],
         "max_matches": 10,
-        "min_hole_diameter_px": 0,
-        "max_hole_diameter_px": 0
+        "min_hole_diameter_px": 450,
+        "max_hole_diameter_px": 1372
       },
       "template_opencv": {
         "max_regions": 1,
@@ -66,7 +66,7 @@
       }
     },
     "2": {
-      "active_detector": "opencv",
+      "active_detector": "template_opencv",
       "common": {
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
@@ -74,34 +74,34 @@
         "normalize_image": true,
         "downscale_enabled": false,
         "downscale_factor": 2.0,
-        "ng_rerun_enabled": false,
+        "ng_rerun_enabled": true,
         "ng_rerun_count": 1
       },
       "opencv": {
-        "detection_threshold": 190,
+        "detection_threshold": 45,
         "adaptive_threshold": false,
-        "blur_kernel_size": 7,
+        "blur_kernel_size": 1,
         "edge_threshold_low": 50,
         "edge_threshold_high": 150,
         "morphology_operation": "open",
-        "morphology_kernel_size": 12,
-        "morphology_iterations": 9,
-        "min_hole_diameter_px": 100,
-        "max_hole_diameter_px": 260,
-        "min_circularity": 0.2,
+        "morphology_kernel_size": 5,
+        "morphology_iterations": 2,
+        "min_hole_diameter_px": 132,
+        "max_hole_diameter_px": 418,
+        "min_circularity": 0.3,
         "min_aspect_ratio": 0.15,
         "contour_retrieval_mode": "external"
       },
       "template_matching": {
-        "template_path": "",
-        "match_threshold": 0.8,
-        "method": "TM_CCOEFF_NORMED",
+        "template_path": "C:/Users/Admin/Pictures/Top Right.bmp",
+        "match_threshold": 0.95,
+        "method": "TM_CCORR_NORMED",
         "scales": [
-          1.0
+          1.005
         ],
         "max_matches": 10,
-        "min_hole_diameter_px": 0,
-        "max_hole_diameter_px": 0
+        "min_hole_diameter_px": 506,
+        "max_hole_diameter_px": 1628
       },
       "template_opencv": {
         "max_regions": 1,
@@ -131,7 +131,7 @@
       }
     },
     "3": {
-      "active_detector": "opencv",
+      "active_detector": "template_opencv",
       "common": {
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
@@ -139,34 +139,34 @@
         "normalize_image": true,
         "downscale_enabled": false,
         "downscale_factor": 2.0,
-        "ng_rerun_enabled": false,
+        "ng_rerun_enabled": true,
         "ng_rerun_count": 1
       },
       "opencv": {
-        "detection_threshold": 120,
+        "detection_threshold": 70,
         "adaptive_threshold": false,
-        "blur_kernel_size": 1,
+        "blur_kernel_size": 5,
         "edge_threshold_low": 50,
         "edge_threshold_high": 150,
         "morphology_operation": "open",
-        "morphology_kernel_size": 12,
-        "morphology_iterations": 7,
-        "min_hole_diameter_px": 88,
-        "max_hole_diameter_px": 310,
+        "morphology_kernel_size": 5,
+        "morphology_iterations": 2,
+        "min_hole_diameter_px": 126,
+        "max_hole_diameter_px": 399,
         "min_circularity": 0.3,
         "min_aspect_ratio": 0.15,
         "contour_retrieval_mode": "external"
       },
       "template_matching": {
-        "template_path": "",
-        "match_threshold": 0.8,
-        "method": "TM_CCOEFF_NORMED",
+        "template_path": "C:/Users/Admin/Pictures/Bottom Left.bmp",
+        "match_threshold": 0.95,
+        "method": "TM_CCORR_NORMED",
         "scales": [
-          1.0
+          1.121
         ],
         "max_matches": 10,
-        "min_hole_diameter_px": 0,
-        "max_hole_diameter_px": 0
+        "min_hole_diameter_px": 530,
+        "max_hole_diameter_px": 1736
       },
       "template_opencv": {
         "max_regions": 1,
@@ -196,7 +196,7 @@
       }
     },
     "4": {
-      "active_detector": "opencv",
+      "active_detector": "template_opencv",
       "common": {
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
@@ -204,34 +204,34 @@
         "normalize_image": true,
         "downscale_enabled": false,
         "downscale_factor": 2.0,
-        "ng_rerun_enabled": false,
+        "ng_rerun_enabled": true,
         "ng_rerun_count": 1
       },
       "opencv": {
-        "detection_threshold": 110,
+        "detection_threshold": 70,
         "adaptive_threshold": false,
         "blur_kernel_size": 1,
         "edge_threshold_low": 50,
         "edge_threshold_high": 150,
         "morphology_operation": "open",
-        "morphology_kernel_size": 12,
-        "morphology_iterations": 5,
-        "min_hole_diameter_px": 90,
-        "max_hole_diameter_px": 288,
+        "morphology_kernel_size": 5,
+        "morphology_iterations": 2,
+        "min_hole_diameter_px": 148,
+        "max_hole_diameter_px": 460,
         "min_circularity": 0.3,
         "min_aspect_ratio": 0.15,
         "contour_retrieval_mode": "external"
       },
       "template_matching": {
-        "template_path": "",
-        "match_threshold": 0.8,
-        "method": "TM_CCOEFF_NORMED",
+        "template_path": "C:/Users/Admin/Pictures/Bottom Right.bmp",
+        "match_threshold": 0.95,
+        "method": "TM_CCORR_NORMED",
         "scales": [
-          1.0
+          0.967
         ],
         "max_matches": 10,
-        "min_hole_diameter_px": 0,
-        "max_hole_diameter_px": 0
+        "min_hole_diameter_px": 592,
+        "max_hole_diameter_px": 2002
       },
       "template_opencv": {
         "max_regions": 1,

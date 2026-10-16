@@ -21,7 +21,7 @@
     "save_images": true,
     "save_ng_only": false,
     "save_dashboard_screenshot": true,
-    "auto_align_dashboard_screenshot": false,
+    "auto_align_dashboard_screenshot": true,
     "export_directory": "exports"
   },
   "inspection": {

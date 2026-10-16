@@ -6,7 +6,7 @@
       "driver": "basler",
       "connection_id": "0",
       "enabled": true,
-      "exposure_us": 40000,
+      "exposure_us": 20000,
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 200,
@@ -14,10 +14,10 @@
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 38,
-        "y": 2146,
-        "width": 3600,
-        "height": 1200
+        "x": 277,
+        "y": 1952,
+        "width": 3131,
+        "height": 1583
       },
       "trigger_mode": "software",
       "basler": {
@@ -33,7 +33,7 @@
       "image_source": "D:/washing_machine_holes_detection-main/washing_machine_holes_detection-main/test images",
       "rotation": 90,
       "led_channel": 2,
-      "led_strobe": false
+      "led_strobe": true
     },
     {
       "index": 2,
@@ -41,7 +41,7 @@
       "driver": "basler",
       "connection_id": "1",
       "enabled": true,
-      "exposure_us": 40000,
+      "exposure_us": 20000,
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 200,
@@ -49,9 +49,9 @@
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 134,
-        "y": 2142,
-        "width": 3500,
+        "x": 97,
+        "y": 2141,
+        "width": 3478,
         "height": 1200
       },
       "trigger_mode": "software",
@@ -68,7 +68,7 @@
       "image_source": "D:/washing_machine_holes_detection-main/washing_machine_holes_detection-main/test images",
       "rotation": 270,
       "led_channel": 1,
-      "led_strobe": false
+      "led_strobe": true
     },
     {
       "index": 3,
@@ -76,7 +76,7 @@
       "driver": "basler",
       "connection_id": "2",
       "enabled": true,
-      "exposure_us": 40000,
+      "exposure_us": 20000,
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 200,
@@ -84,8 +84,8 @@
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 962,
-        "y": 1218,
+        "x": 997,
+        "y": 1239,
         "width": 3500,
         "height": 1200
       },
@@ -103,7 +103,7 @@
       "image_source": "C:/Users/gokul/Downloads/Image__2026-09-07__13-18-43.bmp",
       "rotation": 0,
       "led_channel": 3,
-      "led_strobe": false
+      "led_strobe": true
     },
     {
       "index": 4,
@@ -111,7 +111,7 @@
       "driver": "basler",
       "connection_id": "3",
       "enabled": true,
-      "exposure_us": 40000,
+      "exposure_us": 10000,
       "gain_db": 0.0,
       "gamma": 1.0,
       "brightness": 200,
@@ -119,10 +119,10 @@
       "width": 5496,
       "height": 3672,
       "roi": {
-        "x": 915,
-        "y": 1208,
+        "x": 999,
+        "y": 1060,
         "width": 3500,
-        "height": 1200
+        "height": 1551
       },
       "trigger_mode": "software",
       "basler": {
@@ -138,7 +138,7 @@
       "image_source": "C:/Users/gokul/Downloads/Image__2026-09-07__17-57-17.bmp",
       "rotation": 0,
       "led_channel": 4,
-      "led_strobe": false
+      "led_strobe": true
     }
   ]
 }
