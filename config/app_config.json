@@ -4,10 +4,10 @@
     "version": "1.0.0",
     "factory_name": "Factory 1",
     "operator_name": "Operator",
-    "shift": "Morning",
+    "shift": "Evening",
     "serial_prefix": "WM-",
     "language": "en",
-    "theme": "dark"
+    "theme": "light"
   },
   "database": {
     "path": "data/inspection.db",

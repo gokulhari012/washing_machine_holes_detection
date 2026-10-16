@@ -124,6 +124,9 @@ _DARK: dict[str, str] = {
     "table-camera-header-bg": "#262e39",
     "table-axis-header-bg": "#20262f",
     "table-value-bg": "#1a2028",
+    # PLC page: the "Camera N Parameters" divider rows of the register table
+    "plc-section-bg": "#3a4552",
+    "plc-section-fg": "#ffffff",
     "viewer-bg": "#0d1117",
     "icon-fg": "#d6dbe3",
     "icon-disabled-fg": "#57606a",
@@ -210,6 +213,8 @@ _LIGHT: dict[str, str] = {
     "table-camera-header-bg": "#dfe6ef",
     "table-axis-header-bg": "#eaeff5",
     "table-value-bg": "#ffffff",
+    "plc-section-bg": "#d0d7e0",
+    "plc-section-fg": "#1f2733",
     # The viewer keeps a near-black backdrop in both schemes on purpose: it is
     # a letterbox around a photograph, and a white one washes out a dark part.
     "viewer-bg": "#22272e",

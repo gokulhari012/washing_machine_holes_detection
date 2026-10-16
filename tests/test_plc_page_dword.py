@@ -227,6 +227,23 @@ def test_row_set_writes_the_whole_double_word(page):
     assert service.registers[201] == BIG_HIGH
 
 
+def test_each_camera_block_opens_with_a_header_row(page):
+    """A "Camera N Parameters" row precedes each camera's registers, and the
+    rows after it still address their own register — the header shifts the
+    table row, not which register a row's Set writes."""
+    widget, service = page
+    for camera in (1, 2, 3, 4):
+        header = _row_named(widget, f"Camera {camera} Parameters")
+        assert header not in widget._rows
+        assert widget._table.columnSpan(header, 0) == widget._table.columnCount()
+        assert widget._table.item(header + 1, 0).text().startswith(f"Camera {camera} ")
+
+    row = _row_named(widget, "Camera 4 X")
+    widget._row_value_spins[row].setValue(BIG_RAW)
+    widget._on_row_set(row)
+    assert service.dword_writes == [(212, BIG_RAW)]
+
+
 def test_row_set_on_a_plain_register_stays_a_single_word_write(page):
     widget, service = page
     row = _row_named(widget, "Result")

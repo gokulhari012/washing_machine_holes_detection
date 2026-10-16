@@ -67,6 +67,7 @@ from core.utilities.exceptions import VisionSystemError
 from models.app_state import AppState
 from services.auth_service import AuthService
 from services.plc_service import PlcService
+from ui import theme
 from ui.widgets import LabeledLed
 
 REFRESH_MS = 500
@@ -117,6 +118,9 @@ class _RegisterField:
     # core.plc.register_map. The live-value read and the per-row write both
     # span the pair, so nothing on this page reports or writes half a value.
     width: int = 1
+    # Which camera the row belongs to (None for the station-wide rows). The
+    # table opens each camera's block with a "Camera N Parameters" header row.
+    camera: int | None = None
 
 
 def _core_field(key: str, name: str, tooltip: str) -> _RegisterField:
@@ -145,6 +149,7 @@ def _camera_pair_field(block: str, camera: int, axis: str, name: str, tooltip: s
             cfg["registers"].setdefault(block, {}).setdefault(idx, {}).__setitem__(axis, v)
         ),
         width=2,
+        camera=camera,
     )
 
 
@@ -169,6 +174,7 @@ def _camera_scalar_field(
         )
         if optional
         else None,
+        camera=camera,
     )
 
 
@@ -459,7 +465,22 @@ class PlcPage(QWidget):
         controls.addStretch()
         table_layout.addLayout(controls)
 
-        self._table = QTableWidget(len(self._fields), 7)
+        # Table row -> register field. Not simply the field's index: each
+        # camera's block is preceded by a header row that is no register at
+        # all, so every per-row lookup below goes through this map.
+        self._rows: dict[int, _RegisterField] = {}
+        section_rows: list[tuple[int, int]] = []  # (table row, camera)
+        row = 0
+        previous_camera: int | None = None
+        for field in self._fields:
+            if field.camera is not None and field.camera != previous_camera:
+                section_rows.append((row, field.camera))
+                row += 1
+            previous_camera = field.camera
+            self._rows[row] = field
+            row += 1
+
+        self._table = QTableWidget(row, 7)
         self._table.setHorizontalHeaderLabels(
             [
                 "Register Name",
@@ -494,9 +515,23 @@ class PlcPage(QWidget):
         header.resizeSection(5, 60)
         header.resizeSection(6, 60)
 
-        self._row_spins: list[QSpinBox] = []
-        self._row_value_spins: list[QSpinBox] = []
-        for row, field in enumerate(self._fields):
+        for row, camera in section_rows:
+            header_item = QTableWidgetItem(f"Camera {camera} Parameters")
+            header_item.setFlags(Qt.ItemFlag.ItemIsEnabled)
+            font = header_item.font()
+            font.setBold(True)
+            header_item.setFont(font)
+            self._table.setItem(row, 0, header_item)
+            self._table.setSpan(row, 0, 1, self._table.columnCount())
+        self._section_rows = [row for row, _camera in section_rows]
+        self._paint_section_rows()
+        # Painted, not styled (a QSS rule cannot reach one table item), so
+        # the colours are re-read on every theme switch.
+        theme.subscribe(lambda _theme: self._paint_section_rows())
+
+        self._row_spins: dict[int, QSpinBox] = {}
+        self._row_value_spins: dict[int, QSpinBox] = {}
+        for row, field in self._rows.items():
             name_item = QTableWidgetItem(field.name)
             name_item.setToolTip(field.tooltip)
             self._table.setItem(row, 0, name_item)
@@ -523,7 +558,7 @@ class PlcPage(QWidget):
                 )
                 self._update_pair_hint(row, spin.value())
             self._table.setCellWidget(row, 2, spin)
-            self._row_spins.append(spin)
+            self._row_spins[row] = spin
             value_item = QTableWidgetItem("—")
             value_item.setTextAlignment(Qt.AlignmentFlag.AlignCenter)
             self._table.setItem(row, 3, value_item)
@@ -540,7 +575,7 @@ class PlcPage(QWidget):
                 )
             )
             self._table.setCellWidget(row, 4, value_spin)
-            self._row_value_spins.append(value_spin)
+            self._row_value_spins[row] = value_spin
 
             set_btn = QPushButton("Set")
             set_btn.setProperty("class", "danger")
@@ -589,7 +624,8 @@ class PlcPage(QWidget):
         self._poll.setValue(int(connection.get("poll_interval_ms", 50)))
         self._scale_x.setValue(axis_scale(scaling, "x"))
         self._scale_y.setValue(axis_scale(scaling, "y"))
-        for field, spin in zip(self._fields, self._row_spins):
+        for row, field in self._rows.items():
+            spin = self._row_spins[row]
             spin.setValue(int(field.get(cfg) or 0))
         self._on_protocol_changed(self._protocol.currentText())
         self._state_led.set_state(self._svc.state, f"PLC {self._svc.state.value}")
@@ -609,7 +645,8 @@ class PlcPage(QWidget):
             "timeout_ms": self._timeout.value(),
             "poll_interval_ms": self._poll.value(),
         }
-        for field, spin in zip(self._fields, self._row_spins):
+        for row, field in self._rows.items():
+            spin = self._row_spins[row]
             value = spin.value()
             if field.optional and value == 0:
                 if field.clear is not None:
@@ -685,7 +722,7 @@ class PlcPage(QWidget):
         every other row writes its single 16-bit register or coil. A row whose
         address is the "Not used" sentinel has no register to write at all, so
         it is refused rather than writing to address 0."""
-        field = self._fields[row]
+        field = self._rows[row]
         if not self._auth.is_admin:
             QMessageBox.warning(
                 self,
@@ -739,6 +776,15 @@ class PlcPage(QWidget):
         if self._auto.isChecked():
             self._refresh_viewer()
 
+    def _paint_section_rows(self) -> None:
+        """Colour the "Camera N Parameters" divider rows for the active theme."""
+        background = theme.qcolor("plc-section-bg")
+        foreground = theme.qcolor("plc-section-fg")
+        for row in self._section_rows:
+            item = self._table.item(row, 0)
+            item.setBackground(background)
+            item.setForeground(foreground)
+
     def _update_pair_hint(self, row: int, base: int) -> None:
         """Spell out which two registers a 32-bit row actually occupies, on
         the Type cell's tooltip, and keep it correct as the base is edited."""
@@ -756,8 +802,8 @@ class PlcPage(QWidget):
         # memory in each, so they must never be clustered/read together.
         holding_rows: list[tuple[int, int, int]] = []  # (row, base address, width)
         coil_rows: list[tuple[int, int, int]] = []
-        for row, (field, spin) in enumerate(zip(self._fields, self._row_spins)):
-            address = spin.value()
+        for row, field in self._rows.items():
+            address = self._row_spins[row].value()
             if field.optional and address == 0:
                 self._table.item(row, 3).setText("—")
                 continue
