@@ -203,27 +203,27 @@ def _serial_number_field() -> _RegisterField:
 def _build_fields() -> list[_RegisterField]:
     fields = [
         _core_field(
-            "trigger", "Trigger",
-            "PLC → PC: rising edge starts an inspection cycle; PC writes 0 back on detection",
+            "heartbeat", "Heartbeat",
+            "PC → PLC: toggles every heartbeat_interval_ms so the PLC can watchdog the PC",
         ),
         _core_field(
             "machine_number", "Machine Number",
             "PLC → PC: identifies the machine being inspected this cycle",
         ),
         _serial_number_field(),
-        _core_field(
-            "heartbeat", "Heartbeat",
-            "PC → PLC: toggles every heartbeat_interval_ms so the PLC can watchdog the PC",
-        ),
         _model_select_field(),
         _core_field(
-            "result", "Result",
-            "PC → PLC: overall cycle result — 1=GOOD, 2=NG, 3=ERROR",
-        ),
+                    "trigger", "Trigger",
+                    "PLC → PC: rising edge starts an inspection cycle; PC writes 0 back on detection",
+                ),
         _core_field(
             "vision_complete", "Vision Complete",
             "PC → PLC: set to 1 once results are ready; PLC reads it then resets it and the trigger",
         ),
+        _core_field(
+            "result", "Result",
+            "PC → PLC: overall cycle result — 1=GOOD, 2=NG, 3=ERROR",
+        )
     ]
     for camera in CAMERAS:
         fields += [
