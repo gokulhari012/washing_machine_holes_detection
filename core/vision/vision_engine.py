@@ -437,11 +437,12 @@ def draw_detection_overlay(
     ``core.camera.roi_rect`` returns it — means *frame* is the whole
     (uncropped) image and *result* was detected in that region of it: the
     region is outlined, its centre (the point every reported x_mm/y_mm is
-    measured from) is marked, and the holes are shifted into place. The px
+    measured from) is marked — unlabelled, so it never writes over a hole's
+    labels — and the holes are shifted into place. The px
     label keeps the hole's own ROI-relative coordinates, the ones stored.
 
     ``result.regions`` (``template_opencv``'s template matches) are outlined
-    in orange with their match score, under the holes — so a "NO HOLE" with a
+    in orange with their match score just above the box, under the holes — so a "NO HOLE" with a
     box drawn means the template was found but held no hole, and one without
     means the template itself was not found.
     """
@@ -466,15 +467,8 @@ def draw_detection_overlay(
         cv2.line(out, (mx - arm, my), (mx + arm, my), _ROI_CENTER, thin, cv2.LINE_AA)
         cv2.line(out, (mx, my - arm), (mx, my + arm), _ROI_CENTER, thin, cv2.LINE_AA)
         cv2.circle(out, (mx, my), max(3, arm // 4), _ROI_CENTER, thin, cv2.LINE_AA)
-        # Up and to the left of the mark: a hole is usually near the centre
-        # and its own labels sit above and to the right of it.
-        (text_w, _), _ = cv2.getTextSize(
-            "ROI centre", cv2.FONT_HERSHEY_SIMPLEX, font * 0.9, text_stroke
-        )
-        _put_outlined_text(
-            out, "ROI centre", (mx - arm - 4 - text_w, my - arm // 2),
-            _ROI_CENTER, font * 0.9, text_stroke,
-        )
+        # The mark is deliberately unlabelled: a hole is usually near the
+        # centre, and a caption here wrote over the hole's own labels.
 
     if result is not None:
         for region in result.regions:
@@ -483,11 +477,11 @@ def draw_detection_overlay(
                 out, (rx, ry), (rx + region.width - 1, ry + region.height - 1),
                 _REGION_COLOR, max(2, stroke * 2 // 3), cv2.LINE_AA,
             )
-            # Inside the top-left corner: the ROI's own label sits just above
-            # it, and a match is often flush with the ROI's edge.
+            # Just above the top edge: inside the box it wrote over the judged
+            # hole's conf/px labels, which sit above the hole within the match.
             _put_outlined_text(
-                out, f"template {region.score:.2f}",
-                (rx + stroke + 4, ry + stroke + line_gap),
+                out, f"Template {region.score:.2f}",
+                (rx, ry - stroke - 4),
                 _REGION_COLOR, font * 0.9, text_stroke,
             )
         for hole in result.holes[1:]:  # secondary candidates
