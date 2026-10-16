@@ -286,14 +286,127 @@ def test_sweep_button_follows_the_selected_strategy(page) -> None:
         ("dark_hole", True),
         ("template_matching", True),
         ("yolo", False),
-        ("template_opencv", False),
+        ("template_opencv", True),
     ]:
         widget._strategy.setCurrentText(strategy)
         assert widget._sweep_btn.isEnabled() is enabled, strategy
     widget._strategy.setCurrentText("yolo")
     assert "crop" in widget._sweep_btn.toolTip()
     widget._strategy.setCurrentText("template_opencv")
-    assert "one strategy at a time" in widget._sweep_btn.toolTip()
+    assert widget._sweep_btn.toolTip().startswith("Stage 1")
+
+
+# ------------------------------------------- template_opencv stage sweep
+def test_stage_selector_only_shows_for_template_opencv(page) -> None:
+    widget = page.widget
+    widget._strategy.setCurrentText("opencv")
+    assert widget._sweep_stage.isHidden()
+    assert widget._sweep_target("opencv") == "opencv"
+
+    widget._strategy.setCurrentText("template_opencv")
+    assert not widget._sweep_stage.isHidden()
+    stages = [widget._sweep_stage.itemData(i) for i in range(widget._sweep_stage.count())]
+    assert stages == ["template_matching", "opencv"]
+    widget._sweep_stage.setCurrentIndex(1)
+    assert widget._sweep_target("template_opencv") == "opencv"
+    assert widget._sweep_btn.toolTip().startswith("Stage 2")
+
+    # a reload (camera / model switch) keeps the chosen stage
+    widget._update_sweep_availability("template_opencv")
+    assert widget._sweep_target("template_opencv") == "opencv"
+
+
+def _feature_frame(tmp_path):
+    """A 400 px frame holding a grey bracket with a 40 px bore at (200, 200),
+    plus a template cropped around the bracket — what template_opencv wants."""
+    frame = np.full((400, 400), 180, np.uint8)
+    cv2.rectangle(frame, (150, 150), (249, 249), 110, -1)
+    cv2.circle(frame, (200, 200), 20, 20, -1)
+    path = tmp_path / "bracket.png"
+    cv2.imwrite(str(path), frame[140:260, 140:260])
+    return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR), str(path)
+
+
+def _ready_for_stage_sweep(page, monkeypatch, stage: int, roi) -> None:
+    widget = page.widget
+    frame, template = _feature_frame(page.tmp_path)
+    widget._strategy.setCurrentText("template_opencv")
+    widget._tm_path.setText(template)
+    widget._tm_threshold.setValue(0.8)
+    widget._tm_scales.setText("1")
+    widget._tm_min_diameter.setValue(0)
+    widget._tm_max_diameter.setValue(0)
+    widget._sweep_stage.setCurrentIndex(stage)
+    widget._last_frame = frame
+    monkeypatch.setattr(widget._view, "current_roi", lambda: roi)
+
+
+def test_stage_one_sweep_tunes_the_template_form(page, monkeypatch) -> None:
+    widget = page.widget
+    _ready_for_stage_sweep(page, monkeypatch, 0, (140, 140, 120, 120))
+    widget._tm_method.setCurrentText("TM_SQDIFF_NORMED")
+
+    widget._on_run_sweep()
+
+    assert widget._sweep_rows, widget._sweep_status.text()
+    assert widget._sweep_rows_strategy == "template_matching"
+    best_params, best_hole = widget._sweep_rows[0]
+    assert abs(best_hole.x_px - 200) < 5 and abs(best_hole.y_px - 200) < 5
+    widget._on_apply_best_sweep()
+    assert widget._tm_method.currentText() == best_params["method"]
+    assert widget._strategy.currentText() == "template_opencv"  # stays the active detector
+
+
+def test_stage_two_sweep_runs_opencv_inside_the_template_match(page, monkeypatch) -> None:
+    from ui.detection import detection_page
+
+    # a reduced grid keeps the test quick; the path is what is under test
+    monkeypatch.setitem(detection_page._SWEEP_LEVELS, "opencv", {
+        "detection_threshold": [60, 120],
+        "blur_kernel_size": [3],
+        "morphology_operation": ["close"],
+        "morphology_kernel_size": [3],
+        "morphology_iterations": [1],
+        "min_circularity": [0.5],
+        "min_aspect_ratio": [0.3],
+        "contour_retrieval_mode": ["external", "list"],
+    })
+    widget = page.widget
+    _ready_for_stage_sweep(page, monkeypatch, 1, (175, 175, 50, 50))
+    seen_views = []
+    real_grid = widget._run_sweep_grid
+
+    def spy(combos, detector, views, roi, found):
+        seen_views.extend((image.shape[:2], ox, oy) for image, ox, oy in views)
+        return real_grid(combos, detector, views, roi, found)
+
+    monkeypatch.setattr(widget, "_run_sweep_grid", spy)
+    widget._on_run_sweep()
+
+    # OpenCV saw the template match (120 px square at 140,140), not a ROI crop
+    assert seen_views == [((120, 120), 140, 140)]
+    assert widget._sweep_rows, widget._sweep_status.text()
+    assert widget._sweep_rows_strategy == "opencv"
+    best_params, best_hole = widget._sweep_rows[0]
+    assert abs(best_hole.x_px - 200) < 3 and abs(best_hole.y_px - 200) < 3
+    widget._cv_threshold.setValue(1)
+    widget._on_apply_best_sweep()
+    assert widget._cv_threshold.value() == best_params["detection_threshold"]
+
+
+def test_stage_two_sweep_without_a_match_says_tune_stage_one(page, monkeypatch) -> None:
+    messages = []
+    monkeypatch.setattr(
+        QMessageBox, "information", staticmethod(lambda _p, _t, text: messages.append(text))
+    )
+    widget = page.widget
+    _ready_for_stage_sweep(page, monkeypatch, 1, (175, 175, 50, 50))
+    widget._last_frame = np.full((400, 400, 3), 180, np.uint8)  # no bracket anywhere
+
+    widget._on_run_sweep()
+
+    assert widget._sweep_rows == []
+    assert messages and "Stage 1" in messages[0]
 
 
 # ------------------------------------------------- template_opencv form

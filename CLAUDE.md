@@ -1063,8 +1063,15 @@ full resolution, which is consistent with rule (2).
 only inside each, and shifts the holes back to frame pixels — a hole outside every
 match is never reported, and no match is an empty result (NG), not an error. It
 reads the sibling blocks via `params_from_camera_config`, so tuning either stage
-under its own strategy (Auto Sweep included — the combined one has none, see
-`_UNSWEEPABLE_REASON`) carries straight over. The Detection page therefore shows
+under its own strategy carries straight over. Auto Sweep on `template_opencv`
+tunes **one stage at a time**, picked from a "Stage" combo beside "Run Auto
+Sweep" (`_SWEEP_STAGES`; a joint grid would be the product of both): Stage 1
+runs the `template_matching` grid with the ROI drawn round the *feature*,
+Stage 2 the `opencv` grid with the ROI round the hole — and each Stage 2 trial
+runs only inside Stage 1's match (found once with the form's values,
+`_template_region_views`), since OpenCV thresholds the whole crop it is handed
+and that crop is what a real cycle gives it. "Apply Best" writes into the
+swept stage's form (`_sweep_rows_strategy`), not the active detector's. The Detection page therefore shows
 **three forms** for it (`_FORMS_SHOWN`), retitled Stage 1 / Stage 2, which is why
 the forms are a visibility map rather than a combo-indexed `QStackedWidget`.
 Hole confidence is the OpenCV score alone: the template score is a gate

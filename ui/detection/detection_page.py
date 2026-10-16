@@ -68,8 +68,12 @@ only two parameters of its own; its two stages run the camera's
 three forms — its own, then those two retitled as Stage 1 / Stage 2 — rather
 than one, which is why the forms are shown by an explicit strategy -> forms
 map (``_FORMS_SHOWN``) instead of a QStackedWidget indexed by the combo's
-position. Auto Sweep is off for it (``_UNSWEEPABLE_REASON``): sweep each stage
-under its own strategy, then switch back.
+position. Its Auto Sweep tunes one stage at a time, chosen from a "Stage"
+combo shown beside "Run Auto Sweep" only for this strategy (``_SWEEP_STAGES``):
+Stage 1 runs the ``template_matching`` grid (ROI around the matched feature),
+Stage 2 the ``opencv`` grid — but each Stage 2 trial runs only inside Stage
+1's match, found once with the form's current values, because that is the
+crop a real cycle hands OpenCV. "Apply Best" writes into that stage's form.
 
 The **Judgement** box also carries two per-camera switches the engine and the
 pipeline act on: **Downscale** (detect on a frame shrunk by the factor; see
@@ -132,6 +136,7 @@ from core.vision import (
     HoleDetector,
     OpenCVHoleDetector,
     TemplateMatchingDetector,
+    TemplateOpenCVDetector,
     VisionEngine,
     draw_debug_overlay,
     draw_detection_overlay,
@@ -179,13 +184,32 @@ _UNSWEEPABLE_REASON = {
         "crop, which is not what the model saw in training — the result would "
         "mislead rather than tune. Use 'Test on Camera' and read the confidence."
     ),
-    # Its two stages *are* the template_matching and opencv blocks, and each
-    # already has a sweep; a joint grid would be their product — far too big.
-    "template_opencv": (
-        "Auto sweep tunes one strategy at a time. 'template_opencv' runs the "
-        "'template_matching' and 'opencv' parameters as its two stages: switch "
-        "Active Detector to either one to sweep that stage, 'Apply Best', then "
-        "switch back — the values carry over, and Save writes them all."
+}
+
+#: Multi-stage strategies sweep **one stage at a time**, picked from the
+#: "Stage" combo beside "Run Auto Sweep": ``(stage strategy, combo label,
+#: what the ROI must mark)``. A joint grid would be the product of both
+#: stages' grids — far too big — and each stage is its own strategy's block
+#: anyway, so it reuses that strategy's grid, results table and "Apply Best".
+#: template_opencv's Stage 2 trials run inside Stage 1's matches, exactly as a
+#: real cycle does (see ``DetectionPage._template_region_views``).
+_SWEEP_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
+    DetectorType.TEMPLATE_OPENCV.value: (
+        (
+            DetectorType.TEMPLATE_MATCHING.value,
+            "Stage 1 — Template Matching",
+            "Stage 1: draw the ROI around the feature the template should "
+            "match (the whole matched area, not just the hole) — the sweep "
+            "scores where the template lands and sizes its scale range from "
+            "the box.",
+        ),
+        (
+            DetectorType.OPENCV.value,
+            "Stage 2 — OpenCV",
+            "Stage 2: draw the ROI around the hole. Stage 1 runs once with the "
+            "form's current values, and every OpenCV trial searches only inside "
+            "its match — so Stage 1 must already find the template.",
+        ),
     ),
 }
 
@@ -649,6 +673,9 @@ class DetectionPage(QWidget):
         self._last_result = None  # DetectionResult | None
         self._last_camera_index: int | None = None  # which camera _last_frame/_last_result are for
         self._sweep_rows: list[tuple[dict, Hole]] = []  # (full param dict, hole) — best first
+        # Which strategy's block _sweep_rows hold — a stage of template_opencv
+        # is not the Active Detector, and "Apply Best" must hit that stage's form.
+        self._sweep_rows_strategy: str | None = None
         self._sweep_cancel_requested = False
 
         self._load()
@@ -912,7 +939,8 @@ class DetectionPage(QWidget):
             "gates from the box's own size, and evaluates every trial against "
             "just a crop around it. It then grid-searches every other gating "
             "parameter of the active strategy against the last 'Test on "
-            "Camera' frame — thousands of combinations, not just two."
+            "Camera' frame — thousands of combinations, not just two. "
+            "template_opencv is swept one stage at a time — pick it under Stage."
         )
         hint.setWordWrap(True)
         hint.setProperty("class", "dim")
@@ -936,6 +964,13 @@ class DetectionPage(QWidget):
         self._sweep_cancel_btn.clicked.connect(self._on_cancel_sweep)
         apply_btn = QPushButton("Apply Best")
         apply_btn.clicked.connect(self._on_apply_best_sweep)
+        # Only shown for a multi-stage strategy (_SWEEP_STAGES); filled by
+        # _update_sweep_availability with that strategy's stages.
+        self._sweep_stage_label = QLabel("Stage")
+        self._sweep_stage = QComboBox()
+        self._sweep_stage.currentIndexChanged.connect(self._on_sweep_stage_changed)
+        run_row.addWidget(self._sweep_stage_label)
+        run_row.addWidget(self._sweep_stage)
         run_row.addWidget(self._sweep_btn)
         run_row.addWidget(self._sweep_cancel_btn)
         run_row.addWidget(apply_btn)
@@ -1403,14 +1438,62 @@ class DetectionPage(QWidget):
         self._result_label.setText("—")
         self._set_verdict("", "")
         self._sweep_rows = []
+        self._sweep_rows_strategy = None
         self._sweep_table.setRowCount(0)
         self._sweep_status.setText("Run 'Test on Camera' first.")
 
     # ---------------------------------------------------------- auto sweep
     def _update_sweep_availability(self, strategy: str) -> None:
-        supported = strategy in _SWEEP_GRID_BUILDERS
+        stages = _SWEEP_STAGES.get(strategy, ())
+        self._fill_sweep_stages(stages)
+        self._sweep_stage_label.setVisible(bool(stages))
+        self._sweep_stage.setVisible(bool(stages))
+        supported = bool(stages) or strategy in _SWEEP_GRID_BUILDERS
         self._sweep_btn.setEnabled(supported)
-        self._sweep_btn.setToolTip("" if supported else self._unsweepable_reason(strategy))
+        if not supported:
+            self._sweep_btn.setToolTip(self._unsweepable_reason(strategy))
+        else:
+            self._on_sweep_stage_changed()
+
+    def _fill_sweep_stages(self, stages: tuple[tuple[str, str, str], ...]) -> None:
+        """Put *stages* in the Stage combo, keeping the selected stage when the
+        list is unchanged (a camera reload must not jump back to Stage 1)."""
+        wanted = [name for name, _label, _hint in stages]
+        current = [self._sweep_stage.itemData(i) for i in range(self._sweep_stage.count())]
+        if wanted == current:
+            return
+        blocked = self._sweep_stage.blockSignals(True)
+        try:
+            self._sweep_stage.clear()
+            for name, label, hint in stages:
+                self._sweep_stage.addItem(label, name)
+                self._sweep_stage.setItemData(
+                    self._sweep_stage.count() - 1, hint, Qt.ItemDataRole.ToolTipRole
+                )
+        finally:
+            self._sweep_stage.blockSignals(blocked)
+
+    def _on_sweep_stage_changed(self, _index: int = -1) -> None:
+        """The run button and the combo say what the ROI must mark for the
+        selected stage — the two stages want different boxes."""
+        hint = self._sweep_stage.currentData(Qt.ItemDataRole.ToolTipRole) or ""
+        if self._sweep_stage.isHidden():
+            hint = ""
+        self._sweep_stage.setToolTip(hint)
+        self._sweep_btn.setToolTip(hint)
+
+    def _form_title(self, strategy: str) -> str:
+        """The title *strategy*'s form carries right now ("Stage 2 — ..."
+        while template_opencv shows it), for the sweep's status lines."""
+        form = self._forms.get(strategy)
+        return form.title() if form is not None else strategy
+
+    def _sweep_target(self, strategy: str) -> str:
+        """The strategy whose parameter block the sweep tunes: the Active
+        Detector itself, or the selected stage of a multi-stage one."""
+        if strategy in _SWEEP_STAGES:
+            return str(self._sweep_stage.currentData() or "")
+        return strategy
 
     @staticmethod
     def _unsweepable_reason(strategy: str) -> str:
@@ -1428,7 +1511,8 @@ class DetectionPage(QWidget):
             QMessageBox.information(self, "Auto Sweep", "Run 'Test on Camera' first.")
             return
         strategy = self._strategy.currentText()
-        grid_builder = _SWEEP_GRID_BUILDERS.get(strategy)
+        target = self._sweep_target(strategy)
+        grid_builder = _SWEEP_GRID_BUILDERS.get(target)
         if grid_builder is None:
             QMessageBox.information(self, "Auto Sweep", self._unsweepable_reason(strategy))
             return
@@ -1443,7 +1527,7 @@ class DetectionPage(QWidget):
 
         min_diameter, max_diameter = self._diameter_bounds_from_roi(roi)
         base_params = dict(
-            self._collect().get(strategy, {}),
+            self._collect().get(target, {}),
             min_hole_diameter_px=min_diameter,
             max_hole_diameter_px=max_diameter,
         )
@@ -1452,27 +1536,45 @@ class DetectionPage(QWidget):
             # template itself — an unset or unreadable one has to be reported
             # as the configuration problem it is, not as "found nothing".
             combos = grid_builder(base_params)
-            detector = _SWEEP_DETECTORS[strategy](base_params)
+            detector = _SWEEP_DETECTORS[target](base_params)
+            inside_matches = (
+                strategy == DetectorType.TEMPLATE_OPENCV.value
+                and target == TemplateOpenCVDetector.HOLE_STAGE
+            )
+            if inside_matches:
+                views = self._template_region_views(roi)
+            else:
+                cropped, offset_x, offset_y = self._crop_around_roi(self._last_frame, roi)
+                if self._normalize.isChecked():  # match what the live/tested detector sees
+                    cropped = normalize_image(cropped)
+                views = [(cropped, offset_x, offset_y)]
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Auto Sweep", str(exc))
             return
-        cropped, offset_x, offset_y = self._crop_around_roi(self._last_frame, roi)
-        if self._normalize.isChecked():  # match what the live/tested detector actually sees
-            cropped = normalize_image(cropped)
+        if not views:
+            return  # _template_region_views already said why
 
         found: list[tuple[dict, Hole]] = []
-        tried = self._run_sweep_grid(combos, detector, cropped, roi, offset_x, offset_y, found)
+        tried = self._run_sweep_grid(combos, detector, views, roi, found)
 
         self._sweep_rows = sorted(found, key=lambda item: item[1].confidence, reverse=True)[:20]
-        self._fill_sweep_table(strategy)
+        self._sweep_rows_strategy = target
+        self._fill_sweep_table(target)
 
         cancelled = self._sweep_cancel_requested
         note = " (stopped early)" if cancelled else ""
         if not self._sweep_rows:
+            stage_hint = ""
+            if target != strategy and target == TemplateOpenCVDetector.TEMPLATE_STAGE:
+                stage_hint = (
+                    " For Stage 1 the ROI must surround the whole feature the "
+                    "template shows — a box around the bore alone is smaller "
+                    "than the template, so it can never be matched there."
+                )
             self._sweep_status.setText(
                 f"No combination found a hole in the ROI ({tried} of {len(combos)} tried{note}) "
                 f"— widen the ROI, check it still marks the hole, or verify the part is "
-                f"actually visible in this frame."
+                f"actually visible in this frame.{stage_hint}"
             )
             return
 
@@ -1481,22 +1583,69 @@ class DetectionPage(QWidget):
             f"Best: confidence {best_hole.confidence:.2f}, Ø {best_hole.diameter_px:.1f} px "
             f"(diameter gate {min_diameter:.0f}-{max_diameter:.0f} px from the ROI; "
             f"{len(self._sweep_rows)} of {tried}/{len(combos)} tried found it{note} — click a "
-            f"row to preview, 'Apply Best' to load all its parameters into the form)"
+            f"row to preview, 'Apply Best' to load all its parameters into the "
+            f"{self._form_title(target)} form)"
         )
+
+    def _template_region_views(
+        self, roi: tuple[int, int, int, int]
+    ) -> list[tuple[np.ndarray, int, int]]:
+        """template_opencv Stage 2's trial images: each Stage 1 match that
+        overlaps *roi*, cropped from the (normalised, if enabled) frame.
+
+        That is precisely what a real cycle hands OpenCV — the padded match,
+        not a box around the hole — and OpenCV thresholds the whole crop it
+        is given, so tuning it on any other crop would tune it for an image it
+        never sees. Stage 1 runs **once** here, with the form's current
+        values (template, threshold, scales, regions searched, padding).
+
+        Returns an empty list — after telling the operator why — when Stage 1
+        finds nothing, or nothing near the ROI.
+
+        Raises:
+            VisionSystemError: Stage 1 is misconfigured (no template, ...).
+        """
+        frame = self._last_frame
+        if self._normalize.isChecked():  # the engine normalises the whole frame
+            frame = normalize_image(frame)
+        locator = TemplateOpenCVDetector(
+            TemplateOpenCVDetector.params_from_camera_config(self._collect())
+        )
+        regions = locator.detect(frame).regions
+        x, y, w, h = roi
+        covering = [
+            region for region in regions
+            if region.x < x + w and x < region.x + region.width
+            and region.y < y + h and y < region.y + region.height
+        ]
+        if not covering:
+            QMessageBox.information(
+                self, "Auto Sweep",
+                "Stage 1 found no template match in this frame. Sweep "
+                "'Stage 1 — Template Matching' first and 'Apply Best', then "
+                "sweep Stage 2." if not regions else
+                "Stage 1's template match does not cover the ROI you drew — "
+                "Stage 2 only ever searches inside the match. Re-draw the ROI "
+                "around the hole inside the orange match box, or re-tune Stage 1.",
+            )
+            return []
+        return [
+            (frame[r.y : r.y + r.height, r.x : r.x + r.width], r.x, r.y) for r in covering
+        ]
 
     def _run_sweep_grid(
         self,
         combos: list[dict],
         detector: HoleDetector,
-        cropped: np.ndarray,
+        views: list[tuple[np.ndarray, int, int]],
         roi: tuple[int, int, int, int],
-        offset_x: int,
-        offset_y: int,
         found: list[tuple[dict, Hole]],
     ) -> int:
-        """Run every combination in *combos* against *cropped*, appending
-        (params, hole) to *found* for each that lands a candidate inside
-        *roi*. Returns how many were actually tried (may be less than
+        """Run every combination in *combos* against every ``(image,
+        offset_x, offset_y)`` in *views* — one crop around the ROI, or
+        template_opencv Stage 2's matched regions — appending (params, hole)
+        to *found* for each that lands a candidate inside *roi*. Returns how
+        many were actually tried (may be less than
         ``len(combos)`` if cancelled). Keeps the UI responsive and cancellable
         by yielding to the event loop every ``_SWEEP_PROGRESS_TICK`` trials —
         this only runs from the UI thread, on a small ROI crop, so a plain
@@ -1523,14 +1672,15 @@ class DetectionPage(QWidget):
                     break
                 try:
                     detector.configure(params)
-                    result = detector.detect(cropped)
+                    holes = [
+                        replace(hole, x_px=hole.x_px + offset_x, y_px=hole.y_px + offset_y)
+                        for image, offset_x, offset_y in views
+                        for hole in detector.detect(image).holes
+                    ]
                 except VisionSystemError:
                     pass  # this combination is not a valid configuration — skip it
                 else:
-                    holes = [
-                        replace(hole, x_px=hole.x_px + offset_x, y_px=hole.y_px + offset_y)
-                        for hole in result.holes
-                    ]
+                    holes.sort(key=lambda candidate: candidate.confidence, reverse=True)
                     hole = self._best_in_roi(holes, roi)
                     if hole is not None:
                         found.append((params, hole))
@@ -1626,13 +1776,15 @@ class DetectionPage(QWidget):
 
     def _apply_sweep_row(self, row: tuple[dict, Hole]) -> None:
         params, _hole = row
-        widgets = self._param_widgets.get(self._strategy.currentText(), {})
+        target = self._sweep_rows_strategy or self._strategy.currentText()
+        widgets = self._param_widgets.get(target, {})
         for key, widget in widgets.items():
             if key in params:
                 self._set_widget_value(widget, params[key])
         self._sweep_status.setText(
-            "Applied the winning combination to the form — review and press "
-            "'Save && Apply' to make it live."
+            f"Applied the winning combination to the "
+            f"{self._form_title(target)} form — review and press "
+            f"'Save && Apply' to make it live."
         )
 
     @staticmethod
