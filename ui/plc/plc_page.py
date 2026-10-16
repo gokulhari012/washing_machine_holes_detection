@@ -269,7 +269,7 @@ def _build_fields() -> list[_RegisterField]:
             ),
             _camera_scalar_field(
                 "camera_results", camera, f"Camera {camera} Result",
-                "PC → PLC: this camera's own GOOD/NG/ERROR verdict",
+                "PC → PLC: this camera's own verdict — 1=GOOD, 2=NG, 3=ERROR",
             )
         ]
     return fields
