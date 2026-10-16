@@ -228,36 +228,12 @@ def _build_fields() -> list[_RegisterField]:
     for camera in CAMERAS:
         fields += [
             _camera_pair_field(
-                "camera_positions", camera, "x", f"Camera {camera} X",
-                "PC → PLC: detected hole X, encoded as an absolute servo target",
-            ),
-            _camera_pair_field(
-                "camera_positions", camera, "y", f"Camera {camera} Y",
-                "PC → PLC: detected hole Y, encoded as an absolute servo target",
-            ),
-            _camera_scalar_field(
-                "camera_results", camera, f"Camera {camera} Result",
-                "PC → PLC: this camera's own GOOD/NG/ERROR verdict",
-            ),
-            _camera_pair_field(
                 "servo_home_positions", camera, "x", f"Camera {camera} Screwing Home X",
                 "PLC → PC: this axis's servo home — the datum camera positions are measured from",
             ),
             _camera_pair_field(
                 "servo_home_positions", camera, "y", f"Camera {camera} Screwing Home Y",
                 "PLC → PC: this axis's servo home — the datum camera positions are measured from",
-            ),
-            _camera_scalar_field(
-                "camera_triggers", camera, f"Camera {camera} Trigger",
-                "PLC → PC: inspect this camera alone on a 0→1 edge",
-            ),
-            _camera_scalar_field(
-                "camera_vision_complete", camera, f"Camera {camera} Vision Complete",
-                "PC → PLC: this camera's own completion handshake",
-            ),
-            _camera_scalar_field(
-                "camera_status", camera, f"Camera {camera} Camera Status",
-                "PC → PLC: 1 while this camera is connected and grabbing normally, 0 otherwise",
             ),
             _camera_scalar_field(
                 "gantry_status", camera, f"Camera {camera} Gantry Status", (
@@ -271,6 +247,30 @@ def _build_fields() -> list[_RegisterField]:
                 ),
                 optional=True,
             ),
+            _camera_scalar_field(
+                "camera_status", camera, f"Camera {camera} Camera Status",
+                "PC → PLC: 1 while this camera is connected and grabbing normally, 0 otherwise",
+            ),
+            _camera_scalar_field(
+                "camera_triggers", camera, f"Camera {camera} Trigger",
+                "PLC → PC: inspect this camera alone on a 0→1 edge",
+            ),
+            _camera_pair_field(
+                "camera_positions", camera, "x", f"Camera {camera} X",
+                "PC → PLC: detected hole X, encoded as an absolute servo target",
+            ),
+            _camera_pair_field(
+                "camera_positions", camera, "y", f"Camera {camera} Y",
+                "PC → PLC: detected hole Y, encoded as an absolute servo target",
+            ),
+            _camera_scalar_field(
+                "camera_vision_complete", camera, f"Camera {camera} Vision Complete",
+                "PC → PLC: this camera's own completion handshake",
+            ),
+            _camera_scalar_field(
+                "camera_results", camera, f"Camera {camera} Result",
+                "PC → PLC: this camera's own GOOD/NG/ERROR verdict",
+            )
         ]
     return fields
 
