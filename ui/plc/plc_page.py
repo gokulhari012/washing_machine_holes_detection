@@ -219,17 +219,17 @@ def _build_fields() -> list[_RegisterField]:
         _serial_number_field(),
         _model_select_field(),
         _core_field(
-                    "trigger", "Trigger",
-                    "PLC → PC: rising edge starts an inspection cycle; PC writes 0 back on detection",
-                ),
-        _core_field(
-            "vision_complete", "Vision Complete",
-            "PC → PLC: set to 1 once results are ready; PLC reads it then resets it and the trigger",
+            "trigger", "Trigger",
+            "PLC → PC: rising edge starts an inspection cycle; PC writes 0 back on detection",
         ),
         _core_field(
             "result", "Result",
             "PC → PLC: overall cycle result — 1=GOOD, 2=NG, 3=ERROR",
-        )
+        ),
+        _core_field(
+            "vision_complete", "Vision Complete",
+            "PC → PLC: set to 1 once results are ready; PLC reads it then resets it and the trigger",
+        ),
     ]
     for camera in CAMERAS:
         fields += [
@@ -270,13 +270,13 @@ def _build_fields() -> list[_RegisterField]:
                 "PC → PLC: detected hole Y, encoded as an absolute servo target",
             ),
             _camera_scalar_field(
+                "camera_results", camera, f"Camera {camera} Result",
+                "PC → PLC: this camera's own verdict — 1=GOOD, 2=NG, 3=ERROR",
+            ),
+            _camera_scalar_field(
                 "camera_vision_complete", camera, f"Camera {camera} Vision Complete",
                 "PC → PLC: this camera's own completion handshake",
             ),
-            _camera_scalar_field(
-                "camera_results", camera, f"Camera {camera} Result",
-                "PC → PLC: this camera's own verdict — 1=GOOD, 2=NG, 3=ERROR",
-            )
         ]
     return fields
 
