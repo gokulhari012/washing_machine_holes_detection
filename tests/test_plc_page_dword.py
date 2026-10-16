@@ -180,7 +180,7 @@ def test_servo_home_rows_are_32_bit_too(page):
 
     widget._refresh_viewer()
 
-    assert _live_value(widget, _row_named(widget, "Camera 1 Camera Home X")) == str(BIG_RAW)
+    assert _live_value(widget, _row_named(widget, "Camera 1 Screwing Home X")) == str(BIG_RAW)
 
 
 def test_sixteen_bit_rows_are_left_alone(page):
