@@ -224,7 +224,7 @@ class Application:
         )
         self.window.add_page(
             "Cameras", "◉",
-            CameraPage(self.app_state, self.camera_service),
+            CameraPage(self.app_state, self.camera_service, self.calibration),
             min_role=UserRole.ADMIN,
         )
         self.window.add_page(

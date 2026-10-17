@@ -13,6 +13,19 @@ top-left `x, y, w, h` (that format is shared with calibration, detection and
 the machine-model snapshots); this page converts at its own boundary
 (`_corner_to_center`/`_center_to_corner`) so nothing downstream changes.
 
+The "px | mm" toggle above them switches only what the four boxes *show*.
+The ROI is always held (``_roi_px``) and stored in pixels; in mm mode each
+box displays that value divided by the camera's ``pixels_per_mm_x`` (X, W)
+or ``pixels_per_mm_y`` (Y, H) — the same two numbers the Calibration page's
+"Pixels per mm X/Y" fields show, read live from ``CalibrationManager.get``.
+X/Y in mm are measured from the frame's top-left corner, like the pixel
+values (it is a unit change, not the inspection's centre-relative frame). An
+edit in mm is rounded back to whole pixels for that one box only, so
+toggling back and forth never drifts the other three. A camera with no
+calibration has no real scale (the pipeline's 1 px = 1 mm fallback would be
+a misleading ROI size), so the mm button is disabled for it and the page
+drops back to px.
+
 "Frame Rate (fps)" paces every *continuous* viewing mode for this camera —
 the live preview/video workers, "Continuous Capture" below, and the
 Calibration page's Auto Calibrate board scan all size their loop from it
@@ -72,9 +85,11 @@ save are handled by the composition root's config subscription.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -106,6 +121,9 @@ from core.utilities.enums import CameraDriver, ConnectionState, TriggerMode
 from core.utilities.exceptions import VisionSystemError
 from models.app_state import AppState
 from services.camera_service import CameraService
+
+if TYPE_CHECKING:
+    from core.calibration.calibration_manager import CalibrationManager
 from ui.widgets import ImageView, LabeledLed, RoiEditor
 
 # Adapters actually wired up in core.camera.create_camera(); USB/HikRobot/Daheng/IDS
@@ -114,6 +132,11 @@ _SUPPORTED_DRIVERS = (CameraDriver.SIMULATED, CameraDriver.IMAGE_FILE, CameraDri
 
 BLINK_INTERVAL_MS = 500
 
+# Largest pixel value an ROI box accepts (matches the Width/Height ceiling).
+ROI_MAX_PX = 8192
+# mm boxes carry 3 decimals: at ~50+ px/mm a 0.01 mm step would skip pixels.
+ROI_MM_DECIMALS = 3
+
 class CameraPage(QWidget):
     """Add / remove / tune / test cameras."""
 
@@ -121,11 +144,15 @@ class CameraPage(QWidget):
         self,
         app_state: AppState,
         camera_service: CameraService,
+        calibration: CalibrationManager | None = None,
         parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._app_state = app_state
         self._svc = camera_service
+        # Source of each camera's px/mm for the ROI "mm" view; None (tests,
+        # or a station built without one) simply leaves the page in px.
+        self._calibration = calibration
         self._row_indexes: list[int] = []  # list row -> camera index
         self._loading = False
         # Camera whose light Continuous Capture switched on for strobe mode -
@@ -136,6 +163,13 @@ class CameraPage(QWidget):
         # Last whole (un-cropped) frame shown, so the ROI view can be re-cropped
         # whenever the ROI changes without grabbing again.
         self._full_frame = None
+        # The form's ROI as centre x, y, w, h in *pixels* — the one source of
+        # truth; the spin boxes only display it, in px or mm (see docstring).
+        self._roi_px: list[int] = [0, 0, 0, 0]
+        self._roi_in_mm = False
+        self._roi_syncing = False
+        # This camera's (px/mm X, px/mm Y), or None when it is uncalibrated.
+        self._roi_scale: tuple[float, float] | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
@@ -321,18 +355,38 @@ class CameraPage(QWidget):
         # second. X/Y name the ROI's centre point, not its top-left corner,
         # so dialling W/H up or down grows/shrinks the box evenly around a
         # fixed centre (see the module docstring).
-        self._roi_spins = []
+        units = QHBoxLayout()
+        units.setContentsMargins(0, 0, 0, 0)
+        units.setSpacing(0)
+        self._roi_px_btn = QPushButton("px")
+        self._roi_mm_btn = QPushButton("mm")
+        self._roi_unit_group = QButtonGroup(self)
+        for button in (self._roi_px_btn, self._roi_mm_btn):
+            button.setCheckable(True)
+            button.setMinimumWidth(56)
+            self._roi_unit_group.addButton(button)
+            units.addWidget(button)
+        units.addStretch()
+        self._roi_px_btn.setToolTip("Show the ROI in pixels (how it is stored)")
+        self._roi_px_btn.setChecked(True)
+        self._roi_unit_group.buttonToggled.connect(self._on_roi_unit_toggled)
+        units_w = QWidget()
+        units_w.setLayout(units)
+        form.addRow("ROI Units", units_w)
+
+        self._roi_spins: list[QDoubleSpinBox] = []
         roi_grid = QGridLayout()
         roi_grid.setContentsMargins(0, 0, 0, 0)
         roi_grid.setHorizontalSpacing(6)
         roi_grid.setVerticalSpacing(4)
         roi_captions = ("X", "Y", "W", "H")
         for position, caption in enumerate(roi_captions):
-            spin = QSpinBox()
-            spin.setRange(0, 8192)
+            spin = QDoubleSpinBox()
             spin.setMinimumWidth(70)
             spin.setToolTip(f"ROI centre {caption}" if caption in ("X", "Y") else f"ROI {caption}")
-            spin.valueChanged.connect(self._on_roi_spins_changed)
+            spin.valueChanged.connect(
+                lambda value, box=position: self._on_roi_spin_changed(box, value)
+            )
             self._roi_spins.append(spin)
             row, col = divmod(position, 2)
             label = QLabel(caption)
@@ -344,6 +398,11 @@ class CameraPage(QWidget):
         roi_widget = QWidget()
         roi_widget.setLayout(roi_grid)
         form.addRow("ROI (centre x/y)", roi_widget)
+        self._roi_scale_label = QLabel()
+        self._roi_scale_label.setProperty("class", "dim")
+        self._roi_scale_label.setWordWrap(True)
+        form.addRow("", self._roi_scale_label)
+        self._apply_roi_units()
 
         roi_buttons = QHBoxLayout()
         self._draw_roi = QPushButton("Draw ROI")
@@ -521,11 +580,11 @@ class CameraPage(QWidget):
                 int(roi.get("width", 0)),
                 int(roi.get("height", 0)),
             )
-            for spin, value in zip(self._roi_spins, self._corner_to_center(*corner)):
-                spin.setValue(value)
+            self._roi_px = list(self._corner_to_center(*corner))
             self._preview.set_roi(*corner)
         finally:
             self._loading = False
+        self._refresh_roi_scale()
         self._update_roi_view()
         self._refresh_health()
 
@@ -552,12 +611,7 @@ class CameraPage(QWidget):
                 "width": self._width.value(),
                 "height": self._height.value(),
                 "trigger_mode": self._trigger.currentText(),
-                "roi": dict(
-                    zip(
-                        ("x", "y", "width", "height"),
-                        self._center_to_corner(*(spin.value() for spin in self._roi_spins)),
-                    )
-                ),
+                "roi": dict(zip(("x", "y", "width", "height"), self._form_roi())),
             }
         )
         image_source = self._image_source.text().strip()
@@ -820,29 +874,132 @@ class CameraPage(QWidget):
     def _on_roi_drawn(self, x: int, y: int, w: int, h: int) -> None:
         # RoiEditor emits top-left corner coordinates from the drag; the spin
         # boxes show the equivalent centre point.
-        self._loading = True
-        try:
-            for spin, value in zip(self._roi_spins, self._corner_to_center(x, y, w, h)):
-                spin.setValue(value)
-        finally:
-            self._loading = False
+        self._roi_px = list(self._corner_to_center(x, y, w, h))
+        self._show_roi_values()
         self._update_roi_view()
 
-    def _on_roi_spins_changed(self) -> None:
-        if not self._loading:
-            values = self._center_to_corner(*(spin.value() for spin in self._roi_spins))
-            self._preview.set_roi(*values)
-            self._update_roi_view()
+    def _on_roi_spin_changed(self, box: int, value: float) -> None:
+        """One ROI box was edited: update just that component, in pixels.
+
+        Only the edited box is converted back — re-reading all four from an
+        mm display would round the other three and nudge them a pixel.
+        """
+        if self._loading or self._roi_syncing:
+            return
+        self._roi_px[box] = self._roi_box_to_px(box, value)
+        self._preview.set_roi(*self._form_roi())
+        self._update_roi_view()
 
     def _on_clear_roi(self) -> None:
-        for spin in self._roi_spins:
-            spin.setValue(0)
+        self._roi_px = [0, 0, 0, 0]
+        self._show_roi_values()
         self._preview.clear_roi()
         self._update_roi_view()
 
     def _form_roi(self) -> tuple[int, int, int, int]:
         """The form's ROI as top-left ``x, y, w, h`` (w/h 0 = no ROI)."""
-        return self._center_to_corner(*(spin.value() for spin in self._roi_spins))
+        return self._center_to_corner(*self._roi_px)
+
+    # ------------------------------------------------------------ ROI units
+    def _refresh_roi_scale(self) -> None:
+        """Re-read the selected camera's px/mm from the live calibration."""
+        index = self._current_index()
+        calibration = (
+            self._calibration.get(index)
+            if self._calibration is not None and index is not None
+            else None
+        )
+        if (
+            calibration is not None
+            and calibration.pixels_per_mm_x > 0
+            and calibration.pixels_per_mm_y > 0
+        ):
+            self._roi_scale = (calibration.pixels_per_mm_x, calibration.pixels_per_mm_y)
+        else:
+            self._roi_scale = None
+        if self._roi_scale is None and self._roi_in_mm:
+            self._roi_px_btn.setChecked(True)  # re-renders via _on_roi_unit_toggled
+        self._apply_roi_units()
+
+    def _on_roi_unit_toggled(self, button, checked: bool) -> None:
+        if not checked:
+            return
+        self._roi_in_mm = button is self._roi_mm_btn
+        self._apply_roi_units()
+
+    def _apply_roi_units(self) -> None:
+        """Set the four boxes' range/decimals for the current unit and refill them."""
+        self._roi_mm_btn.setEnabled(self._roi_scale is not None)
+        for button in (self._roi_px_btn, self._roi_mm_btn):
+            self._set_button_class(button, "primary" if button.isChecked() else "")
+        self._roi_syncing = True
+        try:
+            for box, spin in enumerate(self._roi_spins):
+                if self._roi_in_mm:
+                    spin.setDecimals(ROI_MM_DECIMALS)
+                    spin.setRange(0.0, ROI_MAX_PX / self._roi_box_scale(box))
+                    spin.setSingleStep(0.5)
+                    spin.setSuffix(" mm")
+                else:
+                    spin.setDecimals(0)
+                    spin.setRange(0, ROI_MAX_PX)
+                    spin.setSingleStep(1)
+                    spin.setSuffix("")
+        finally:
+            self._roi_syncing = False
+        self._show_roi_values()
+        index = self._current_index()
+        if self._roi_scale is None:
+            self._roi_mm_btn.setToolTip(
+                "This camera has no calibration yet — calibrate it on the "
+                "Calibration page to edit the ROI in mm."
+            )
+            self._roi_scale_label.setText(
+                f"Camera {index} is not calibrated — ROI in pixels only."
+                if index is not None
+                else ""
+            )
+        else:
+            scale_x, scale_y = self._roi_scale
+            self._roi_mm_btn.setToolTip(
+                "Show the ROI in millimetres, using this camera's px/mm from "
+                "the Calibration page. Still saved in pixels."
+            )
+            self._roi_scale_label.setText(
+                f"Camera {index}: {scale_x:.4f} px/mm X · {scale_y:.4f} px/mm Y "
+                f"(Calibration page). Saved in px; mm X/Y from the frame's top-left."
+            )
+
+    def _show_roi_values(self) -> None:
+        """Write ``_roi_px`` into the four boxes in the current unit."""
+        self._roi_syncing = True
+        try:
+            for box, (spin, value) in enumerate(zip(self._roi_spins, self._roi_px)):
+                spin.setValue(value / self._roi_box_scale(box) if self._roi_in_mm else value)
+        finally:
+            self._roi_syncing = False
+
+    def _roi_box_scale(self, box: int) -> float:
+        """px/mm for ROI box ``box`` (0 X, 1 Y, 2 W, 3 H): X/W use the X
+        scale, Y/H the Y scale; 1.0 when uncalibrated (px mode only)."""
+        if self._roi_scale is None:
+            return 1.0
+        return self._roi_scale[box % 2]
+
+    def _roi_box_to_px(self, box: int, value: float) -> int:
+        """A box's displayed value back to whole pixels."""
+        if self._roi_in_mm:
+            value *= self._roi_box_scale(box)
+        return int(round(value))
+
+    @staticmethod
+    def _set_button_class(button: QPushButton, css_class: str) -> None:
+        """Change a style class immediately (see :meth:`_apply_blink_style`)."""
+        style = button.style()
+        style.unpolish(button)
+        button.setProperty("class", css_class)
+        style.polish(button)
+        button.update()
 
     def _show_full_frame(self, frame) -> None:
         """Show a whole (un-cropped) frame with the ROI box, and its crop."""
@@ -911,6 +1068,11 @@ class CameraPage(QWidget):
         self._health.set_state(state, f"Camera {index}: {detail}")
 
     # --------------------------------------------------------------- events
+    def showEvent(self, event) -> None:  # noqa: N802
+        super().showEvent(event)
+        # The Calibration page may have saved a new px/mm while we were hidden.
+        self._refresh_roi_scale()
+
     def hideEvent(self, event) -> None:  # noqa: N802
         super().hideEvent(event)
         self._continuous_btn.setChecked(False)  # never keep hammering test_capture off-screen
