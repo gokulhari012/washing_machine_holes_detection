@@ -11,7 +11,8 @@ as Manual Write below the table (a coil row writes the coil address space
 instead), just without retyping the address; both refresh the Live Value
 column straight after, and both refuse a row whose address reads "Not used".
 Like the Live Value column, they follow the row's register *width*: the
-32-bit positional rows (camera positions and servo home positions) read and
+32-bit positional rows (camera positions, servo home positions and capture
+positions) read and
 write the full double word — low word at the configured base address, high
 word at base+1, in one transaction — so the column shows the real servo
 target rather than its low 16 bits, and Set writes a whole target rather
@@ -113,7 +114,8 @@ class _RegisterField:
     clear: Callable[[dict], None] | None = None  # only ever called when optional
     kind: str = "holding"  # "holding" or "coil" — a completely separate address space
     # Register width in words. 1 for every 16-bit register and every coil;
-    # 2 for the positional blocks (camera_positions, servo_home_positions),
+    # 2 for the positional blocks (camera_positions, servo_home_positions,
+    # capture_positions),
     # whose configured address is the *base* of a low-word-first pair — see
     # core.plc.register_map. The live-value read and the per-row write both
     # span the pair, so nothing on this page reports or writes half a value.
@@ -235,11 +237,27 @@ def _build_fields() -> list[_RegisterField]:
         fields += [
             _camera_pair_field(
                 "servo_home_positions", camera, "x", f"Camera {camera} Screwing Home X",
-                "PLC → PC: this axis's servo home — the datum camera positions are measured from",
+                "PLC → PC: this axis's servo home — the datum camera positions are "
+                "measured from when the camera's position centre (Calibration page, "
+                "Step 6) is \"screwing position\", the default",
             ),
             _camera_pair_field(
                 "servo_home_positions", camera, "y", f"Camera {camera} Screwing Home Y",
-                "PLC → PC: this axis's servo home — the datum camera positions are measured from",
+                "PLC → PC: this axis's servo home — the datum camera positions are "
+                "measured from when the camera's position centre (Calibration page, "
+                "Step 6) is \"screwing position\", the default",
+            ),
+            _camera_pair_field(
+                "capture_positions", camera, "x", f"Camera {camera} Capture Position X",
+                "PLC → PC: where this axis stood when the camera took its picture — "
+                "the datum camera positions are measured from when the camera's "
+                "position centre (Calibration page, Step 6) is \"camera position\"",
+            ),
+            _camera_pair_field(
+                "capture_positions", camera, "y", f"Camera {camera} Capture Position Y",
+                "PLC → PC: where this axis stood when the camera took its picture — "
+                "the datum camera positions are measured from when the camera's "
+                "position centre (Calibration page, Step 6) is \"camera position\"",
             ),
             _camera_scalar_field(
                 "gantry_status", camera, f"Camera {camera} Gantry Status", (

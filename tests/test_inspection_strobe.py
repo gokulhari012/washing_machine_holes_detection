@@ -20,7 +20,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from core.utilities.enums import InspectionResult
+from core.utilities.enums import InspectionResult, PositionReference
 from core.utilities.exceptions import LedWriteError
 from core.vision.detection_result import DetectionResult, Hole
 from models.app_state import AppState
@@ -145,10 +145,14 @@ class FakePlc:
     def read_gantry_status(self, index: int) -> bool:
         return self.gantries.get(index, True)
 
-    def write_inspection_output(self, positions, camera_results, result, skipped=None) -> None:
+    def write_inspection_output(
+        self, positions, camera_results, result, skipped=None, references=None
+    ) -> None:
         pass
 
-    def write_camera_inspection_output(self, camera_index, position, result) -> None:
+    def write_camera_inspection_output(
+        self, camera_index, position, result, reference=None
+    ) -> None:
         pass
 
     def write_camera_skipped_output(self, camera_index) -> None:
@@ -168,6 +172,7 @@ def _build(
         has=lambda index: True,
         evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0),
         screw_offset=lambda index: (0.0, 0.0),
+        position_reference=lambda index: PositionReference.SCREW_HOME,
     )
     database = SimpleNamespace(save_inspection=lambda cycle: 1)
     plc = FakePlc()
@@ -398,6 +403,7 @@ def test_no_led_manager_never_strobes_and_never_raises() -> None:
         has=lambda index: True,
         evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0),
         screw_offset=lambda index: (0.0, 0.0),
+        position_reference=lambda index: PositionReference.SCREW_HOME,
     )
     database = SimpleNamespace(save_inspection=lambda cycle: 1)
     service = InspectionService(

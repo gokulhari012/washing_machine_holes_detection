@@ -42,6 +42,7 @@ import cv2
 import numpy as np
 
 from core.database.models import Calibration as CalibrationRow
+from core.utilities.enums import PositionReference
 from core.utilities.exceptions import CalibrationError
 
 
@@ -92,6 +93,14 @@ class CameraCalibration:
     the camera is a fact about the rig, not about the part, so a machine-model
     switch must never redefine it. See ``CalibrationManager.screw_offset`` and
     ``InspectionService._plc_position``.
+
+    ``position_reference`` is the **position centre** (Calibration page,
+    Step 6): which PLC-published datum this camera's position is encoded
+    against — the screwing (servo) home, or the capture position the gantry
+    stood at when it took the picture (:class:`PositionReference`). The
+    screw-driver offset is added to the millimetres before that encoding, so
+    it applies with either. A rig fact for the same reason as the two above,
+    and carried the same way.
     """
 
     camera_index: int
@@ -106,6 +115,7 @@ class CameraCalibration:
     screw_compensation_enabled: bool = False  # see class docstring
     screw_offset_x_mm: float = 0.0
     screw_offset_y_mm: float = 0.0
+    position_reference: PositionReference = PositionReference.SCREW_HOME  # see class docstring
     rms_error: float = 0.0
     calibrated_by: str = field(default="", compare=False)
 
@@ -440,6 +450,8 @@ class CameraCalibration:
             screw_compensation_enabled=bool(row.screw_compensation_enabled),
             screw_offset_x_mm=float(row.screw_offset_x_mm or 0.0),
             screw_offset_y_mm=float(row.screw_offset_y_mm or 0.0),
+            # NULL (a row predating the setting) reads as the screwing home.
+            position_reference=PositionReference.from_value(row.position_reference),
             rms_error=row.rms_error,
             calibrated_by=row.calibrated_by,
         )
@@ -467,6 +479,7 @@ class CameraCalibration:
             screw_compensation_enabled=self.screw_compensation_enabled,
             screw_offset_x_mm=self.screw_offset_x_mm,
             screw_offset_y_mm=self.screw_offset_y_mm,
+            position_reference=PositionReference.from_value(self.position_reference).value,
             rms_error=self.rms_error,
             calibrated_by=self.calibrated_by,
         )
@@ -488,7 +501,9 @@ class CameraCalibration:
         The **screw driver compensation** fields are left out for exactly the
         same reason — where the screw driver sits relative to the camera is a
         property of the rig, and a profile captured before the setting existed
-        would otherwise push a zero offset onto a station that needs one.
+        would otherwise push a zero offset onto a station that needs one. So is
+        ``position_reference``: which register the PLC program measures a
+        position from is a property of that program, not of the part.
         """
         return {
             "pixels_per_mm_x": self.pixels_per_mm_x,
@@ -507,7 +522,7 @@ class CameraCalibration:
     def from_dict(cls, camera_index: int, data: dict[str, Any]) -> "CameraCalibration":
         """Inverse of :meth:`to_dict`.
 
-        The axis signs and the screw-driver offsets are absent from that
+        The axis signs, the screw-driver offsets and the position centre are absent from that
         representation on purpose, so the object this returns always carries
         the defaults — see :meth:`to_dict` and
         ``CalibrationManager.apply_live``, which restores the live ones.

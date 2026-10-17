@@ -11,7 +11,7 @@ already stands in for the camera manager, vision engine, config and PLC.
 import pytest
 
 from core.plc import PlcManager, RegisterMap, SimulatedPlc
-from core.utilities.enums import InspectionResult, PlcResultCode
+from core.utilities.enums import InspectionResult, PlcResultCode, PositionReference
 from core.utilities.exceptions import PlcReadError
 from models.app_state import AppState
 from services.inspection_service import InspectionService
@@ -181,6 +181,7 @@ def _service(plc: RecordingPlc) -> tuple[InspectionService, FakeCameraManager, A
         has=lambda index: True,
         evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0),
         screw_offset=lambda index: (0.0, 0.0),
+        position_reference=lambda index: PositionReference.SCREW_HOME,
     )
     svc = InspectionService(
         cameras,

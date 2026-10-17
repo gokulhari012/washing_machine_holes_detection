@@ -29,6 +29,7 @@ from core.camera import CameraManager
 from core.led import LedControllerSettings, LedManager, SimulatedLedClient
 from core.plc import PlcManager, RegisterMap, SimulatedPlc
 from core.utilities.config_manager import ConfigManager
+from core.utilities.enums import PositionReference
 from core.vision import VisionEngine
 from models.app_state import AppState
 from services.camera_service import CameraService
@@ -193,3 +194,32 @@ def test_calibration_page_shows_the_applied_scale(station) -> None:
     assert page._ppmm_x.value() == pytest.approx(4.0)
     assert page._ref_x.value() == pytest.approx(2.0)
     assert page._ref_y.value() == pytest.approx(3.0)
+
+
+def test_calibration_page_position_centre_defaults_to_the_screwing_position(station) -> None:
+    page = CalibrationPage(
+        station.cameras, station.calibration, station.engine, station.app_state
+    )
+    assert page._centre_screw.isChecked() and not page._centre_camera.isChecked()
+    assert page._current_model().position_reference is PositionReference.SCREW_HOME
+
+    page._centre_camera.setChecked(True)
+    assert not page._centre_screw.isChecked()  # one or the other, never both
+    assert page._current_model().position_reference is PositionReference.CAPTURE_POSITION
+
+
+def test_calibration_page_keeps_the_position_centre_across_a_switch(station) -> None:
+    """Step 6 is a rig fact: a model switch must neither change the live
+    choice nor leave the page showing a different one."""
+    station.calibration._calibrations[1] = CameraCalibration(
+        camera_index=1, position_reference=PositionReference.CAPTURE_POSITION
+    )
+    page = CalibrationPage(
+        station.cameras, station.calibration, station.engine, station.app_state
+    )
+    assert page._centre_camera.isChecked()
+
+    _apply(station, page)
+
+    assert page._centre_camera.isChecked()
+    assert station.calibration.position_reference(1) is PositionReference.CAPTURE_POSITION

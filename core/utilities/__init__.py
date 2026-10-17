@@ -9,6 +9,7 @@ from core.utilities.enums import (
     InspectionResult,
     LogSource,
     PlcResultCode,
+    PositionReference,
     TriggerMode,
     UserRole,
 )
@@ -47,6 +48,7 @@ __all__ = [
     "InspectionResult",
     "LogSource",
     "PlcResultCode",
+    "PositionReference",
     "TriggerMode",
     "UserRole",
     "DEFAULT_SHIFT_SPECS",

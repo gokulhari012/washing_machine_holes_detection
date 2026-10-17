@@ -38,10 +38,16 @@ from typing import Callable
 from core.logging import get_logger
 from core.plc.plc_client_base import PlcClientBase
 from core.plc.register_map import RegisterMap
-from core.utilities.enums import ConnectionState, LogSource, PlcResultCode
+from core.utilities.enums import ConnectionState, LogSource, PlcResultCode, PositionReference
 from core.utilities.exceptions import PlcError
 
 logger = get_logger(LogSource.PLC)
+
+# How each datum is named in the position-write log line ("raw = home 6000 + ...").
+_DATUM_LABEL = {
+    PositionReference.SCREW_HOME: "home",
+    PositionReference.CAPTURE_POSITION: "capture",
+}
 
 StateCallback = Callable[[ConnectionState], None]
 PausedCallback = Callable[[bool], None]
@@ -381,7 +387,29 @@ class PlcManager:
         words are read in one transaction; otherwise each axis is its own
         2-register read.
         """
-        addresses = self._map.servo_home_positions.get(camera_index)
+        return self._read_dword_pair(self._map.servo_home_positions.get(camera_index))
+
+    def read_capture_position(self, camera_index: int) -> tuple[int, int]:
+        """Where a camera's X and Y axes stood when it took its picture.
+
+        The alternative datum to :meth:`read_servo_home` — used instead of it
+        for a camera whose calibration says
+        :attr:`PositionReference.CAPTURE_POSITION`. Same shape, same 32-bit
+        low-word-first pairs, same one-transaction read when X and Y are 2
+        apart, and the same ``(0, 0)`` when the camera has none configured.
+        """
+        return self._read_dword_pair(self._map.capture_positions.get(camera_index))
+
+    def read_position_datum(
+        self, camera_index: int, reference: PositionReference
+    ) -> tuple[int, int]:
+        """The datum a camera's position is encoded against, per *reference*."""
+        if reference == PositionReference.CAPTURE_POSITION:
+            return self.read_capture_position(camera_index)
+        return self.read_servo_home(camera_index)
+
+    def _read_dword_pair(self, addresses: tuple[int, int] | None) -> tuple[int, int]:
+        """Read one X/Y pair of 32-bit registers; ``(0, 0)`` when unconfigured."""
         if addresses is None:
             return 0, 0
         x_address, y_address = addresses
@@ -424,15 +452,20 @@ class PlcManager:
         return camera_index in self._map.gantry_status
 
     def _write_position(
-        self, camera_index: int, position: tuple[float, float] | None
+        self,
+        camera_index: int,
+        position: tuple[float, float] | None,
+        reference: PositionReference = PositionReference.SCREW_HOME,
     ) -> None:
-        """Write one camera's X/Y, biased by its servo home position.
+        """Write one camera's X/Y, biased by its datum.
 
-        Reads the servo home registers first, so the value the PLC receives is
-        an absolute servo target: ``home + mm * position_scale``, each axis
-        scaled by its own ``position_scale_x``/``position_scale_y``. ``position``
-        of ``None`` is the no-hole case and writes
-        :attr:`RegisterMap.NO_HOLE_RAW` to both registers instead — no servo
+        Reads the datum registers first, so the value the PLC receives is an
+        absolute servo target: ``datum + mm * position_scale``, each axis
+        scaled by its own ``position_scale_x``/``position_scale_y``. The datum
+        is the servo (screwing) home by default, or the capture position when
+        *reference* says so (:meth:`read_position_datum`). ``position`` of
+        ``None`` is the no-hole case and writes
+        :attr:`RegisterMap.NO_HOLE_RAW` to both registers instead — no datum
         read is needed, and none is done. Cameras with no position addresses
         configured are skipped silently.
 
@@ -444,12 +477,13 @@ class PlcManager:
         2-register write.
 
         Every write is logged at INFO with the whole derivation — millimetres,
-        the servo home it was measured from, the scale applied, the combined
-        raw target and the two words that actually go on the wire. A position
-        is the one value on this link that is *computed* rather than copied,
-        so when a gantry drives somewhere unexpected the log has to be able to
-        say whether the vision measurement, the calibration, the servo home or
-        the scaling was responsible, without re-running the cycle.
+        the datum it was measured from (``home N`` or ``capture N``), the
+        scale applied, the combined raw target and the two words that actually
+        go on the wire. A position is the one value on this link that is
+        *computed* rather than copied, so when a gantry drives somewhere
+        unexpected the log has to be able to say whether the vision
+        measurement, the calibration, the datum or the scaling was
+        responsible, without re-running the cycle.
         """
         addresses = self._map.camera_positions.get(camera_index)
         if addresses is None:
@@ -459,7 +493,7 @@ class PlcManager:
             x_raw = y_raw = RegisterMap.NO_HOLE_RAW
             x_home = y_home = 0
         else:
-            x_home, y_home = self.read_servo_home(camera_index)
+            x_home, y_home = self.read_position_datum(camera_index, reference)
             x_raw = self._map.encode_position(position[0], x_home, axis="x")
             y_raw = self._map.encode_position(position[1], y_home, axis="y")
 
@@ -483,25 +517,34 @@ class PlcManager:
                 y_address + 1,
             )
         else:
+            datum = _DATUM_LABEL.get(reference, "home")
             logger.info(
                 "Camera %d position -> %s | %s",
                 camera_index,
-                self._describe_axis("X", position[0], x_home, x_raw, x_address, "x"),
-                self._describe_axis("Y", position[1], y_home, y_raw, y_address, "y"),
+                self._describe_axis("X", position[0], datum, x_home, x_raw, x_address, "x"),
+                self._describe_axis("Y", position[1], datum, y_home, y_raw, y_address, "y"),
             )
 
     def _describe_axis(
-        self, label: str, mm: float, home: int, raw: int, address: int, axis: str
+        self,
+        label: str,
+        mm: float,
+        datum: str,
+        home: int,
+        raw: int,
+        address: int,
+        axis: str,
     ) -> str:
         """One axis of a position write, spelled out for the log.
 
-        Shows the arithmetic the PLC never sees — ``home + mm * scale = raw`` —
-        and the low/high word split that raw becomes on the wire, so a wrong
-        gantry target can be traced to its input from the log alone.
+        Shows the arithmetic the PLC never sees — ``home + mm * scale = raw``,
+        or ``capture + ...`` when the camera encodes against its capture
+        position — and the low/high word split that raw becomes on the wire,
+        so a wrong gantry target can be traced to its input from the log alone.
         """
         low, high = self._map.split_dword(raw)
         return (
-            f"{label} {mm:+.3f} mm: raw = home {home} + ({mm:+.3f} x "
+            f"{label} {mm:+.3f} mm: raw = {datum} {home} + ({mm:+.3f} x "
             f"{self._map.scale_for(axis)}) = {raw} -> "
             f"[{address}]={low} [{address + 1}]={high}"
         )
@@ -528,6 +571,7 @@ class PlcManager:
         camera_results: dict[int, PlcResultCode],
         result: PlcResultCode,
         skipped: "set[int] | frozenset[int] | None" = None,
+        references: "dict[int, PositionReference] | None" = None,
     ) -> None:
         """Publish one complete inspection to the PLC.
 
@@ -548,12 +592,21 @@ class PlcManager:
         ERROR code: not-inspected-because-the-PLC-said-so is not a fault, and
         writing the no-hole sentinel or ERROR over a stale-but-valid position
         would tell the PLC something the vision system never measured.
+
+        *references* names, per camera, which datum its position is encoded
+        against (see :meth:`_write_position`); a camera absent from it — or
+        every camera, when it is ``None`` — uses the servo (screwing) home.
         """
         skipped = frozenset(skipped or ())
+        references = references or {}
         for camera_index in sorted(self._map.camera_positions):
             if camera_index in skipped:
                 continue
-            self._write_position(camera_index, positions.get(camera_index))
+            self._write_position(
+                camera_index,
+                positions.get(camera_index),
+                references.get(camera_index, PositionReference.SCREW_HOME),
+            )
 
         for camera_index, result_address in sorted(self._map.camera_results.items()):
             if camera_index in skipped:
@@ -571,6 +624,7 @@ class PlcManager:
         camera_index: int,
         position: tuple[float, float] | None,
         result: PlcResultCode,
+        reference: PositionReference = PositionReference.SCREW_HOME,
     ) -> None:
         """Publish a *single* camera's inspection to the PLC.
 
@@ -594,8 +648,9 @@ class PlcManager:
 
         Registers this camera has not been given are skipped silently, the
         same way :meth:`write_inspection_output` skips absent entries.
+        *reference* picks the position's datum, as in that method.
         """
-        self._write_position(camera_index, position)
+        self._write_position(camera_index, position, reference)
 
         result_address = self._map.camera_results.get(camera_index)
         if result_address is not None:

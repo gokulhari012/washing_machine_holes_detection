@@ -125,6 +125,11 @@ class DatabaseEngine:
         ("calibrations", "screw_compensation_enabled", "BOOLEAN"),
         ("calibrations", "screw_offset_x_mm", "REAL"),
         ("calibrations", "screw_offset_y_mm", "REAL"),
+        # Per-camera position centre (Calibration page, "Step 6"): which PLC
+        # datum — screwing home or capture position — the position written to
+        # the PLC is encoded against. NULL reads as the screwing home, which
+        # is the pre-feature behaviour.
+        ("calibrations", "position_reference", "VARCHAR(32)"),
         # Per-camera viewing frame rate, added with the Camera page's FPS
         # setting (paces live preview, Continuous Capture, Auto Calibrate).
         ("camera_configurations", "fps", "REAL"),

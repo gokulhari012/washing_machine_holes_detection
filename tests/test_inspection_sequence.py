@@ -11,7 +11,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from core.utilities.enums import InspectionResult
+from core.utilities.enums import InspectionResult, PositionReference
 from core.vision.detection_result import DetectionResult, Hole
 from models.app_state import AppState
 from services.inspection_service import InspectionService
@@ -105,9 +105,10 @@ def service_parts():
         has=lambda index: True,
         evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0),
         screw_offset=lambda index: (0.0, 0.0),
+        position_reference=lambda index: PositionReference.SCREW_HOME,
     )
     plc = SimpleNamespace(
-        write_inspection_output=lambda positions, camera_results, result, skipped=None: None,
+        write_inspection_output=lambda positions, camera_results, result, **kwargs: None,
         read_serial_number=lambda: None,  # register not configured
         read_gantry_status=lambda index: True,  # register not configured
     )
@@ -281,7 +282,8 @@ def test_calibrated_camera_picks_the_highest_confidence_hole(service_parts) -> N
         return x / 10.0, y / 10.0, deviation
 
     calibration = SimpleNamespace(
-        has=lambda index: True, evaluate=evaluate, screw_offset=lambda index: (0.0, 0.0)
+        has=lambda index: True, evaluate=evaluate, screw_offset=lambda index: (0.0, 0.0),
+        position_reference=lambda index: PositionReference.SCREW_HOME,
     )
     service = InspectionService(
         cameras, MultiHoleVision(), calibration, plc, database, app_state,
@@ -301,6 +303,7 @@ def test_uncalibrated_camera_picks_the_highest_confidence_hole(service_parts) ->
         has=lambda index: False,
         evaluate=lambda index, x, y, w=None, h=None: (x, y, None),
         screw_offset=lambda index: (0.0, 0.0),
+        position_reference=lambda index: PositionReference.SCREW_HOME,
     )
     service = InspectionService(
         cameras, MultiHoleVision(), calibration, plc, database, app_state,
@@ -337,7 +340,7 @@ def test_cycle_is_stamped_with_the_shift_it_started_in(service_parts) -> None:
 def test_single_camera_cycle_is_stamped_the_same_way(service_parts) -> None:
     cameras, app_state, calibration, plc, database = service_parts
     plc = SimpleNamespace(
-        write_camera_inspection_output=lambda index, position, result: None,
+        write_camera_inspection_output=lambda index, position, result, **kwargs: None,
         read_serial_number=lambda: None,
         read_gantry_status=lambda index: True,
     )

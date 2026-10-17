@@ -332,11 +332,16 @@ class InspectionService:
         # whatever the last cycle that really inspected it wrote. A camera
         # with an active screw-driver compensation offset gets it added here
         # only — the recorded/dashboard x_mm/y_mm on `data` stays the raw
-        # measured hole position (see `_plc_position`).
+        # measured hole position (see `_plc_position`). Each camera's
+        # position is then encoded against the datum its calibration names —
+        # screwing home or capture position — with the offset already in.
         positions = {
             index: self._plc_position(index, data)
             for index, data in camera_results.items()
             if index not in skipped
+        }
+        references = {
+            index: self._calibration.position_reference(index) for index in positions
         }
         plc_camera_results = {
             index: _RESULT_TO_PLC[data.result]
@@ -350,6 +355,7 @@ class InspectionService:
                 plc_camera_results,
                 _RESULT_TO_PLC[overall],
                 skipped=skipped,
+                references=references,
             )
         except PlcError as exc:
             plc_write_ok = False
@@ -455,6 +461,7 @@ class InspectionService:
                 camera_index,
                 self._plc_position(camera_index, data),
                 _RESULT_TO_PLC[data.result],
+                reference=self._calibration.position_reference(camera_index),
             )
         except PlcError as exc:
             plc_write_ok = False
@@ -887,6 +894,11 @@ class InspectionService:
         measured. The offset is applied here only: `data.x_mm`/`data.y_mm`
         themselves — what the dashboard and database show — are left as the
         true detected position.
+
+        The offset is in millimetres and is added *before* encoding, so it
+        applies identically whichever datum the camera's position centre
+        (Calibration page, Step 6 — ``CalibrationManager.position_reference``)
+        encodes against: screwing home or capture position.
         """
         if not data.hole_found:
             return None

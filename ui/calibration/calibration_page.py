@@ -48,14 +48,20 @@ Workflow (per camera):
    selected camera, added to the position written to the PLC and nowhere
    else: the recorded/dashboard hole position and the GOOD/NG judgement stay
    the true measurement. Per camera like every other step, so it follows the
-   camera selector, and it is saved by Step 6's "Save Calibration" along with
+   camera selector, and it is saved by Step 7's "Save Calibration" along with
    everything else on the page — there is deliberately no second save button.
    It lived on the Machine Models page before, as a per-profile block
    covering all four cameras; where the screw driver sits relative to a
    camera is a fact about the rig rather than the part, so it belongs to the
-   calibration alongside the axis signs.
-6. **Save Calibration** persists as the camera's active calibration.
-7. **Live Test** captures + detects + evaluates through the saved model.
+   calibration alongside the axis signs. It applies with either Step 6 centre.
+6. **Position centre** — "Use screwing position as center" (the default)
+   encodes the PLC-bound X/Y against the camera's Screwing Home X/Y
+   registers; "Use camera position as center" encodes it against its Capture
+   Position X/Y registers instead. Both are read from the PLC just before the
+   write (``PlcManager.read_position_datum``). Rides the calibration exactly
+   like Step 5, for the same reason.
+7. **Save Calibration** persists as the camera's active calibration.
+8. **Live Test** captures + detects + evaluates through the saved model.
 """
 
 from __future__ import annotations
@@ -63,6 +69,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -73,6 +80,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QSpinBox,
     QVBoxLayout,
     QWidget,
@@ -80,6 +88,7 @@ from PySide6.QtWidgets import (
 
 from core.calibration import CalibrationManager, CameraCalibration, CheckerboardDetection
 from core.camera import frame_interval_ms
+from core.utilities.enums import PositionReference
 from core.utilities.exceptions import VisionSystemError
 from core.vision import VisionEngine, draw_detection_overlay
 from models.app_state import AppState
@@ -353,12 +362,46 @@ class CalibrationPage(QWidget):
             "switch cameras above to set another one. The offset rides that "
             "camera's calibration, not the machine model: it describes where "
             "the screw driver sits relative to the camera, which no part "
-            "change redefines."
+            "change redefines. Applied with either position centre in Step 6."
         )
         screw_hint.setWordWrap(True)
         screw_hint.setProperty("class", "dim")
         screw_layout.addWidget(screw_hint)
         left.addWidget(screw_box)
+
+        centre_box = QGroupBox("Step 6 — Position centre (PLC datum)")
+        centre_layout = QVBoxLayout(centre_box)
+        self._centre_screw = QRadioButton("Use screwing position as center")
+        self._centre_screw.setToolTip(
+            "Camera X/Y written to the PLC = Screwing Home X/Y (read from the "
+            "PLC) + hole offset (mm) x position scale"
+        )
+        self._centre_camera = QRadioButton("Use camera position as center")
+        self._centre_camera.setToolTip(
+            "Camera X/Y written to the PLC = Capture Position X/Y (read from "
+            "the PLC) + hole offset (mm) x position scale"
+        )
+        self._centre_group = QButtonGroup(self)
+        self._centre_group.addButton(self._centre_screw)
+        self._centre_group.addButton(self._centre_camera)
+        self._centre_screw.setChecked(True)
+        centre_row = QHBoxLayout()
+        centre_row.addWidget(self._centre_screw)
+        centre_row.addWidget(self._centre_camera)
+        centre_row.addStretch()
+        centre_layout.addLayout(centre_row)
+        centre_hint = QLabel(
+            "Which PLC register this camera's X/Y is measured from. Before "
+            "each write the PC reads that camera's Screwing Home X/Y or "
+            "Capture Position X/Y (PLC page) and writes datum + hole offset "
+            "x position scale to Camera X/Y. The Step 5 offset, when "
+            "enabled, is added to the hole offset first, so it applies with "
+            "either centre. Saved by \"Save Calibration\" below."
+        )
+        centre_hint.setWordWrap(True)
+        centre_hint.setProperty("class", "dim")
+        centre_layout.addWidget(centre_hint)
+        left.addWidget(centre_box)
 
         action_row = QHBoxLayout()
         save_btn = QPushButton("Save Calibration")
@@ -434,6 +477,7 @@ class CalibrationPage(QWidget):
         if self._auto_session_active:
             self._cancel_auto_calibrate_session("camera changed")
         self._load_screw_compensation()
+        self._load_position_reference()
         calibration = self._manager.get(index)
         if calibration is None:
             self._status.setText("No active calibration — identity fallback (1 px = 1 mm)")
@@ -767,8 +811,31 @@ class CalibrationPage(QWidget):
             screw_compensation_enabled=self._screw_enabled.isChecked(),
             screw_offset_x_mm=self._screw_x.value(),
             screw_offset_y_mm=self._screw_y.value(),
+            # Step 6, carried through for the same reason as Step 5.
+            position_reference=self._position_reference(),
             rms_error=self._rms,
         )
+
+    # ------------------------------------------------------ position centre
+    def _position_reference(self) -> PositionReference:
+        if self._centre_camera.isChecked():
+            return PositionReference.CAPTURE_POSITION
+        return PositionReference.SCREW_HOME
+
+    def _load_position_reference(self) -> None:
+        """Fill Step 6 from the selected camera's live calibration — the
+        screwing home for an uncalibrated camera, which is what it uses."""
+        index = self._camera_index()
+        calibration = None if index is None else self._manager.get(index)
+        reference = (
+            PositionReference.from_value(calibration.position_reference)
+            if calibration is not None
+            else PositionReference.SCREW_HOME
+        )
+        if reference is PositionReference.CAPTURE_POSITION:
+            self._centre_camera.setChecked(True)
+        else:
+            self._centre_screw.setChecked(True)
 
     # ------------------------------------------- screw driver compensation
     def _load_screw_compensation(self) -> None:
@@ -822,7 +889,14 @@ class CalibrationPage(QWidget):
             if self._screw_enabled.isChecked()
             else ""
         )
-        self._status.setText(f"Calibration saved for camera {index}{axis_note}{screw_note}")
+        centre_note = (
+            "; PLC position measured from the camera (capture) position"
+            if self._position_reference() is PositionReference.CAPTURE_POSITION
+            else "; PLC position measured from the screwing position"
+        )
+        self._status.setText(
+            f"Calibration saved for camera {index}{axis_note}{screw_note}{centre_note}"
+        )
 
     # --------------------------------------------------------------- events
     def hideEvent(self, event) -> None:  # noqa: N802

@@ -91,6 +91,36 @@ class LogSource(StrEnum):
     UI = "UI"
 
 
+class PositionReference(StrEnum):
+    """Which PLC-published datum a camera's hole position is written against.
+
+    A hole position goes to the PLC as ``datum + round(mm * scale)`` per axis
+    (see :mod:`core.plc.register_map`); this picks where *datum* comes from:
+
+    - :attr:`SCREW_HOME` — the axis's screwing (servo) home,
+      ``servo_home_positions``. The default, and the only behaviour before
+      the choice existed.
+    - :attr:`CAPTURE_POSITION` — where the gantry stood when the camera took
+      the picture, ``capture_positions``.
+
+    Per camera, chosen on the Calibration page (Step 6) and stored on that
+    camera's calibration row. An unrecognised or missing value degrades to
+    :attr:`SCREW_HOME` (see :meth:`from_value`) — what every station did
+    before this setting existed.
+    """
+
+    SCREW_HOME = "screw_home"
+    CAPTURE_POSITION = "capture_position"
+
+    @classmethod
+    def from_value(cls, value: object) -> "PositionReference":
+        """Parse a stored value, falling back to ``screw_home`` for anything else."""
+        try:
+            return cls(str(value).strip().lower())
+        except ValueError:
+            return cls.SCREW_HOME
+
+
 class AppTheme(StrEnum):
     """Which colour scheme the whole UI is painted in.
 

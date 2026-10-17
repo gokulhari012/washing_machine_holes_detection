@@ -96,7 +96,7 @@
               "contour_retrieval_mode": "external"
             },
             "template_matching": {
-              "template_path": "C:/Users/Admin/Pictures/Top Left.bmp",
+              "template_path": "",
               "match_threshold": 0.95,
               "method": "TM_CCORR_NORMED",
               "scales": [
@@ -161,7 +161,7 @@
               "contour_retrieval_mode": "external"
             },
             "template_matching": {
-              "template_path": "C:/Users/Admin/Pictures/Top Right.bmp",
+              "template_path": "",
               "match_threshold": 0.95,
               "method": "TM_CCORR_NORMED",
               "scales": [
@@ -226,7 +226,7 @@
               "contour_retrieval_mode": "external"
             },
             "template_matching": {
-              "template_path": "C:/Users/Admin/Pictures/Bottom Left.bmp",
+              "template_path": "",
               "match_threshold": 0.95,
               "method": "TM_CCORR_NORMED",
               "scales": [
@@ -291,7 +291,7 @@
               "contour_retrieval_mode": "external"
             },
             "template_matching": {
-              "template_path": "C:/Users/Admin/Pictures/Bottom Right.bmp",
+              "template_path": "",
               "match_threshold": 0.95,
               "method": "TM_CCORR_NORMED",
               "scales": [
@@ -1155,7 +1155,7 @@
               "contour_retrieval_mode": "external"
             },
             "template_matching": {
-              "template_path": "C:/Users/Admin/Pictures/Top Left.bmp",
+              "template_path": "",
               "match_threshold": 0.95,
               "method": "TM_CCORR_NORMED",
               "scales": [
@@ -1220,7 +1220,7 @@
               "contour_retrieval_mode": "external"
             },
             "template_matching": {
-              "template_path": "C:/Users/Admin/Pictures/Top Right.bmp",
+              "template_path": "",
               "match_threshold": 0.95,
               "method": "TM_CCORR_NORMED",
               "scales": [
@@ -1285,7 +1285,7 @@
               "contour_retrieval_mode": "external"
             },
             "template_matching": {
-              "template_path": "C:/Users/Admin/Pictures/Bottom Left.bmp",
+              "template_path": "",
               "match_threshold": 0.95,
               "method": "TM_CCORR_NORMED",
               "scales": [
@@ -1350,7 +1350,7 @@
               "contour_retrieval_mode": "external"
             },
             "template_matching": {
-              "template_path": "C:/Users/Admin/Pictures/Bottom Right.bmp",
+              "template_path": "",
               "match_threshold": 0.95,
               "method": "TM_CCORR_NORMED",
               "scales": [

@@ -21,7 +21,7 @@ over Ethernet; every cycle is stored in SQLite with an annotated PNG.
 ```bash
 python main.py                # normal start
 python main.py --selftest 8   # start hidden, run 8 s, save logs/selftest.png, exit 0
-pytest                        # 774 tests, ~45 s (as of 2026-10-15; 2 known failures in test_yolo_training.py: live app_config.json's yolo_training block lacks the `labeling_tool` key defaults/ has)
+pytest                        # 816 tests, ~60 s (as of 2026-10-17; 2 known failures in test_yolo_training.py: live app_config.json's yolo_training block lacks the `labeling_tool` key defaults/ has)
 python tools/hole_debug.py path/to/images/   # detector tuner; --camera N applies that camera's ROI
 python scripts/build_exe.py   # PyInstaller onedir -> dist/WMHoleDetection/
 ```
@@ -291,6 +291,23 @@ page's one "Save Calibration" persists them through `CalibrationManager.save` li
 every other field, which also refreshes the live cache — so the **next inspection
 already uses the new offset**, with nothing to re-apply.
 
+**Position centre** (`CameraCalibration.position_reference`, a `PositionReference`
+StrEnum, Calibration page → "Step 6", two radio buttons) picks which PLC datum that
+camera's position is encoded against: `screw_home` ("Use screwing position as
+center", the default and the pre-feature behaviour — `servo_home_positions`, the
+PLC page's "Screwing Home X/Y") or `capture_position` ("Use camera position as
+center" — `capture_positions`, the PLC page's "Capture Position X/Y", where the
+gantry stood when it took the picture). `InspectionService` asks
+`CalibrationManager.position_reference(i)` and passes it down
+(`write_inspection_output(..., references=)`, `write_camera_inspection_output(...,
+reference=)`); `PlcManager.read_position_datum` reads the chosen pair live before the
+write, and the log line says `home N` or `capture N`. The Step 5 offset is added to
+the mm **before** encoding, so it applies with either centre — pinned by
+`tests/test_position_reference.py`. Same storage and machine-model rules as the
+screw offset (calibration row, not in `to_dict`, carried by `apply_live`); a NULL or
+unknown stored value reads as `screw_home`. Duck-typed calibration fakes in tests
+need `position_reference`.
+
 **The annotated frame is the original image, not the ROI crop.** The pipeline
 grabs with `apply_roi=False`, crops the ROI itself (`core.camera.roi_rect`, the
 same clamping as `crop_roi`) and detects on that crop — so `x_px`, `x_mm` and the
@@ -339,6 +356,9 @@ e.g. home 6000, hole 2.0 mm right of centre, scale 100 → 6200; 2.0 mm the othe
 → 5800. The PLC gets an absolute servo target in the servo's own units, with no
 sign handling and nothing to undo. There is **no `position_offset`** — it was
 replaced by this live per-axis datum, so moving an axis needs no PC-side change.
+The datum is the servo home by default; a camera whose calibration's position
+centre is "camera position" uses its `capture_positions` pair instead, same
+formula (see §5).
 
 **The scale is per axis.** `scaling.position_scale_x` and
 `scaling.position_scale_y` in `plc.json` are independent (PLC page → Scaling →
@@ -398,6 +418,7 @@ memory map must address the same registers the same way.
 | 159–161, 6058 | PLC→PC | **`gantry_status`** — 1 = camera N's gantry is in position and that camera is inspected; anything else skips it entirely (see below). **Absent from the live `plc.json`** — the gate is currently inert |
 | 200–215 | PC→PLC | Camera 1–4 hole X/Y as a servo target (encoded as above) — **32-bit**, 2 registers per axis (see above) |
 | 220–235 | PLC→PC | **`servo_home_positions`** — servo 1–4 home X/Y, the datum for 200–215 — **32-bit**, 2 registers per axis |
+| 240–255 | PLC→PC | **`capture_positions`** — camera 1–4 capture X/Y, the *alternative* datum for 200–215 when that camera's position centre is "camera position" (§5) — **32-bit**, 2 registers per axis. Live file: 7045/7050, 7145/7150, 7245/7250, 7345/7350 — **placeholders following the per-camera band, confirm against the PLC program** |
 
 **Addresses 110–117 and 144–151 are now free.** They held `camera_positions` and
 `servo_home_positions` before the 32-bit conversion (1 register per axis, packed
@@ -911,9 +932,9 @@ to that camera's *configured* `led_channel` on every call (via `LedService`), so
 applying a machine model also re-lights each camera for free, with no code here
 even aware of it (see [LED Controller](#led-controller-rs232-independent-of-the-plc)).
 
-**A calibration's axis signs and screw-driver offsets are the things a profile does
-not capture.** `CameraCalibration.to_dict` omits `invert_x`/`invert_y` and the
-`screw_*` fields, and `CalibrationManager.apply_live` carries the live ones across a
+**A calibration's axis signs, screw-driver offsets and position centre are the things a profile does
+not capture.** `CameraCalibration.to_dict` omits `invert_x`/`invert_y`, the
+`screw_*` fields and `position_reference`, and `CalibrationManager.apply_live` carries the live ones across a
 switch, for the same reason `led_channel` and `rotation` are outside
 `_TUNABLE_CAMERA_FIELDS`: which corner a gantry homes at — and where the screw driver
 sits — is a fact about the rig, not the part. Carrying them would let a profile captured before the setting

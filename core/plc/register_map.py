@@ -34,11 +34,27 @@ A camera with no servo-home registers configured falls back to a home of 0,
 i.e. plain ``mm * that axis's position scale``, and can then only express
 positions on the positive side of centre.
 
+Which datum: screwing home or capture position
+----------------------------------------------
+The servo (screwing) home is the default datum, but not the only one. The PLC
+also publishes ``capture_positions`` — where each axis stood when the camera
+took its picture — and a camera can be told to encode against that instead
+(Calibration page, Step 6; ``PositionReference`` on the camera's
+calibration). The formula is identical, only the datum changes:
+
+    raw = capture_position + round(mm * position_scale)
+
+A camera with no capture-position registers configured falls back to a datum
+of 0, exactly like a missing servo home. The screw-driver compensation offset
+is added to the millimetres *before* encoding, so it applies whichever datum
+is chosen.
+
 32-bit (double-word) registers
 -------------------------------
 Every *positional* value — each entry of ``camera_positions`` (the hole X/Y
-written to the PLC) and ``servo_home_positions`` (the home X/Y read back from
-it) — is 32-bit, not the 16-bit width every other register in this map uses.
+written to the PLC), ``servo_home_positions`` (the home X/Y read back from
+it) and ``capture_positions`` (the capture X/Y read back from it) — is
+32-bit, not the 16-bit width every other register in this map uses.
 A single Modbus/SLMP holding register only ever carries 16 bits, so a 32-bit
 value spans **two consecutive registers**, addressed by the *base* (lower)
 address configured for that axis in ``plc.json``: e.g. ``camera_positions.1.x
@@ -131,6 +147,12 @@ class RegisterMap:
     # module docstring). Optional per camera: a camera absent here encodes
     # against a home of 0, so an existing plc.json keeps loading.
     servo_home_positions: dict[int, tuple[int, int]] = field(default_factory=dict)
+    # Capture position registers — camera index -> (x_addr, y_addr). PLC→PC
+    # *inputs* shaped exactly like servo_home_positions: where each axis
+    # stood when the camera took its picture. The alternative datum a camera
+    # can encode its position against (PositionReference.CAPTURE_POSITION).
+    # Optional per camera: absent encodes against 0, like a missing home.
+    capture_positions: dict[int, tuple[int, int]] = field(default_factory=dict)
     # Per-camera GOOD/NG/ERROR result register — camera index -> address.
     # Optional/independent of camera_positions: a camera absent here simply
     # gets no individual result register written, same as an absent entry
@@ -195,6 +217,10 @@ class RegisterMap:
                 int(index): (int(addrs["x"]), int(addrs["y"]))
                 for index, addrs in registers.get("servo_home_positions", {}).items()
             }
+            capture_positions = {
+                int(index): (int(addrs["x"]), int(addrs["y"]))
+                for index, addrs in registers.get("capture_positions", {}).items()
+            }
             camera_results = {
                 int(index): int(address)
                 for index, address in registers.get("camera_results", {}).items()
@@ -226,6 +252,7 @@ class RegisterMap:
                 vision_complete=int(registers["vision_complete"]),
                 camera_positions=camera_positions,
                 servo_home_positions=servo_home_positions,
+                capture_positions=capture_positions,
                 camera_results=camera_results,
                 camera_triggers=camera_triggers,
                 camera_vision_complete=camera_vision_complete,
@@ -255,8 +282,9 @@ class RegisterMap:
     def encode_position(self, mm: float, servo_home: int = 0, *, axis: Axis) -> int:
         """Millimetres from image centre → raw 32-bit register value.
 
-        *servo_home* is the value just read from that axis's servo home
-        register pair; the result is that home biased by the scaled offset,
+        *servo_home* is the value just read from that axis's datum register
+        pair — the servo home, or the capture position when the camera is set
+        to encode against that; the result is that datum biased by the scaled offset,
         clamped to the uint32 range. A negative offset therefore encodes as a
         raw value *below* home rather than needing a sign. The raw value
         returned here is the *combined* 32-bit number — see

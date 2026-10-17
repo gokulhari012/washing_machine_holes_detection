@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 from core.plc import PlcManager, RegisterMap, SimulatedPlc
-from core.utilities.enums import InspectionResult, PlcResultCode
+from core.utilities.enums import InspectionResult, PlcResultCode, PositionReference
 from core.vision.detection_result import DetectionResult, Hole
 from models.app_state import AppState
 from services.inspection_service import InspectionService
@@ -284,14 +284,16 @@ class RecordingPlc:
     def read_gantry_status(self, camera_index: int) -> bool:
         return self.gantries.get(camera_index, True)
 
-    def write_camera_inspection_output(self, camera_index, position, result) -> None:
+    def write_camera_inspection_output(
+        self, camera_index, position, result, reference=None
+    ) -> None:
         self.camera_writes.append((camera_index, position, result))
 
     def write_camera_skipped_output(self, camera_index) -> None:
         self.skipped_writes.append(camera_index)
 
     def write_inspection_output(
-        self, positions, camera_results, result, skipped=None
+        self, positions, camera_results, result, skipped=None, references=None
     ) -> None:
         self.full_writes.append((positions, camera_results, result, set(skipped or ())))
 
@@ -318,6 +320,7 @@ def service() -> tuple[InspectionService, FakeCameraManager, AppState, Recording
         has=lambda index: True,
         evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0),
         screw_offset=lambda index: (0.0, 0.0),
+        position_reference=lambda index: PositionReference.SCREW_HOME,
     )
     database = SimpleNamespace(save_inspection=lambda cycle: 1)
     svc = InspectionService(
@@ -403,6 +406,7 @@ def _service_with(plc: RecordingPlc) -> InspectionService:
         has=lambda index: True,
         evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0),
         screw_offset=lambda index: (0.0, 0.0),
+        position_reference=lambda index: PositionReference.SCREW_HOME,
     )
     return InspectionService(
         FakeCameraManager(),

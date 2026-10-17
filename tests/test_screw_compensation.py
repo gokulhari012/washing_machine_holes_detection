@@ -159,6 +159,7 @@ def test_a_legacy_row_predating_the_columns_reads_as_disabled() -> None:
         screw_compensation_enabled=None,
         screw_offset_x_mm=None,
         screw_offset_y_mm=None,
+        position_reference=None,
         rms_error=0.0,
         calibrated_by="",
     )

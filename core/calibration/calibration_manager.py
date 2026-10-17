@@ -26,7 +26,7 @@ from typing import Callable
 from core.calibration.calibration_model import CameraCalibration
 from core.database.repositories import CalibrationRepository
 from core.logging import get_logger
-from core.utilities.enums import LogSource
+from core.utilities.enums import LogSource, PositionReference
 
 logger = get_logger(LogSource.VISION)
 
@@ -93,8 +93,9 @@ class CalibrationManager:
         updated in place, so callers that keep a reference see the same signs
         the cache does — ``apply_profile`` builds a fresh object per switch.
 
-        The camera's **screw driver compensation** survives the swap for the
-        same reason and by the same mechanism (see :meth:`screw_offset`).
+        The camera's **screw driver compensation** and **position centre**
+        survive the swap for the same reason and by the same mechanism (see
+        :meth:`screw_offset` and :meth:`position_reference`).
         """
         with self._lock:
             previous = self._calibrations.get(calibration.camera_index)
@@ -104,6 +105,7 @@ class CalibrationManager:
                 calibration.screw_compensation_enabled = previous.screw_compensation_enabled
                 calibration.screw_offset_x_mm = previous.screw_offset_x_mm
                 calibration.screw_offset_y_mm = previous.screw_offset_y_mm
+                calibration.position_reference = previous.position_reference
             self._calibrations[calibration.camera_index] = calibration
         logger.info(
             "Calibration applied live for camera %d (not persisted)", calibration.camera_index
@@ -162,6 +164,20 @@ class CalibrationManager:
             if calibration is None or not calibration.screw_compensation_enabled:
                 return 0.0, 0.0
             return calibration.screw_offset_x_mm, calibration.screw_offset_y_mm
+
+    def position_reference(self, camera_index: int) -> PositionReference:
+        """Which PLC datum *camera_index*'s position is encoded against —
+        its screwing (servo) home or its capture position. The screwing home
+        when the camera is uncalibrated, which is what every camera used
+        before the choice existed. Independent of :meth:`screw_offset`: the
+        offset is added to the millimetres, whichever datum they are then
+        encoded against. See ``InspectionService``, the only caller.
+        """
+        with self._lock:
+            calibration = self._calibrations.get(camera_index)
+            if calibration is None:
+                return PositionReference.SCREW_HOME
+            return PositionReference.from_value(calibration.position_reference)
 
     # ------------------------------------------------------------- hot path
     def evaluate(

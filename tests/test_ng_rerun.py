@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 
-from core.utilities.enums import InspectionResult
+from core.utilities.enums import InspectionResult, PositionReference
 from core.utilities.exceptions import CameraCaptureError, DetectionError
 from core.vision.detection_result import DetectionResult, Hole
 from models.app_state import AppState
@@ -77,10 +77,11 @@ def build(vision: ScriptedVision, cameras=None, **inspection):
         has=lambda index: True,
         evaluate=lambda index, x, y, w=None, h=None: (1.0, 2.0, 0.0),
         screw_offset=lambda index: (0.0, 0.0),
+        position_reference=lambda index: PositionReference.SCREW_HOME,
     )
     plc = SimpleNamespace(
-        write_inspection_output=lambda positions, camera_results, result, skipped=None: None,
-        write_camera_inspection_output=lambda index, position, result: None,
+        write_inspection_output=lambda positions, camera_results, result, **kwargs: None,
+        write_camera_inspection_output=lambda index, position, result, **kwargs: None,
         read_serial_number=lambda: None,
         read_gantry_status=lambda index: True,
     )

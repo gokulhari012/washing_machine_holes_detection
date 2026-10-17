@@ -198,6 +198,11 @@ class Calibration(Base):
     screw_compensation_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
     screw_offset_x_mm: Mapped[float] = mapped_column(Float, default=0.0)
     screw_offset_y_mm: Mapped[float] = mapped_column(Float, default=0.0)
+    # Position centre: which PLC datum the position is encoded against —
+    # "screw_home" (servo_home_positions) or "capture_position"
+    # (capture_positions). See core.utilities.enums.PositionReference; NULL
+    # reads as "screw_home". A rig fact, like the two blocks above.
+    position_reference: Mapped[str | None] = mapped_column(String(32), default="screw_home")
     rms_error: Mapped[float] = mapped_column(Float, default=0.0)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     calibrated_by: Mapped[str] = mapped_column(String(64), default="")
