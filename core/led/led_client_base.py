@@ -68,6 +68,8 @@ class LedClientBase(ABC):
         Raises:
             LedConnectionError: not connected.
             LedWriteError: the command could not be written.
-            LedTimeoutError: nothing was received before the timeout elapsed.
-                Never raised when ``expect_response`` is False.
+            LedTimeoutError: nothing was received before the timeout elapsed
+                - or, with ``expect_response`` False, the port itself did not
+                take the bytes within the adapter's deadline (the command may
+                still go out later). Either way the link stays up.
         """

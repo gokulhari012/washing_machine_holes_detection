@@ -708,7 +708,7 @@ page's own Test Camera / Continuous Capture, the Detection page's Test on
 Camera, and the two PLC-facing inspection entry points do.
 
 **A silent controller never stalls the station, and never freezes the UI.**
-Three separate mechanisms, all pinned by `tests/test_led_no_hang.py`:
+Four separate mechanisms, all pinned by `tests/test_led_no_hang.py`:
 - **Dispatch is fire-and-forget everywhere except the raw command tester.**
   `LedManager.send_channel`/`send_multichannel`/`send_all_channels` pass
   `expect_response=False` down to `LedClientBase.send`; the adapter writes
@@ -730,6 +730,34 @@ Three separate mechanisms, all pinned by `tests/test_led_no_hang.py`:
   `LedCommandWorker` (`workers/led_command_worker.py`, page-owned like
   `CheckerboardScanWorker`). The LED page disables SEND while one is in
   flight and re-enables it on either outcome.
+- **No serial call runs on the caller's thread.** pyserial's Windows
+  `write` can block forever inside a wedged USB-serial driver whatever
+  `write_timeout` says — which used to freeze Test Camera, and (through
+  `disconnect` waiting on the port lock with no deadline) **application
+  close for good**. `SerialLedClient` now does every port operation — open,
+  write, drain, read, close — in order on its own `led-io` `CommandThread`
+  (`core/led/command_thread.py`), and callers only wait a bounded time:
+  a one-way command `SEND_DEADLINE_S` (0.5 s), then `LedTimeoutError` while
+  it finishes in the background (link stays up); a command arriving behind
+  one already past that deadline is queued in order and not waited on;
+  `connect` `CONNECT_DEADLINE_S` (2 s), refused at once while a command is
+  stuck; `disconnect` ≤ 1 s — the close is queued, a write the driver never
+  completed is cancelled (`cancel_write`, which pyserial allows from another
+  thread) so the close can run, and failing that the port is left to close
+  in the background. The port is **never closed from a second thread** while
+  the I/O thread may be using it. A write/read that *fails* closes the port
+  on the I/O thread, so the next command reports "Not connected" and the
+  manager goes ERROR even if its caller had stopped waiting.
+  `list_serial_ports` (the LED page builds it at startup) is bounded too,
+  and `Application.shutdown` calls `LedPage.shutdown()` after
+  `led.disconnect()` so the raw-tester QThread is never destroyed running
+  (Qt aborts the process when that happens).
+
+The inspection pipeline keeps its own `led-dispatch` `CommandThread` with
+`LED_COMMAND_DEADLINE_S` on top, so a cycle stays bounded whatever LED
+manager it was given, and `_led_send` swallows **any** exception (logged in
+full), not just `LedError` — one escaping there aborted the cycle before the
+PLC write and left the PLC waiting on `vision_complete`.
 
 Note the trade: nothing on the production path can detect a mute controller
 any more, because nothing reads the reply. The raw tester on the LED page is
@@ -775,6 +803,7 @@ registers are now unused (see [§6](#6-plc-contract)).
 | `AcquisitionWorker` ×N (QThread) | that camera's `fps` | live preview grabs; 2 s backoff on fault |
 | `DatabaseWorker` (QThread) | batched | log persistence only |
 | `CheckerboardScanWorker` (QThread) | that camera's `fps` | Calibration page's board scan; page-owned, not in `main.py` |
+| `led-io` / `led-dispatch` (daemon `CommandThread`) | per LED command | serial-port I/O, and the inspection strobe dispatcher; exit after 5 s idle — see [LED Controller](#led-controller-rs232-independent-of-the-plc) |
 | detection pool | per cycle | `ThreadPoolExecutor`, parallel mode only |
 | shift timer (`QTimer`, GUI thread) | 30 s | re-resolves the rota, publishes `AppState.current_shift` |
 

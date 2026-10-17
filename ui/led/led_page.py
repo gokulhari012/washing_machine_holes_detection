@@ -62,6 +62,8 @@ from PySide6.QtCore import Qt
 from workers import LedCommandWorker
 
 from core.led import protocol
+from core.logging import get_logger
+from core.utilities.enums import LogSource
 from core.utilities.exceptions import VisionSystemError
 from models.app_state import AppState
 from services.camera_service import CameraService
@@ -84,6 +86,10 @@ _LOG_TOKENS = {
 #: Transcript lines kept for re-rendering after a theme change. Bounded so a
 #: long troubleshooting session cannot grow the buffer without limit.
 _LOG_LIMIT = 500
+#: Longest application close waits for a raw command still in flight.
+_RAW_STOP_WAIT_MS = 5000
+
+logger = get_logger(LogSource.LED)
 
 
 class LedPage(QWidget):
@@ -781,6 +787,20 @@ class LedPage(QWidget):
         if self._raw_worker is not None:
             self._raw_worker.deleteLater()
             self._raw_worker = None
+
+    def shutdown(self) -> None:
+        """Wait, bounded, for a raw command still in flight.
+
+        Called on application close *after* the LED link is disconnected,
+        which ends the reply wait at once - so this normally returns
+        immediately. It exists because Qt aborts the whole process when a
+        running QThread is destroyed, which closing the window mid-send
+        would otherwise risk."""
+        worker = self._raw_worker
+        if worker is not None and worker.isRunning() and not worker.wait(_RAW_STOP_WAIT_MS):
+            logger.warning(
+                "Raw LED command still running after %d ms at shutdown", _RAW_STOP_WAIT_MS
+            )
 
     # -------------------------------------------------------------- logging
     def _log(self, message: str, kind: str) -> None:

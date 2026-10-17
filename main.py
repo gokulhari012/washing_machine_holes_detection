@@ -232,9 +232,10 @@ class Application:
             PlcPage(self.app_state, self.plc_service, self.auth_service),
             min_role=UserRole.ADMIN,
         )
+        self.led_page = LedPage(self.app_state, self.led_service, self.camera_service)
         self.window.add_page(
             "LED Controller", "☀",
-            LedPage(self.app_state, self.led_service, self.camera_service),
+            self.led_page,
             min_role=UserRole.ADMIN,
         )
         self.window.add_page(
@@ -350,7 +351,8 @@ class Application:
             worker.stop()
         self.inspection_worker.stop()                 # let in-flight cycle finish
         self.plc.disconnect()
-        self.led.disconnect()
+        self.led.disconnect()                         # bounded, even on a wedged driver
+        self.led_page.shutdown()                      # raw tester thread, if in flight
         self.db_worker.stop()                         # final log flush
         self.db.dispose()
         self.log_manager.shutdown()

@@ -60,14 +60,18 @@ a station that hasn't finished the LED integration) simply never strobes.
 
 Every strobe command also runs under a hard deadline
 (:data:`LED_COMMAND_DEADLINE_S`) on a dedicated daemon thread
-(:class:`_LedDispatcher`), so a controller that never answers — or a serial
-driver call that ignores its own timeouts — can delay a cycle by at most that
+(``core.led.command_thread.CommandThread``), so a controller that never
+answers — or a serial driver call that ignores its own timeouts — can delay a
+cycle by at most that
 deadline and never freeze it: past it the cycle logs a warning and carries on
 to the next step (capture, or the PLC write) without the light. Commands keep
 their order on that one thread, so a late light-on is still followed by its
 light-off. While a command is still stuck from earlier, later ones are queued
 behind it without being waited on (a wedged link costs one deadline, not one
-per command), and past :data:`_LED_MAX_BACKLOG` they are dropped.
+per command), and past :data:`_LED_MAX_BACKLOG` they are dropped. *Any*
+exception from a strobe command is logged and swallowed, not just an LED
+fault: one escaping here would abort the cycle before the PLC write, and the
+PLC would wait on ``vision_complete`` forever.
 
 Every cycle is stamped with the operator and the shift it ran in. The shift
 comes from ``ShiftService`` -- resolved from the configured rota against the
@@ -133,10 +137,8 @@ Runs on the inspection worker thread; never on the UI thread.
 
 from __future__ import annotations
 
-import queue
-import threading
 import time
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
 from datetime import datetime
 from typing import Callable
@@ -148,6 +150,7 @@ import numpy as np
 from core.calibration import CalibrationManager
 from core.camera import CameraManager, roi_rect
 from core.led import LedManager
+from core.led.command_thread import CommandThread
 from core.logging import get_logger
 from core.plc import PlcManager
 from core.utilities import ConfigManager
@@ -171,49 +174,6 @@ LED_COMMAND_DEADLINE_S = 0.5
 
 #: Commands allowed to pile up behind a stuck one before new ones are dropped.
 _LED_MAX_BACKLOG = 4
-
-
-class _LedDispatcher:
-    """Runs LED commands in order on one daemon thread, so the caller can
-    stop waiting on a stuck one (see the module docstring). Daemon, so a
-    command wedged in the serial driver never holds up process exit."""
-
-    def __init__(self) -> None:
-        self._queue: queue.Queue = queue.Queue()
-        self._lock = threading.Lock()
-        self._pending = 0
-        self._thread: threading.Thread | None = None
-
-    @property
-    def busy(self) -> bool:
-        with self._lock:
-            return self._pending > 0
-
-    def submit(self, fn: Callable[[], object]) -> Future | None:
-        """Queue *fn*; ``None`` when the backlog is already full."""
-        with self._lock:
-            if self._pending >= _LED_MAX_BACKLOG:
-                return None
-            self._pending += 1
-            if self._thread is None or not self._thread.is_alive():
-                self._thread = threading.Thread(
-                    target=self._run, name="led-dispatch", daemon=True
-                )
-                self._thread.start()
-        future: Future = Future()
-        self._queue.put((fn, future))
-        return future
-
-    def _run(self) -> None:
-        while True:
-            fn, future = self._queue.get()
-            try:
-                future.set_result(fn())
-            except BaseException as exc:  # handed to the waiting caller
-                future.set_exception(exc)
-            finally:
-                with self._lock:
-                    self._pending -= 1
 
 
 def _full_view_enabled(app_cfg: dict) -> bool:
@@ -303,7 +263,7 @@ class InspectionService:
         self._config = config_manager
         self._shifts = shift_service
         self._led = led_manager
-        self._led_dispatch = _LedDispatcher()
+        self._led_dispatch = CommandThread("led-dispatch", max_backlog=_LED_MAX_BACKLOG)
         # app_config.ui.dashboard_full_frame, re-read at the start of every
         # cycle (both entry points run on the inspection thread and never
         # overlap; the parallel detect pool only reads it).
@@ -1024,11 +984,11 @@ class InspectionService:
     def _led_send(self, what: str, fn: Callable[..., object], *args: object) -> None:
         """Run one LED command, waiting at most :data:`LED_COMMAND_DEADLINE_S`.
 
-        Never raises an LED fault and never blocks past the deadline — the
-        cycle always proceeds to its next step. A command still stuck from
-        earlier means this one is queued behind it (order preserved) but not
-        waited on at all."""
-        stuck = self._led_dispatch.busy
+        Never raises and never blocks past the deadline — the cycle always
+        proceeds to its next step and answers the PLC. A command still stuck
+        from earlier means this one is queued behind it (order preserved) but
+        not waited on at all."""
+        stuck = self._led_dispatch.pending > 0
         future = self._led_dispatch.submit(lambda: fn(*args))
         if future is None:
             logger.warning("%s skipped: LED controller is not responding", what)
@@ -1049,6 +1009,10 @@ class InspectionService:
             )
         except LedError as exc:
             logger.warning("%s failed (%s)", what, exc)
+        except Exception:
+            # Not a comm fault (a hand-edited led_channel of 5, say), but the
+            # cycle must still finish and answer the PLC — logged in full.
+            logger.exception("%s failed unexpectedly", what)
 
     def _channel_states(
         self, toggled: dict[int, int], *, on: bool

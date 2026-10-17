@@ -139,6 +139,9 @@ class LedManager:
         Raises:
             LedError: the link is broken (state becomes ERROR). A silent
                 controller is not a failure here, since no reply is awaited.
+                ``LedTimeoutError`` (link stays up) when the port itself did
+                not take the bytes within the adapter's short deadline - see
+                ``core.led.serial_led_client``.
         """
         return self._send(
             self._settings.build_command(channel, brightness), expect_response=False

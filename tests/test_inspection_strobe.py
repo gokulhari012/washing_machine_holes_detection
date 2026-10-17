@@ -335,6 +335,36 @@ def test_a_hanging_led_controller_never_freezes_the_cycle(monkeypatch, trigger) 
     assert elapsed < 1.0  # one 0.2 s deadline, not the 10 s hang
 
 
+@pytest.mark.parametrize("trigger", ["global", "single"])
+def test_an_unexpected_led_error_never_stops_the_plc_answer(trigger) -> None:
+    """Only LedError used to be caught, so anything else — a hand-edited
+    led_channel of 5 makes the protocol raise ValueError — aborted the cycle
+    before the PLC write, and the PLC waited on vision_complete for good."""
+    cameras = {1: FakeCamera(1, led_strobe=True, led_channel=1, brightness=100)}
+    trace: list = []
+    service, _cameras, led, plc = _build(
+        cameras, trace, capture_mode="sequential", camera_delay_ms=0
+    )
+
+    def broken(*_args):
+        raise ValueError("channel must be 1-4, got 5")
+
+    led.send_channel = broken
+    led.send_multichannel = broken
+    answered: list[str] = []
+    plc.write_inspection_output = lambda *args, **kwargs: answered.append("global")
+    plc.write_camera_inspection_output = lambda *args, **kwargs: answered.append("camera")
+
+    if trigger == "global":
+        cycle = service.run_inspection(machine_number=1)
+    else:
+        cycle = service.run_camera_inspection(camera_index=1, machine_number=1)
+
+    assert ("capture", 1) in trace
+    assert cycle.overall_result is InspectionResult.GOOD
+    assert answered == ["global" if trigger == "global" else "camera"]
+
+
 def test_skipped_camera_is_never_strobed() -> None:
     """A gantry-inactive camera is never captured — it must never be lit
     either, not even as a "steady" channel in the grouped command: a
