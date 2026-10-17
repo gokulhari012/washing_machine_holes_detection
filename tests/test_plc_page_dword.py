@@ -186,7 +186,7 @@ def test_servo_home_rows_are_32_bit_too(page):
 
     widget._refresh_viewer()
 
-    assert _live_value(widget, _row_named(widget, "Camera 1 Screwing Home X")) == str(BIG_RAW)
+    assert _live_value(widget, _row_named(widget, "Camera 1 Screwing Center Position X")) == str(BIG_RAW)
 
 
 def test_every_camera_has_32_bit_capture_position_rows(page):
@@ -201,7 +201,7 @@ def test_every_camera_has_32_bit_capture_position_rows(page):
         for axis in ("X", "Y"):
             row = _row_named(widget, f"Camera {camera} Capture Position {axis}")
             assert widget._table.item(row, 1).text() == "Holding 32-bit"
-    assert _live_value(widget, _row_named(widget, "Camera 4 Capture Position X")) == str(BIG_RAW)
+    assert _live_value(widget, _row_named(widget, "Camera 4 Capturing Center Position X")) == str(BIG_RAW)
 
     row = _row_named(widget, "Camera 2 Capture Position Y")
     widget._row_value_spins[row].setValue(BIG_RAW)

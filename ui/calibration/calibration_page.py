@@ -55,7 +55,7 @@ Workflow (per camera):
    camera is a fact about the rig rather than the part, so it belongs to the
    calibration alongside the axis signs. It applies with either Step 6 centre.
 6. **Position centre** — "Use screwing position as center" (the default)
-   encodes the PLC-bound X/Y against the camera's Screwing Home X/Y
+   encodes the PLC-bound X/Y against the camera's Screwing Center Position X/Y
    registers; "Use camera position as center" encodes it against its Capture
    Position X/Y registers instead. Both are read from the PLC just before the
    write (``PlcManager.read_position_datum``). Rides the calibration exactly
@@ -373,12 +373,12 @@ class CalibrationPage(QWidget):
         centre_layout = QVBoxLayout(centre_box)
         self._centre_screw = QRadioButton("Use screwing position as center")
         self._centre_screw.setToolTip(
-            "Camera X/Y written to the PLC = Screwing Home X/Y (read from the "
+            "Camera X/Y written to the PLC = Screwing Center Position X/Y (read from the "
             "PLC) + hole offset (mm) x position scale"
         )
         self._centre_camera = QRadioButton("Use camera position as center")
         self._centre_camera.setToolTip(
-            "Camera X/Y written to the PLC = Capture Position X/Y (read from "
+            "Camera X/Y written to the PLC = Capturing Center Position X/Y (read from "
             "the PLC) + hole offset (mm) x position scale"
         )
         self._centre_group = QButtonGroup(self)
@@ -392,8 +392,8 @@ class CalibrationPage(QWidget):
         centre_layout.addLayout(centre_row)
         centre_hint = QLabel(
             "Which PLC register this camera's X/Y is measured from. Before "
-            "each write the PC reads that camera's Screwing Home X/Y or "
-            "Capture Position X/Y (PLC page) and writes datum + hole offset "
+            "each write the PC reads that camera's Screwing Center Position X/Y or "
+            "Capturing Center Position X/Y (PLC page) and writes datum + hole offset "
             "x position scale to Camera X/Y. The Step 5 offset, when "
             "enabled, is added to the hole offset first, so it applies with "
             "either centre. Saved by \"Save Calibration\" below."

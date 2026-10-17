@@ -236,25 +236,25 @@ def _build_fields() -> list[_RegisterField]:
     for camera in CAMERAS:
         fields += [
             _camera_pair_field(
-                "servo_home_positions", camera, "x", f"Camera {camera} Screwing Home X",
+                "servo_home_positions", camera, "x", f"Camera {camera} Screwing Center Position X",
                 "PLC → PC: this axis's servo home — the datum camera positions are "
                 "measured from when the camera's position centre (Calibration page, "
                 "Step 6) is \"screwing position\", the default",
             ),
             _camera_pair_field(
-                "servo_home_positions", camera, "y", f"Camera {camera} Screwing Home Y",
+                "servo_home_positions", camera, "y", f"Camera {camera} Screwing Center Position Y",
                 "PLC → PC: this axis's servo home — the datum camera positions are "
                 "measured from when the camera's position centre (Calibration page, "
                 "Step 6) is \"screwing position\", the default",
             ),
             _camera_pair_field(
-                "capture_positions", camera, "x", f"Camera {camera} Capture Position X",
+                "capture_positions", camera, "x", f"Camera {camera} Capturing Center Position X",
                 "PLC → PC: where this axis stood when the camera took its picture — "
                 "the datum camera positions are measured from when the camera's "
                 "position centre (Calibration page, Step 6) is \"camera position\"",
             ),
             _camera_pair_field(
-                "capture_positions", camera, "y", f"Camera {camera} Capture Position Y",
+                "capture_positions", camera, "y", f"Camera {camera} Capturing Center Position Y",
                 "PLC → PC: where this axis stood when the camera took its picture — "
                 "the datum camera positions are measured from when the camera's "
                 "position centre (Calibration page, Step 6) is \"camera position\"",

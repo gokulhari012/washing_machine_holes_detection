@@ -295,8 +295,8 @@ already uses the new offset**, with nothing to re-apply.
 StrEnum, Calibration page → "Step 6", two radio buttons) picks which PLC datum that
 camera's position is encoded against: `screw_home` ("Use screwing position as
 center", the default and the pre-feature behaviour — `servo_home_positions`, the
-PLC page's "Screwing Home X/Y") or `capture_position` ("Use camera position as
-center" — `capture_positions`, the PLC page's "Capture Position X/Y", where the
+PLC page's "Screwing Center Position X/Y") or `capture_position` ("Use camera position as
+center" — `capture_positions`, the PLC page's "Capturing Center Position X/Y", where the
 gantry stood when it took the picture). `InspectionService` asks
 `CalibrationManager.position_reference(i)` and passes it down
 (`write_inspection_output(..., references=)`, `write_camera_inspection_output(...,
