@@ -328,9 +328,19 @@ display-only — detection runs on the ROI crop either way.
 Settings → Storage & Backup, default `false`): after every **full** cycle
 (never a `partial` one) `ui/dashboard/dashboard_snapshot.py` grabs the
 Dashboard page on the GUI thread `SETTLE_MS` after the cycle is published and
-writes `images/<date>/<HHMMSS>_<machine>_dashboard_<RESULT>.png` on a daemon
-thread. Wired in `main.py` to `InspectionWorker.inspection_finished`; read per
-cycle, so a Save applies from the next part.
+writes `images/<date>/<HHMMSS>_<machine>_dashboard_<RESULT>.png` on one
+long-lived writer thread. Wired in `main.py` to `InspectionWorker.inspection_finished`; read per
+cycle, so a Save applies from the next part. **The writer is Qt-free on
+purpose:** the grab is copied into a numpy array on the GUI thread
+(`qimage_to_bgr`) and encoded with OpenCV. It used to be a fresh thread per
+cycle calling `QImage.save`, and repeated triggers with the setting on closed
+the app with no traceback (suspected cause; not reproduced off the station) —
+don't hand a `QImage` back to a thread. `main._enable_crash_log` writes any
+native crash's stack to `logs/crash.log` (faulthandler), so check there first
+if the window ever vanishes again. Writes are
+serialised through a bounded queue (`MAX_PENDING`, newest dropped with a
+warning), a same-second name gets a `_2` suffix, and each file is written to
+`.tmp` and renamed into place.
 `storage.auto_align_dashboard_screenshot` (the indented "Auto align images
 before screenshot" box under it, default `false`) calls
 `DashboardPage.reset_image_views` right before the grab, so every camera

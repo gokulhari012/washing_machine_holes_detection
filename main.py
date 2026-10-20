@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import faulthandler
 import itertools
 import json
 import os
@@ -653,7 +654,27 @@ def _configured_theme() -> AppTheme:
         return AppTheme.DARK
 
 
+def _enable_crash_log() -> None:
+    """Write a native-crash stack dump to ``logs/crash.log``.
+
+    An access violation inside Qt or another C extension kills the process
+    before Python's excepthook (or any logger) runs: the window simply
+    vanishes and ``application.log`` ends mid-cycle. ``faulthandler`` is the
+    one thing that still gets to write, and it needs a real file — a
+    windowed PyInstaller build has no stderr. The file stays open for the
+    life of the process, on purpose.
+    """
+    try:
+        logs = BASE_DIR / "logs"
+        logs.mkdir(exist_ok=True)
+        crash_log = open(logs / "crash.log", "a", encoding="utf-8")  # noqa: SIM115
+        faulthandler.enable(crash_log, all_threads=True)
+    except OSError:
+        pass  # diagnostics only — never stop the station from starting
+
+
 def main() -> int:
+    _enable_crash_log()
     parser = argparse.ArgumentParser(description="Washing Machine Back Plate Hole Detection")
     parser.add_argument(
         "--selftest",

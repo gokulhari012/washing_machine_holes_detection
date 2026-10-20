@@ -374,6 +374,63 @@ def test_dashboard_screenshot_auto_align_resets_the_views_first(
         _dispose(widget)
 
 
+def test_dashboard_screenshots_in_the_same_second_are_both_kept(
+    qt_app, tmp_path
+) -> None:
+    """Two cycles stamped in the same second used to race two writer threads
+    onto one file name. The single writer now keeps both, the second with a
+    suffix, and leaves no temporary file behind."""
+    from datetime import datetime
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QLabel
+
+    from ui.dashboard.dashboard_snapshot import DashboardSnapshotter
+
+    config = _config_manager(tmp_path)
+    cfg = config.load("app_config")
+    cfg["storage"]["image_directory"] = str(tmp_path / "images")
+    cfg["storage"]["save_dashboard_screenshot"] = True
+    config.save("app_config", cfg)
+
+    widget = QLabel("dashboard")
+    widget.resize(200, 100)
+    cycle = SimpleNamespace(
+        partial=False,
+        started_at=datetime(2026, 10, 1, 9, 30, 15),
+        machine_number=42,
+        overall_result=SimpleNamespace(value="GOOD"),
+    )
+    snapshotter = DashboardSnapshotter(widget, config)
+    snapshotter.on_inspection_finished(cycle)
+    snapshotter.on_inspection_finished(cycle)
+
+    day = tmp_path / "images" / "2026-10-01"
+    try:
+        assert _wait_for(lambda: (day / "093015_42_dashboard_GOOD_2.png").exists())
+        assert sorted(p.name for p in day.iterdir()) == [
+            "093015_42_dashboard_GOOD.png",
+            "093015_42_dashboard_GOOD_2.png",
+        ]
+    finally:
+        _dispose(widget)
+
+
+def test_qimage_to_bgr_copies_pixels_in_bgr_order(qt_app) -> None:
+    """The grab is handed to the writer thread as an owned numpy array, so
+    no Qt object crosses threads — check the channel order and padding."""
+    from PySide6.QtGui import QColor, QImage
+
+    from ui.dashboard.dashboard_snapshot import qimage_to_bgr
+
+    image = QImage(5, 3, QImage.Format.Format_ARGB32)  # odd width: padded rows
+    image.fill(QColor(10, 20, 30))
+    frame = qimage_to_bgr(image)
+    assert frame.shape == (3, 5, 3)
+    assert frame.flags.owndata
+    assert (frame == [30, 20, 10]).all()
+
+
 def test_dashboard_reset_image_views_refits_a_zoomed_panel(qt_app) -> None:
     import numpy as np
 
