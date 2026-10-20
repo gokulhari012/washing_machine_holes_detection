@@ -20,12 +20,22 @@ configuration — and the calibration history — is untouched by an automatic
 switch.
 
 The traffic in the other direction is :meth:`MachineModelService.sync_active_profile`:
-once a profile is live, saving on the Camera, Detection or Calibration page
-folds that one domain straight back into it, so the profile never drifts from
-the settings the station is actually running and nobody has to remember to
-press "Update Selected from Current" afterwards. The composition root wires
-the three save notifications to it; the Machine Models page repaints on the
-:meth:`subscribe` fan-out.
+once a profile is the *selected* one, saving on the Camera, Detection or
+Calibration page folds the saved camera's settings straight back into it, so
+nobody has to remember to press "Update Selected from Current" afterwards.
+A profile becomes selected when it is picked on the Machine Models page
+(:meth:`select_profile`) or applied (:meth:`apply_profile` — the PLC's
+model_select register or "Apply Now"), and the choice is persisted in
+machine_models.json (``selected_profile_id``) so it survives a restart — a
+station whose PLC is offline never applies a model, and used to drop every
+Detection-page Save on the floor for exactly that reason. The composition
+root wires the three save notifications to it; the Machine Models page
+repaints on the :meth:`subscribe` fan-out.
+
+Each sync replaces **only the camera that was saved** (``camera_indices``):
+the selected profile need not be the one running, so re-capturing every
+camera's live block would overwrite the profile's other cameras with
+whatever the station happens to be running.
 
 Everything a profile captures is therefore read from the **live** objects,
 never from ``camera.json``/``detection.json``: applying a profile does not
@@ -35,8 +45,9 @@ model and snapshotting them would quietly undo the switch (CLAUDE.md §8).
 
 from __future__ import annotations
 
+import copy
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 
 from core.calibration import CalibrationManager, CameraCalibration
 from core.logging import get_logger
@@ -66,6 +77,9 @@ _TUNABLE_CAMERA_FIELDS = (
 # blocks "Update Selected from Current" writes together.
 _SYNCABLE_DOMAINS = ("cameras", "detection", "calibration")
 
+# Keys of a camera's detection block that are not a strategy's parameters.
+_NON_STRATEGY_KEYS = ("active_detector", "common")
+
 ProfileCallback = Callable[[dict[str, Any], str], None]
 
 
@@ -85,8 +99,9 @@ class MachineModelService:
         self._engine = vision_engine
         self._plc = plc_service
         self._calibration = calibration_manager
-        self._active_profile_id: int | None = None
         self._observers: list[ProfileCallback] = []
+        self._active_profile_id: int | None = self._load_selected_id()
+        self._backfill_profiles()
 
     # -------------------------------------------------------------- queries
     def list_profiles(self) -> list[dict[str, Any]]:
@@ -175,9 +190,10 @@ class MachineModelService:
         if len(remaining) == len(profiles):
             raise ConfigurationError(f"No machine model profile with id {profile_id}")
         document["profiles"] = remaining
-        self._config.save("machine_models", document)
         if self._active_profile_id == profile_id:
             self._active_profile_id = None  # nothing left to sync saves into
+            document["selected_profile_id"] = None
+        self._config.save("machine_models", document)
         logger.info("Machine model profile %d deleted", profile_id)
 
     # --------------------------------------------------------------- apply
@@ -251,7 +267,9 @@ class MachineModelService:
         detection = profile.get("detection")
         if detection:
             camera_indices = current_cameras.keys()
-            self._engine.apply_config(migrate_legacy_detection_config(detection, camera_indices))
+            detection = copy.deepcopy(migrate_legacy_detection_config(detection, camera_indices))
+            self._fill_missing_strategy_blocks(detection)
+            self._engine.apply_config(detection)
 
         try:
             self._plc.set_model_select(int(profile["plc_code"]))
@@ -262,58 +280,98 @@ class MachineModelService:
         # subsequent page Save is folded back (see :attr:`active_profile_id`).
         # An id-less profile — only a hand-built one in a test — releases the
         # claim rather than leaving saves pointed at the outgoing model.
-        self._active_profile_id = int(profile["id"]) if "id" in profile else None
+        self._set_target(int(profile["id"]) if "id" in profile else None)
         return warnings
 
     # ------------------------------------------------------ active profile
     @property
     def active_profile_id(self) -> int | None:
-        """Id of the profile the station's live settings belong to — the one
-        :meth:`sync_active_profile` writes a saved settings domain back into.
+        """Id of the *selected* profile — the one :meth:`sync_active_profile`
+        writes a saved settings domain back into.
 
-        Claimed by :meth:`apply_profile`: a model that has been pushed live
-        (by the PLC's model_select register or by "Apply Now") *is* what the
-        running settings describe, and it is what the "Currently active"
-        line on the Machine Models page names.
+        Set by picking a profile on the Machine Models page
+        (:meth:`select_profile`) and by :meth:`apply_profile` (the PLC's
+        model_select register or "Apply Now"), whichever happened last, and
+        persisted as ``selected_profile_id`` in machine_models.json so a
+        restart keeps it. It used to be claimed by applying alone and held
+        only in memory, which meant a station whose PLC was offline never had
+        a target and every Detection-page Save silently updated no model.
 
-        ``None`` until that has happened, and again once the active profile
-        is deleted — which is what stops a station that has never selected a
-        model from quietly growing every settings edit into an arbitrary
-        profile. Only in that unclaimed state do
+        ``None`` until a profile has been selected, and again once the
+        selected profile is deleted — which is what stops a station that has
+        never chosen a model from quietly growing every settings edit into an
+        arbitrary profile. Only in that unclaimed state do
         :meth:`capture_current`/:meth:`update_from_current` adopt the profile
-        they just wrote (see :meth:`_adopt_if_unclaimed`), so commissioning a
-        station with "New from Current" works before any model has been
-        applied.
-
-        Deliberately *not* the Machine Models page's selected row: browsing
-        profiles — or copying the current settings into a second profile with
-        "Update Selected from Current" — must not redirect where the next
-        Camera-page Save lands, or the model actually running would start
-        drifting again, which is the whole problem this exists to stop.
+        they just wrote (see :meth:`_adopt_if_unclaimed`).
         """
         return self._active_profile_id
 
+    def select_profile(self, profile_id: int | None) -> None:
+        """Make *profile_id* the profile page Saves update (``None`` clears).
+
+        The Machine Models page calls this when the operator picks a row.
+        Nothing is applied — the running cameras/detectors/calibrations are
+        untouched; only where the next Camera/Detection/Calibration Save
+        lands changes.
+
+        Raises:
+            ConfigurationError: no profile with that id.
+        """
+        if profile_id is not None and self.get_by_id(profile_id) is None:
+            raise ConfigurationError(f"No machine model profile with id {profile_id}")
+        self._set_target(profile_id)
+
+    def _set_target(self, profile_id: int | None) -> None:
+        """Point syncs at *profile_id* and persist it, writing only on change."""
+        if profile_id == self._active_profile_id:
+            return
+        self._active_profile_id = profile_id
+        try:
+            document = self._config.load("machine_models")
+            if document.get("selected_profile_id") != profile_id:
+                document["selected_profile_id"] = profile_id
+                self._config.save("machine_models", document)
+        except VisionSystemError as exc:
+            # The in-memory target still holds for this session.
+            logger.warning("Selected machine model not persisted: %s", exc)
+
+    def _load_selected_id(self) -> int | None:
+        """The persisted ``selected_profile_id``, if it still names a profile."""
+        try:
+            selected = self._config.load("machine_models").get("selected_profile_id")
+        except VisionSystemError as exc:
+            logger.warning("Selected machine model not read: %s", exc)
+            return None
+        if selected is None:
+            return None
+        try:
+            selected = int(selected)
+        except (TypeError, ValueError):
+            return None
+        return selected if self.get_by_id(selected) is not None else None
+
     def _adopt_if_unclaimed(self, profile_id: int) -> None:
-        """Make *profile_id* the sync target only while no model is live.
+        """Make *profile_id* the sync target only while none is selected.
 
         See :attr:`active_profile_id` for why a claimed target is never
         stolen by a capture.
         """
         if self._active_profile_id is None:
-            self._active_profile_id = profile_id
+            self._set_target(profile_id)
 
     def sync_active_profile(
-        self, domain: str, *, updated_by: str = ""
+        self,
+        domain: str,
+        *,
+        camera_indices: Iterable[int] | None = None,
+        updated_by: str = "",
     ) -> dict[str, Any] | None:
-        """Re-capture one live settings domain into the active profile.
+        """Re-capture one live settings domain into the selected profile.
 
         This is what makes a Camera / Detection / Calibration page's **Save**
         show up in the machine model immediately, instead of waiting for
         someone to return to the Machine Models page and press "Update
-        Selected from Current". A profile that has been applied describes the
-        station's running configuration; letting it drift from the settings
-        actually in force is how a model switch later silently reverts a
-        tuning session.
+        Selected from Current".
 
         One domain per call, and each snapshot is read from the live objects
         rather than the config files (see :meth:`_snapshot_cameras`): saving
@@ -321,11 +379,18 @@ class MachineModelService:
         back to whatever ``camera.json`` and the calibration table hold, which
         after a model switch is the *previous* model.
 
+        *camera_indices* narrows the re-capture to those cameras (every page
+        saves one camera at a time); the profile's other cameras keep what
+        they hold. ``None`` re-captures every camera. Narrowing matters
+        because the selected profile need not be the one running: copying all
+        four live blocks would overwrite the profile's other cameras with
+        another model's settings.
+
         Returns the rewritten profile, or ``None`` when there is nothing to
-        do — no active profile, the active profile has since been deleted, or
-        the snapshot is identical to what the profile already holds. That last
-        case matters: a Save that changed nothing must not rewrite
-        machine_models.json or bump ``updated_at``.
+        do — no selected profile, the selected profile has since been
+        deleted, or the snapshot is identical to what the profile already
+        holds. That last case matters: a Save that changed nothing must not
+        rewrite machine_models.json or bump ``updated_at``.
 
         Raises:
             ValueError: *domain* is not one of ``cameras``/``detection``/
@@ -347,10 +412,12 @@ class MachineModelService:
             profile = self._find(profiles, profile_id)
         except ConfigurationError:
             # Deleted from under us by another page; stop trying to sync it.
-            self._active_profile_id = None
+            self._set_target(None)
             return None
 
         snapshot = self._snapshot(domain)
+        if camera_indices is not None:
+            snapshot = self._merge_cameras(domain, profile.get(domain), snapshot, camera_indices)
         if profile.get(domain) == snapshot:
             return None
 
@@ -394,6 +461,128 @@ class MachineModelService:
                 logger.exception("Machine model observer failed")
 
     # -------------------------------------------------------------- internal
+    def _backfill_profiles(self) -> None:
+        """Give every stored profile the strategy blocks it predates.
+
+        A profile carries every strategy's block and every parameter, but
+        only the ones that existed when it was captured — this station's
+        profiles from before ``blob_analysis``/``caliper_based_circle_fitting``
+        (and their ``template_*`` variants) had no block for them, and older
+        ones lacked newer keys inside existing blocks (``template_matching``
+        without ``scales``/``max_matches``/the diameter gates, ``common``
+        without downscale/NG re-run). Applying one left those Detection-page
+        fields on hard-coded fallbacks, which the next Save then wrote into
+        the model. Persisted once here (no ``updated_at`` bump: nothing the
+        model runs changes), and repeated in :meth:`apply_profile` for any
+        strategy or parameter added later.
+        """
+        try:
+            document = self._config.load("machine_models")
+        except VisionSystemError as exc:
+            logger.warning("Machine model profiles not checked for missing settings: %s", exc)
+            return
+        filled: dict[str, list[str]] = {}
+        for profile in document.get("profiles", []):
+            detection = profile.get("detection")
+            if isinstance(detection, dict) and "cameras" in detection:
+                added = self._fill_missing_strategy_blocks(detection)
+                if added:
+                    filled[str(profile.get("name", profile.get("id")))] = added
+        if not filled:
+            return
+        try:
+            self._config.save("machine_models", document)
+        except VisionSystemError as exc:
+            logger.warning("Machine model settings backfill not saved: %s", exc)
+            return
+        for name, added in filled.items():
+            settings = sorted({entry.split(": ", 1)[1] for entry in added})
+            logger.info(
+                "Machine model profile %r: added missing detection settings (%s)",
+                name, ", ".join(settings),
+            )
+
+    def _fill_missing_strategy_blocks(self, detection: dict[str, Any]) -> list[str]:
+        """Complete a per-camera *detection* document in place; returns
+        ``"camera N: name"`` per block added and ``"camera N: name.key"`` per
+        parameter added.
+
+        Two sources, on purpose:
+
+        - a **missing block** is copied whole from that camera's entry in
+          ``detection.json`` — the station's own tuning, and what the
+          Detection page shows when no model is applied — or failing that
+          the shipped defaults. A block the model never had is not one it
+          runs, so its values cannot move a verdict;
+        - a **missing key inside an existing block** (``common`` included)
+          comes from the **shipped defaults** only. The model has been
+          running without that key, i.e. on the detector's own fallback,
+          which the defaults file mirrors — so recording it changes nothing,
+          where another model's tuned value mixed into this model's block
+          would.
+
+        Keys the model already has are never touched.
+        """
+        sources = []
+        for load in (self._config.load, self._config.load_defaults):
+            try:
+                sources.append(load("detection").get("cameras", {}))
+            except VisionSystemError:
+                sources.append({})
+        defaults = sources[1]
+        added: list[str] = []
+        for index, block in detection.get("cameras", {}).items():
+            if not isinstance(block, dict):
+                continue
+            original = set(block)
+            for source in sources:
+                for name, params in source.get(str(index), {}).items():
+                    if name in _NON_STRATEGY_KEYS or name in block or not isinstance(params, dict):
+                        continue
+                    block[name] = copy.deepcopy(params)
+                    added.append(f"camera {index}: {name}")
+            for name in original:
+                params = block[name]
+                reference = defaults.get(str(index), {}).get(name)
+                if not isinstance(params, dict) or not isinstance(reference, dict):
+                    continue
+                for key, value in reference.items():
+                    if key not in params:
+                        params[key] = copy.deepcopy(value)
+                        added.append(f"camera {index}: {name}.{key}")
+        return added
+
+    def _merge_cameras(
+        self, domain: str, existing: Any, snapshot: Any, camera_indices: Iterable[int]
+    ) -> Any:
+        """*existing* with only *camera_indices* replaced from *snapshot*.
+
+        Every syncable domain is a ``{"<index>": block}`` map — detection's
+        under its ``cameras`` key. A camera the snapshot no longer has (a
+        calibration cleared back to the identity fallback) is dropped, so the
+        sparse calibration map stays sparse. A profile holding nothing for the
+        domain yet takes the whole snapshot: a partial detection document is
+        not one :meth:`apply_profile` can hot-swap cleanly.
+        """
+        if not existing:
+            return snapshot
+        keys = {str(int(index)) for index in camera_indices}
+        if domain == "detection":
+            indices = [int(cfg["index"]) for cfg in self._cameras.get_effective_configs()]
+            merged = copy.deepcopy(migrate_legacy_detection_config(existing, indices))
+            target = merged.setdefault("cameras", {})
+            fresh = snapshot.get("cameras", {})
+        else:
+            merged = copy.deepcopy(existing)
+            target = merged
+            fresh = snapshot
+        for key in keys:
+            if key in fresh:
+                target[key] = fresh[key]
+            else:
+                target.pop(key, None)
+        return merged
+
     def _snapshot(self, domain: str) -> Any:
         return {
             "cameras": self._snapshot_cameras,

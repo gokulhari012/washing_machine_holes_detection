@@ -12,12 +12,17 @@ calibration-history row (the same live-preview path the PLC-driven
 auto-switch in main.py's ``Application._on_machine_model_changed`` uses).
 
 Those two buttons are no longer the only way a profile gains new values:
-once a profile is live, Save on the Camera, Detection or Calibration page
-folds that domain straight back into it
+Save on the Camera, Detection or Calibration page folds the saved camera
+straight back into the **selected** profile
 (``MachineModelService.sync_active_profile``, wired in the composition
-root). This page repaints on that service's ``subscribe`` fan-out, because
-an automatic sync is the one profile change no button here initiated —
-without it the tree would keep showing the pre-save snapshot.
+root). The selected row *is* that target: clicking a row selects it
+(``MachineModelService.select_profile``, persisted across restarts), and
+applying a model — PLC or "Apply Now" — moves the selection to it. With no
+profile selected the list shows no row, so nobody can mistake a highlighted
+row for one that is receiving saves. This page repaints on the service's
+``subscribe`` fan-out, because an automatic sync is the one profile change no
+button here initiated — without it the tree would keep showing the pre-save
+snapshot.
 
 The right-hand panel is a tree, one top-level branch per camera, each with
 "Camera", "Detection" and "Calibration" sub-branches of individual
@@ -54,6 +59,11 @@ from PySide6.QtWidgets import (
 )
 
 from core.utilities.exceptions import VisionSystemError
+from core.vision import (
+    TemplateBlobAnalysisDetector,
+    TemplateCaliperCircleDetector,
+    TemplateOpenCVDetector,
+)
 from models.app_state import AppState
 from services.auth_service import AuthService
 from services.machine_model_service import MachineModelService
@@ -63,6 +73,25 @@ _DOMAIN_PAGES = {
     "cameras": "Camera",
     "detection": "Detection",
     "calibration": "Calibration",
+}
+
+# Two-stage strategies run on two sibling blocks of the camera's detection
+# config as well as their own — shown under the active strategy so the tree
+# lists every parameter the camera is really using.
+_STAGE_BLOCKS = {
+    cls.name: (("Stage 1", cls.TEMPLATE_STAGE), ("Stage 2", cls.HOLE_STAGE))
+    for cls in (TemplateOpenCVDetector, TemplateBlobAnalysisDetector, TemplateCaliperCircleDetector)
+}
+
+_COMMON_LABELS = {
+    "confidence_threshold": "Confidence Threshold",
+    "expected_hole_count": "Expected Hole Count",
+    "position_tolerance_mm": "Position Tolerance (mm)",
+    "normalize_image": "Normalize Image",
+    "downscale_enabled": "Downscale",
+    "downscale_factor": "Downscale Factor",
+    "ng_rerun_enabled": "On NG: Re-run",
+    "ng_rerun_count": "NG Re-run Count",
 }
 
 
@@ -87,6 +116,11 @@ class MachineModelsPage(QWidget):
         self._auth = auth_service
         self._app_state = app_state
         self._row_ids: list[int] = []
+        # Set while the list is repopulated, so restoring the selection does
+        # not count as the operator choosing a profile.
+        self._restoring = False
+        # Tree branches folded shut after the tree's expandAll().
+        self._collapse_after_expand: list[QTreeWidgetItem] = []
 
         root = QVBoxLayout(self)
         root.setContentsMargins(14, 10, 14, 10)
@@ -98,6 +132,9 @@ class MachineModelsPage(QWidget):
         self._active_label = QLabel(self._active_text(name, code))
         self._active_label.setProperty("class", "dim")
         root.addWidget(self._active_label)
+        self._target_label = QLabel()
+        self._target_label.setWordWrap(True)
+        root.addWidget(self._target_label)
 
         body = QHBoxLayout()
         body.setSpacing(12)
@@ -128,10 +165,9 @@ class MachineModelsPage(QWidget):
         new_btn.clicked.connect(self._on_new_from_current)
         update_btn = QPushButton("Update Selected from Current")
         update_btn.setToolTip(
-            "Re-capture current settings into the selected profile. Not "
-            "normally needed for the profile already applied: saving on the "
-            "Camera, Detection or Calibration page updates that one "
-            "automatically."
+            "Re-capture every camera's current settings into the selected "
+            "profile. Not normally needed: saving on the Camera, Detection or "
+            "Calibration page updates the selected profile automatically."
         )
         update_btn.clicked.connect(self._on_update_from_current)
         rename_btn = QPushButton("Rename / Change Code")
@@ -182,18 +218,31 @@ class MachineModelsPage(QWidget):
 
     # -------------------------------------------------------------- loading
     def _reload(self) -> None:
-        selected = self._current_id()
-        self._list.clear()
-        self._row_ids = []
-        for profile in self._svc.list_profiles():
-            self._row_ids.append(int(profile["id"]))
-            self._list.addItem(f"{profile['plc_code']}: {profile['name']}")
-        if self._row_ids:
-            row = self._row_ids.index(selected) if selected in self._row_ids else 0
-            self._list.setCurrentRow(row)
-        else:
+        """Repopulate the list and re-select the profile saves go to.
+
+        The highlighted row is always the service's selected profile, never
+        just the last row clicked — with none selected, no row is.
+        """
+        target = self._svc.active_profile_id
+        self._restoring = True
+        try:
+            self._list.clear()
+            self._row_ids = []
+            for profile in self._svc.list_profiles():
+                self._row_ids.append(int(profile["id"]))
+                self._list.addItem(f"{profile['plc_code']}: {profile['name']}")
+            self._list.setCurrentRow(
+                self._row_ids.index(target) if target in self._row_ids else -1
+            )
+        finally:
+            self._restoring = False
+        if not self._row_ids:
             self._meta_label.setText("No machine model profiles yet.")
             self._tree.clear()
+        elif target not in self._row_ids:
+            self._meta_label.setText("Select a profile to view it.")
+            self._tree.clear()
+        self._refresh_target_label()
 
     def _current_id(self) -> int | None:
         row = self._list.currentRow()
@@ -213,6 +262,16 @@ class MachineModelsPage(QWidget):
             self._meta_label.setText("—")
             self._tree.clear()
             return
+        if not self._restoring:
+            # The operator picked this row: it becomes the profile that page
+            # Saves update (applying nothing to the running station).
+            try:
+                self._svc.select_profile(int(profile["id"]))
+            except VisionSystemError as exc:
+                QMessageBox.warning(self, "Select Machine Model", str(exc))
+                self._reload()
+                return
+            self._refresh_target_label()
         self._name.setText(profile["name"])
         self._code.setValue(int(profile["plc_code"]))
         self._populate_profile(profile)
@@ -306,10 +365,30 @@ class MachineModelsPage(QWidget):
 
     def _on_active_model_changed(self, name: str, code: int) -> None:
         self._active_label.setText(self._active_text(name, code))
+        self._reload()  # applying a model also selected it
 
     @staticmethod
     def _active_text(name: str, code: int | None) -> str:
         return f"Currently active: {name} (code {code})" if name else "No machine model applied yet"
+
+    def _refresh_target_label(self) -> None:
+        target = self._svc.active_profile_id
+        profile = None if target is None else self._svc.get_by_id(target)
+        if profile is None:
+            self._target_label.setText(
+                "No profile selected — saving on the Camera, Detection or "
+                "Calibration page updates no machine model. Select one in the list."
+            )
+            self._target_label.setProperty("class", "warn")
+        else:
+            self._target_label.setText(
+                f"Saving on the Camera, Detection or Calibration page updates: "
+                f"{profile['name']} (code {profile['plc_code']})"
+            )
+            self._target_label.setProperty("class", "")
+        # A dynamic property change needs a re-polish for the QSS to follow.
+        self._target_label.style().unpolish(self._target_label)
+        self._target_label.style().polish(self._target_label)
 
     def _username(self) -> str:
         user = self._auth.current_user
@@ -328,6 +407,7 @@ class MachineModelsPage(QWidget):
         )
 
         self._tree.clear()
+        self._collapse_after_expand: list[QTreeWidgetItem] = []
         cameras = profile.get("cameras", {})
         calibrations = profile.get("calibration", {})
         detection = profile.get("detection", {})
@@ -357,6 +437,8 @@ class MachineModelsPage(QWidget):
             camera_item.setExpanded(True)
 
         self._tree.expandAll()
+        for item in self._collapse_after_expand:
+            item.setExpanded(False)
 
     @staticmethod
     def _leaf(parent: QTreeWidgetItem, label: str, value: object) -> None:
@@ -388,17 +470,34 @@ class MachineModelsPage(QWidget):
             self._leaf(branch, "(not captured)", "")
             return
         active = detection.get("active_detector", "—")
-        common = detection.get("common", {})
         self._leaf(branch, "Active Strategy", active)
-        self._leaf(branch, "Confidence Threshold", common.get("confidence_threshold", "—"))
-        self._leaf(branch, "Expected Hole Count", common.get("expected_hole_count", "—"))
-        self._leaf(branch, "Position Tolerance", f"{common.get('position_tolerance_mm', '—')} mm")
-        self._leaf(branch, "Normalize Image", bool(common.get("normalize_image", False)))
+        for key, value in detection.get("common", {}).items():
+            self._leaf(branch, _COMMON_LABELS.get(key, key), value)
 
-        params = detection.get(active, {})
+        shown = {"active_detector", "common"}
+        blocks = [(f"{active} Parameters", active)]
+        blocks += [
+            (f"{title} — {block} Parameters", block)
+            for title, block in _STAGE_BLOCKS.get(active, ())
+        ]
+        for title, block in blocks:
+            shown.add(block)
+            self._add_params(branch, title, detection.get(block))
+
+        # Every strategy's block is stored, not just the active one's, so
+        # switching strategy after applying the model keeps its tuning.
+        others = [key for key in detection if key not in shown]
+        if others:
+            others_branch = QTreeWidgetItem(["Other Strategies (stored, not in use)", ""])
+            branch.addChild(others_branch)
+            for block in others:
+                self._add_params(others_branch, f"{block} Parameters", detection.get(block))
+            self._collapse_after_expand.append(others_branch)
+
+    def _add_params(self, parent: QTreeWidgetItem, title: str, params: object) -> None:
         if isinstance(params, dict) and params:
-            params_branch = QTreeWidgetItem([f"{active} Parameters", ""])
-            branch.addChild(params_branch)
+            params_branch = QTreeWidgetItem([title, ""])
+            parent.addChild(params_branch)
             for key, value in params.items():
                 self._leaf(params_branch, key, value)
 

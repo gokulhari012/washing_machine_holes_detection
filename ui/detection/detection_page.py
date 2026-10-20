@@ -124,7 +124,7 @@ import math
 from dataclasses import replace
 
 import numpy as np
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -602,6 +602,11 @@ def _format_scales(value: object) -> str:
 
 class DetectionPage(QWidget):
     """Per-camera algorithm parameters, strategy switching, live test."""
+
+    #: camera index whose detection block was just persisted (Save & Apply
+    #: or Restore Defaults) — the composition root folds that camera into the
+    #: selected machine model (``MachineModelService.sync_active_profile``)
+    settings_saved = Signal(int)
 
     def __init__(
         self,
@@ -1625,6 +1630,7 @@ class DetectionPage(QWidget):
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Save & Apply", str(exc))
             return
+        self.settings_saved.emit(camera_index)
         QMessageBox.information(
             self, "Save & Apply", f"Detection parameters applied to camera {camera_index}."
         )
@@ -1645,6 +1651,7 @@ class DetectionPage(QWidget):
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Restore Defaults", str(exc))
             return
+        self.settings_saved.emit(camera_index)
         self._load()
 
     def _on_test(self) -> None:

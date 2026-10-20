@@ -87,7 +87,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QCheckBox,
@@ -139,6 +139,11 @@ ROI_MM_DECIMALS = 3
 
 class CameraPage(QWidget):
     """Add / remove / tune / test cameras."""
+
+    #: camera index whose settings Save just persisted — the composition root
+    #: folds that camera into the selected machine model
+    #: (``MachineModelService.sync_active_profile``)
+    settings_saved = Signal(int)
 
     def __init__(
         self,
@@ -832,11 +837,13 @@ class CameraPage(QWidget):
             QMessageBox.warning(self, "Apply Live", str(exc))
 
     def _on_save(self) -> None:
+        cfg = self._collect()
         try:
-            self._svc.save_camera(self._collect())
+            self._svc.save_camera(cfg)
         except VisionSystemError as exc:
             QMessageBox.warning(self, "Save Configuration", str(exc))
             return
+        self.settings_saved.emit(int(cfg["index"]))
         self.reload()
 
     def _on_detect_resolution(self) -> None:

@@ -1,7 +1,7 @@
 {
   "cameras": {
     "1": {
-      "active_detector": "template_opencv",
+      "active_detector": "template_matching",
       "common": {
         "confidence_threshold": 0.6,
         "expected_hole_count": 1,
@@ -13,7 +13,7 @@
         "ng_rerun_count": 1
       },
       "opencv": {
-        "detection_threshold": 45,
+        "detection_threshold": 145,
         "adaptive_threshold": false,
         "blur_kernel_size": 1,
         "edge_threshold_low": 50,

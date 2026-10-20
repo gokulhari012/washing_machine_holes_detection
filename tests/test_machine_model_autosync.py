@@ -1,16 +1,21 @@
-"""Saving on an engineering page updates the applied machine model at once.
+"""Saving on an engineering page updates the selected machine model at once.
 
 The complaint this pins: a profile only picked up new values when someone
 went back to the Machine Models page and pressed "Update Selected from
 Current", so a station could run Model A while Model A's stored snapshot
 still described the settings from before the last tuning session.
 
-These drive the real pages' Save handlers through the same subscriptions the
-composition root registers (``ConfigManager.subscribe`` for camera/detection,
-``CalibrationManager.subscribe`` for calibration -> ``MachineModelService.
-sync_active_profile``); the fixture reproduces that wiring, cut down to the
-objects the pages need, and each test asserts on ``machine_models.json``
-itself rather than on the service's return value.
+A second complaint: Detection-page Saves never reached any profile on a
+station whose PLC was offline, because only an *applied* model was a sync
+target. The model selected on the Machine Models page is now the target too,
+and the selection survives a restart.
+
+These drive the real pages' Save handlers through the same wiring the
+composition root registers (each page's ``settings_saved(camera_index)`` for
+camera/detection, ``CalibrationManager.subscribe`` for calibration ->
+``MachineModelService.sync_active_profile``); the fixture reproduces that
+wiring, cut down to the objects the pages need, and each test asserts on
+``machine_models.json`` itself rather than on the service's return value.
 """
 
 from __future__ import annotations
@@ -130,17 +135,36 @@ def station(tmp_path, qt_app):
     auth = SimpleNamespace(current_user=SimpleNamespace(username="admin"))
 
     # --- main.py's wiring, minus the acquisition workers a headless test
-    # has no use for. Order matters for "camera": the rebuild runs first so
-    # the snapshot is taken from the manager the save just produced.
+    # has no use for. The camera/detection pages are wired as they are built
+    # (see _camera_page/_detection_page): settings_saved fires after
+    # save_camera returns, so after this rebuild.
     config.subscribe("camera", lambda doc: manager.rebuild(doc.get("cameras", [])))
-    config.subscribe("camera", lambda _doc: models.sync_active_profile("cameras"))
-    config.subscribe("detection", lambda _doc: models.sync_active_profile("detection"))
-    calibration.subscribe(lambda _cal: models.sync_active_profile("calibration"))
+    calibration.subscribe(
+        lambda cal: models.sync_active_profile(
+            "calibration", camera_indices=[cal.camera_index]
+        )
+    )
 
     return SimpleNamespace(
         config=config, cameras=cameras, engine=engine, calibration=calibration,
         app_state=app_state, models=models, auth=auth,
     )
+
+
+def _camera_page(station) -> CameraPage:
+    page = CameraPage(station.app_state, station.cameras)
+    page.settings_saved.connect(
+        lambda index: station.models.sync_active_profile("cameras", camera_indices=[index])
+    )
+    return page
+
+
+def _detection_page(station) -> DetectionPage:
+    page = DetectionPage(station.config, station.engine, station.cameras, station.app_state)
+    page.settings_saved.connect(
+        lambda index: station.models.sync_active_profile("detection", camera_indices=[index])
+    )
+    return page
 
 
 def _live_profile(station) -> dict:
@@ -163,7 +187,7 @@ def test_camera_page_save_updates_the_applied_profile(station) -> None:
     profile = _live_profile(station)
     assert profile["cameras"]["1"]["exposure_us"] == 10000
 
-    page = CameraPage(station.app_state, station.cameras)
+    page = _camera_page(station)
     page._exposure.setValue(27000)
     page._on_save()
 
@@ -174,9 +198,7 @@ def test_detection_page_save_updates_the_applied_profile(station) -> None:
     profile = _live_profile(station)
     assert profile["detection"]["cameras"]["1"]["active_detector"] == "opencv"
 
-    page = DetectionPage(
-        station.config, station.engine, station.cameras, station.app_state
-    )
+    page = _detection_page(station)
     page._strategy.setCurrentText("dark_hole")
     page._expected.setValue(3)
     page._on_save()
@@ -200,16 +222,15 @@ def test_calibration_page_save_updates_the_applied_profile(station) -> None:
     assert _stored(station, profile)["calibration"]["1"]["pixels_per_mm_x"] == 6.25
 
 
-def test_saving_without_an_applied_profile_leaves_every_profile_alone(station) -> None:
-    """No model is live — the state the station is in between startup and the
-    PLC's first model_select read — so a Save has no profile to belong to and
-    must not pick an arbitrary one to grow into."""
+def test_saving_without_a_selected_profile_leaves_every_profile_alone(station) -> None:
+    """No model is selected, so a Save has no profile to belong to and must
+    not pick an arbitrary one to grow into."""
     first = station.models.capture_current("Model A", 3, created_by="admin")
     other = station.models.capture_current("Model B", 4, created_by="admin")
     station.models.delete(first["id"])  # takes the only claimed target with it
     assert station.models.active_profile_id is None
 
-    page = CameraPage(station.app_state, station.cameras)
+    page = _camera_page(station)
     page._exposure.setValue(27000)
     page._on_save()
 
@@ -223,9 +244,7 @@ def test_machine_models_page_repaints_when_a_save_syncs_the_profile(station) -> 
     page = MachineModelsPage(station.models, station.auth, station.app_state)
     assert _detection_row(page, "Active Strategy") == "opencv"
 
-    detection_page = DetectionPage(
-        station.config, station.engine, station.cameras, station.app_state
-    )
+    detection_page = _detection_page(station)
     detection_page._strategy.setCurrentText("dark_hole")
     detection_page._on_save()
 
@@ -245,3 +264,173 @@ def _detection_row(page: MachineModelsPage, label: str) -> str:
             if leaf.text(0) == label:
                 return leaf.text(1)
     raise AssertionError(f"no Detection row {label!r} in the profile tree")
+
+
+# --------------------------------------------- selected (not applied) target
+def _two_profiles(station) -> tuple[dict, dict]:
+    """Two captured profiles with nothing applied and nothing selected."""
+    first = station.models.capture_current("Model A", 3, created_by="admin")
+    second = station.models.capture_current("Model B", 4, created_by="admin")
+    station.models.select_profile(None)
+    return first, second
+
+
+def test_detection_save_updates_the_profile_selected_without_applying(station) -> None:
+    """The station's PLC is offline, so no model is ever applied: picking one
+    on the Machine Models page must still make Detection Saves land in it."""
+    first, second = _two_profiles(station)
+    page = MachineModelsPage(station.models, station.auth, station.app_state)
+    page._list.setCurrentRow(page._row_ids.index(second["id"]))
+    assert station.models.active_profile_id == second["id"]
+
+    detection_page = _detection_page(station)
+    detection_page._strategy.setCurrentText("dark_hole")
+    detection_page._on_save()
+
+    assert _stored(station, second)["detection"]["cameras"]["1"]["active_detector"] == "dark_hole"
+    assert _stored(station, first)["detection"]["cameras"]["1"]["active_detector"] == "opencv"
+
+
+def test_an_unchanged_resave_still_reaches_a_newly_selected_profile(station) -> None:
+    """Values saved while nothing was selected reach the model once it is
+    selected and Save is pressed again, even though detection.json does not
+    change — the case a file diff would have missed."""
+    _first, second = _two_profiles(station)
+    detection_page = _detection_page(station)
+    detection_page._strategy.setCurrentText("dark_hole")
+    detection_page._on_save()  # no target yet
+    assert _stored(station, second)["detection"]["cameras"]["1"]["active_detector"] == "opencv"
+
+    station.models.select_profile(second["id"])
+    detection_page._on_save()
+
+    assert _stored(station, second)["detection"]["cameras"]["1"]["active_detector"] == "dark_hole"
+
+
+def test_the_selection_survives_a_restart(station) -> None:
+    _first, second = _two_profiles(station)
+    station.models.select_profile(second["id"])
+
+    restarted = MachineModelService(
+        station.config, station.cameras, station.engine, None, station.calibration
+    )
+
+    assert restarted.active_profile_id == second["id"]
+
+
+def test_a_save_replaces_only_the_saved_camera_in_the_profile(station) -> None:
+    """The selected profile need not be the one running, so saving camera 1
+    must leave the profile's other cameras exactly as stored."""
+    _first, second = _two_profiles(station)
+    document = station.config.load("machine_models")
+    for entry in document["profiles"]:
+        if entry["id"] == second["id"]:
+            entry["detection"]["cameras"]["2"] = {"active_detector": "yolo", "common": {}}
+    station.config.save("machine_models", document)
+    station.models.select_profile(second["id"])
+
+    detection_page = _detection_page(station)
+    detection_page._strategy.setCurrentText("dark_hole")
+    detection_page._on_save()
+
+    stored = _stored(station, second)["detection"]["cameras"]
+    assert stored["1"]["active_detector"] == "dark_hole"
+    assert stored["2"] == {"active_detector": "yolo", "common": {}}
+
+
+def test_the_page_highlights_only_the_selected_profile(station) -> None:
+    """No row is highlighted while nothing is selected, so a highlighted row
+    always means "this is where Saves go"."""
+    _first, second = _two_profiles(station)
+    page = MachineModelsPage(station.models, station.auth, station.app_state)
+    assert page._list.currentRow() == -1
+    assert "No profile selected" in page._target_label.text()
+
+    station.models.select_profile(second["id"])
+    page._reload()
+
+    assert page._current_id() == second["id"]
+    assert "Model B" in page._target_label.text()
+
+
+def test_the_tree_lists_every_detection_parameter(station) -> None:
+    profile = _live_profile(station)
+    page = MachineModelsPage(station.models, station.auth, station.app_state)
+    assert page._current_id() == profile["id"]
+
+    camera_item = page._tree.topLevelItem(0)
+    detection = next(
+        camera_item.child(row) for row in range(camera_item.childCount())
+        if camera_item.child(row).text(0) == "Detection"
+    )
+    titles = [detection.child(row).text(0) for row in range(detection.childCount())]
+    assert "opencv Parameters" in titles
+    assert "Other Strategies (stored, not in use)" in titles
+
+
+# ------------------------------------------- strategies a profile predates
+def _strip_dark_hole(station, profile: dict) -> None:
+    """Make *profile* look captured before ``dark_hole`` existed, with an
+    opencv block tuned away from detection.json's."""
+    document = station.config.load("machine_models")
+    for entry in document["profiles"]:
+        if entry["id"] == profile["id"]:
+            camera = entry["detection"]["cameras"]["1"]
+            del camera["dark_hole"]
+            camera["opencv"]["detection_threshold"] = 99
+            camera["common"].pop("normalize_image")
+    station.config.save("machine_models", document)
+
+
+def _restart(station) -> MachineModelService:
+    return MachineModelService(
+        station.config, station.cameras, station.engine, None, station.calibration
+    )
+
+
+def test_a_profile_predating_a_strategy_gets_its_block_at_startup(station) -> None:
+    profile = station.models.capture_current("Model A", 3, created_by="admin")
+    _strip_dark_hole(station, profile)
+    updated_at = _stored(station, profile)["updated_at"]
+
+    _restart(station)
+
+    camera = _stored(station, profile)["detection"]["cameras"]["1"]
+    assert camera["dark_hole"] == DETECTION_DOC["cameras"]["1"]["dark_hole"]
+    # Nothing the model already holds moves; a key it lacked gets the
+    # shipped default it was effectively running on.
+    assert camera["opencv"]["detection_threshold"] == 99
+    assert camera["common"]["normalize_image"] is False
+    assert _stored(station, profile)["updated_at"] == updated_at
+
+
+def test_applying_a_profile_hands_the_engine_every_strategy_block(station) -> None:
+    profile = station.models.capture_current("Model A", 3, created_by="admin")
+    _strip_dark_hole(station, profile)
+    stored = _stored(station, profile)  # still without dark_hole: no restart
+
+    station.models.apply_profile(stored)
+
+    live = station.engine.camera_config(1)
+    assert live["dark_hole"] == DETECTION_DOC["cameras"]["1"]["dark_hole"]
+    assert live["opencv"]["detection_threshold"] == 99
+
+
+def test_a_key_missing_inside_a_block_takes_the_shipped_default(station) -> None:
+    """A block that predates one of its parameters gets the *default* — what
+    the detector fell back to while the key was absent — never another
+    model's tuning from detection.json mixed into this model's block."""
+    profile = station.models.capture_current("Model A", 3, created_by="admin")
+    document = station.config.load("machine_models")
+    for entry in document["profiles"]:
+        if entry["id"] == profile["id"]:
+            del entry["detection"]["cameras"]["1"]["opencv"]["min_hole_diameter_px"]
+    station.config.save("machine_models", document)
+    live = station.config.load("detection")
+    live["cameras"]["1"]["opencv"]["min_hole_diameter_px"] = 77
+    station.config.save("detection", live)
+
+    _restart(station)
+
+    opencv = _stored(station, profile)["detection"]["cameras"]["1"]["opencv"]
+    assert opencv["min_hole_diameter_px"] == 20  # DETECTION_DOC's default, not 77

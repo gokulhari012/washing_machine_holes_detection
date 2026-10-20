@@ -958,48 +958,76 @@ files** — `CameraService.get_effective_configs()`, `VisionEngine.camera_config
 after a switch those files describe the *previous* model and snapshotting them
 would fold the outgoing model's values into the incoming one.
 
-### Saving on an engineering page syncs the applied profile — automatically
+### Saving on an engineering page syncs the selected profile — automatically
 
-`MachineModelService.sync_active_profile(domain)` is the traffic in the other
-direction: once a profile is live, **Save** on the Camera, Detection or
-Calibration page folds that one domain straight back into it, so the profile a
-station is running never drifts from the settings it is running and nobody has to
-remember to press "Update Selected from Current" afterwards.
+`MachineModelService.sync_active_profile(domain, camera_indices=...)` is the
+traffic in the other direction: once a profile is **selected**, **Save** on the
+Camera, Detection or Calibration page folds the saved camera straight back into
+it, so nobody has to remember to press "Update Selected from Current" afterwards.
 
 ```
-Camera page Save    → ConfigManager.subscribe("camera")    ─┐
-Detection page Save → ConfigManager.subscribe("detection")  ├→ sync_active_profile(domain)
-Calibration Save    → CalibrationManager.subscribe()       ─┘   → machine_models.json
-                                                                → subscribe() fan-out
-                                                                  → Machine Models page repaints
+Camera page Save    → CameraPage.settings_saved(i)      ─┐
+Detection page Save → DetectionPage.settings_saved(i)    ├→ sync_active_profile(domain, camera_indices=[i])
+Calibration Save    → CalibrationManager.subscribe()     ─┘   → machine_models.json
+LED page brightness → CameraService.subscribe_brightness ─┘   → subscribe() fan-out
+                                                                → Machine Models page repaints
 ```
 
 Rules that are easy to break:
+- **The sync target is the *selected* model** (`active_profile_id`). Clicking a
+  row on the Machine Models page selects it (`select_profile`); applying a model
+  (`apply_profile` — the PLC's register 103 or "Apply Now") selects it too;
+  whichever happened last wins. It is **persisted** as `selected_profile_id` in
+  `machine_models.json`, so it survives a restart. This replaced an
+  "applied model only, in memory" rule under which a station whose PLC was
+  offline never had a target, and every Detection-page Save silently updated no
+  model — the live `machine_models.json` matched `detection.json` for no camera
+  of any profile when that was found (2026-10-20).
+- **The highlighted row *is* the target.** `MachineModelsPage._reload` restores
+  the selection from the service (guarded by `_restoring`, so restoring is not
+  mistaken for a click) and highlights **no** row while nothing is selected; a
+  label under "Currently active" names where Saves go.
+- **Only the saved camera is replaced** (`camera_indices`, merged by
+  `_merge_cameras`). The selected profile need not be the one running, so
+  re-capturing all four live blocks would overwrite its other cameras with
+  another model's settings. That is why the camera/detection hooks are page
+  signals carrying the camera index rather than `ConfigManager.subscribe` — and
+  not a diff of the file, which would miss re-saving unchanged values into a
+  newly selected model.
 - **One domain per call, snapshotted from live state.** Syncing all three on any
   save would drag the untouched two back to whatever the files hold — the
   previous model, after a switch.
-- **The sync target is the *applied* model** (`active_profile_id`, claimed by
-  `apply_profile` — the PLC's register 103 or "Apply Now"), which is what the
-  page's "Currently active" line names. `capture_current`/`update_from_current`
-  adopt it **only while nothing is claimed** (commissioning a fresh station with
-  "New from Current"): copying current settings into a second profile must never
-  redirect where the next Save lands, or the running model starts drifting again.
-  It is never the Machine Models page's *selected* row.
+- `capture_current`/`update_from_current` adopt the profile **only while nothing
+  is selected** (commissioning a fresh station with "New from Current").
 - **`None` target ⇒ no-op**, and so is a snapshot identical to what the profile
   already holds — an unchanged Save neither rewrites `machine_models.json` nor
   bumps `updated_at`.
 - **Best-effort in the composition root** (`Application._sync_active_machine_model`):
   the operator's Save has already succeeded, so a profile that can't be rewritten
   is logged + alarmed, never raised back into the page.
-- The camera hook is registered **after** `_on_camera_config_saved`, because
-  subscribers run in registration order and the snapshot must come from the
-  rebuilt `CameraManager`, not the one the save replaced.
+- `CameraPage.settings_saved` is emitted **after** `save_camera` returns, i.e.
+  after `_on_camera_config_saved` rebuilt the `CameraManager` the snapshot reads.
 - `CalibrationManager.subscribe` fires on **`save` only**, not `apply_live` — a
   model switch pushing its own snapshot back into the cache is not the operator
   calibrating anything, and folding it back in would be circular.
 
-Consequence worth stating plainly: with a model applied, a quick experiment on the
-Detection page that you **Save** is now a permanent edit to that model. Use "Test"
+**A profile predating a strategy is backfilled, never left short.** Every
+camera's detection block carries every strategy's parameters, but a profile only
+has the strategies that existed when it was captured. `MachineModelService`
+therefore adds each *absent* strategy block — from that camera's `detection.json`
+entry, else the shipped defaults — once at construction (persisted, no
+`updated_at` bump, logged per profile) and again inside `apply_profile`, so the
+Detection page never shows hard-coded fallbacks that a Save would then write into
+the model. A **key missing inside an existing block** (`common` included — e.g.
+`template_matching` without `scales`/`max_matches`/the diameter gates) is filled
+from the **shipped defaults only**, never `detection.json`: the model ran on the
+detector's own fallback for that key, which the defaults file mirrors, whereas
+another model's tuned value would change its verdicts. Keys a profile already has
+are never touched. The station's five profiles all predated the blob/caliper
+strategies, and three lacked newer keys, when this was added (2026-10-20).
+
+Consequence worth stating plainly: with a model selected, a quick experiment on
+the Detection page that you **Save** is a permanent edit to that model. Use "Test"
 (which applies without saving) for experiments, as before.
 
 ### Applying a profile is invisible to the config files — so the UI reads live state

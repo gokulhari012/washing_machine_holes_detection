@@ -222,11 +222,9 @@ class Application:
         self.inspection_worker.inspection_finished.connect(
             self.dashboard_snapshotter.on_inspection_finished
         )
-        self.window.add_page(
-            "Cameras", "◉",
-            CameraPage(self.app_state, self.camera_service, self.calibration),
-            min_role=UserRole.ADMIN,
-        )
+        camera_page = CameraPage(self.app_state, self.camera_service, self.calibration)
+        camera_page.settings_saved.connect(self._on_camera_settings_saved)
+        self.window.add_page("Cameras", "◉", camera_page, min_role=UserRole.ADMIN)
         self.window.add_page(
             "PLC", "⇄",
             PlcPage(self.app_state, self.plc_service, self.auth_service),
@@ -238,14 +236,12 @@ class Application:
             self.led_page,
             min_role=UserRole.ADMIN,
         )
-        self.window.add_page(
-            "Detection", "◎",
-            DetectionPage(
-                self.config, self.vision, self.camera_service, self.app_state,
-                self.calibration, self.yolo_training,
-            ),
-            min_role=UserRole.ADMIN,
+        detection_page = DetectionPage(
+            self.config, self.vision, self.camera_service, self.app_state,
+            self.calibration, self.yolo_training,
         )
+        detection_page.settings_saved.connect(self._on_detection_settings_saved)
+        self.window.add_page("Detection", "◎", detection_page, min_role=UserRole.ADMIN)
         self.window.add_page(
             "Calibration", "⌖",
             CalibrationPage(
@@ -275,15 +271,14 @@ class Application:
         self.config.subscribe("camera", self._on_camera_config_saved)
         self.config.subscribe("plc", self._on_plc_config_saved)
         self.config.subscribe("led", self._on_led_config_saved)
-        # Saving on an engineering page lands in the machine model the station
-        # is running straight away, rather than waiting for someone to press
-        # "Update Selected from Current" on the Machine Models page — see
-        # MachineModelService.sync_active_profile. The camera hook is
-        # registered *after* _on_camera_config_saved on purpose: subscribers
-        # run in registration order, and the snapshot must be taken from the
-        # rebuilt manager, not the one the save just replaced.
-        self.config.subscribe("camera", self._on_camera_settings_saved)
-        self.config.subscribe("detection", self._on_detection_settings_saved)
+        # Saving on an engineering page lands in the selected machine model
+        # straight away, rather than waiting for someone to press "Update
+        # Selected from Current" on the Machine Models page — see
+        # MachineModelService.sync_active_profile. Camera and Detection pages
+        # announce the camera they saved (settings_saved, connected above),
+        # so only that camera's block is re-captured; the camera signal fires
+        # after save_camera returns, i.e. after _on_camera_config_saved has
+        # rebuilt the manager the snapshot is read from.
         self.config.subscribe("app_config", self._on_app_config_saved)
         self.calibration.subscribe(self._on_calibration_saved)
         # The LED Controller page's camera brightness is persisted without
@@ -406,14 +401,14 @@ class Application:
             worker.start()
 
     # ------------------------------------------------- machine-model sync
-    def _on_camera_settings_saved(self, _camera_cfg: dict) -> None:
-        self._sync_active_machine_model("cameras")
+    def _on_camera_settings_saved(self, camera_index: int) -> None:
+        self._sync_active_machine_model("cameras", [camera_index])
 
     def _on_camera_brightness_set(self, levels: dict[int, int]) -> None:
         """Brightness set from the LED Controller page: fold it into the
-        applied machine model (it is a tunable per-model field) and publish
+        selected machine model (it is a tunable per-model field) and publish
         it so the Camera page's form follows. Runs on the UI thread."""
-        self._sync_active_machine_model("cameras")
+        self._sync_active_machine_model("cameras", list(levels))
         for index, brightness in levels.items():
             self.app_state.camera_brightness_changed.emit(index, brightness)
 
@@ -424,11 +419,11 @@ class Application:
         for index, strobe in states.items():
             self.app_state.camera_strobe_changed.emit(index, strobe)
 
-    def _on_detection_settings_saved(self, _detection_cfg: dict) -> None:
-        self._sync_active_machine_model("detection")
+    def _on_detection_settings_saved(self, camera_index: int) -> None:
+        self._sync_active_machine_model("detection", [camera_index])
 
-    def _on_calibration_saved(self, _calibration) -> None:
-        self._sync_active_machine_model("calibration")
+    def _on_calibration_saved(self, calibration) -> None:
+        self._sync_active_machine_model("calibration", [calibration.camera_index])
 
     def _on_app_config_saved(self, app_cfg: dict) -> None:
         """Re-paint the UI if the Settings page changed the colour scheme.
@@ -445,17 +440,18 @@ class Application:
         apply_theme(self.qt_app, theme)
         self.logger.info("Theme changed to %s", theme.value)
 
-    def _sync_active_machine_model(self, domain: str) -> None:
-        """Fold a just-saved settings domain into the active machine model.
+    def _sync_active_machine_model(self, domain: str, camera_indices: list[int]) -> None:
+        """Fold the just-saved cameras of one settings domain into the
+        selected machine model.
 
         Best-effort by design: the operator's Save has already succeeded and
         must not be reported as a failure because machine_models.json could
         not be rewritten, so a fault is logged and alarmed here instead of
-        propagating back into the page. A no-op while no profile is live.
+        propagating back into the page. A no-op while no profile is selected.
         """
         try:
             profile = self.machine_models.sync_active_profile(
-                domain, updated_by=self._current_username()
+                domain, camera_indices=camera_indices, updated_by=self._current_username()
             )
         except VisionSystemError as exc:
             message = f"Machine model not updated from saved {domain} settings: {exc}"
