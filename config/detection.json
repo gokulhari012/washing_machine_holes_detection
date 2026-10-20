@@ -42,6 +42,19 @@
         "max_regions": 1,
         "region_padding_px": 0
       },
+      "blob_analysis": {
+        "threshold": 40,
+        "blur_kernel_size": 7,
+        "morphology_kernel_size": 5,
+        "min_area_px": 500,
+        "min_circularity": 0.8,
+        "min_hole_diameter_px": 0,
+        "max_hole_diameter_px": 0
+      },
+      "template_blob_analysis": {
+        "max_regions": 1,
+        "region_padding_px": 0
+      },
       "dark_hole": {
         "channel": "auto",
         "blur_kernel_size": 3,
@@ -104,6 +117,19 @@
         "max_hole_diameter_px": 1628
       },
       "template_opencv": {
+        "max_regions": 1,
+        "region_padding_px": 0
+      },
+      "blob_analysis": {
+        "threshold": 40,
+        "blur_kernel_size": 7,
+        "morphology_kernel_size": 5,
+        "min_area_px": 500,
+        "min_circularity": 0.8,
+        "min_hole_diameter_px": 0,
+        "max_hole_diameter_px": 0
+      },
+      "template_blob_analysis": {
         "max_regions": 1,
         "region_padding_px": 0
       },
@@ -172,6 +198,19 @@
         "max_regions": 1,
         "region_padding_px": 0
       },
+      "blob_analysis": {
+        "threshold": 40,
+        "blur_kernel_size": 7,
+        "morphology_kernel_size": 5,
+        "min_area_px": 500,
+        "min_circularity": 0.8,
+        "min_hole_diameter_px": 0,
+        "max_hole_diameter_px": 0
+      },
+      "template_blob_analysis": {
+        "max_regions": 1,
+        "region_padding_px": 0
+      },
       "dark_hole": {
         "channel": "green",
         "blur_kernel_size": 1,
@@ -234,6 +273,19 @@
         "max_hole_diameter_px": 2002
       },
       "template_opencv": {
+        "max_regions": 1,
+        "region_padding_px": 0
+      },
+      "blob_analysis": {
+        "threshold": 40,
+        "blur_kernel_size": 7,
+        "morphology_kernel_size": 5,
+        "min_area_px": 500,
+        "min_circularity": 0.8,
+        "min_hole_diameter_px": 0,
+        "max_hole_diameter_px": 0
+      },
+      "template_blob_analysis": {
         "max_regions": 1,
         "region_padding_px": 0
       },

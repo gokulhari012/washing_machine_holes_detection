@@ -54,6 +54,17 @@ DARK_HOLE = {
     "min_fill_ratio": 0.35,
     "max_fit_error": 0.3,
 }
+BLOB_ANALYSIS = {
+    "threshold": 60,
+    "blur_kernel_size": 5,
+    "morphology_kernel_size": 5,
+    # an *area*: ~6000 px² full size, so an unconverted gate at ÷4 (where the
+    # bore is ~400 px²) would reject it outright
+    "min_area_px": 2000,
+    "min_circularity": 0.7,
+    "min_hole_diameter_px": 60,
+    "max_hole_diameter_px": 130,
+}
 
 
 def make_frame() -> np.ndarray:
@@ -71,7 +82,10 @@ def engine_for(strategy: str, params: dict, factor: float | None, **extra) -> Vi
 
 
 # ------------------------------------------------- full-resolution results
-@pytest.mark.parametrize("strategy, params", [("opencv", OPENCV), ("dark_hole", DARK_HOLE)])
+@pytest.mark.parametrize(
+    "strategy, params",
+    [("opencv", OPENCV), ("dark_hole", DARK_HOLE), ("blob_analysis", BLOB_ANALYSIS)],
+)
 @pytest.mark.parametrize("factor", [2.0, 3.0, 4.0])
 def test_hole_is_reported_in_full_resolution_pixels(strategy, params, factor) -> None:
     full = engine_for(strategy, params, None).detect(make_frame(), 1).best

@@ -69,7 +69,7 @@ Workers own **threads only** — zero business logic. Business logic lives in se
 | [core/plc/](core/plc/) | `PlcClientBase`, Modbus/SLMP/Simulated adapters, `RegisterMap`, `PlcManager` | protocol or register work |
 | [core/led/](core/led/) | `protocol.py` (KDC-24V60W-4T wire format), `LedClientBase`, Serial/Simulated adapters, `LedManager` | LED Controller (per-camera light) work |
 | [core/camera/](core/camera/) | `CameraBase`, 5 drivers, `CameraManager` | camera driver work |
-| [core/vision/](core/vision/) | `HoleDetector` ABC, 5 detectors (incl. two-stage `template_opencv`), `VisionEngine` (incl. per-camera downscale), overlay drawing | detection algorithm work |
+| [core/vision/](core/vision/) | `HoleDetector` ABC, 7 detectors (incl. two-stage `template_opencv`/`template_blob_analysis` on the shared `TemplateRegionDetector`), `VisionEngine` (incl. per-camera downscale), overlay drawing | detection algorithm work |
 | [core/calibration/](core/calibration/) | px→mm scale / homography, reference point, per-camera axis signs | coordinate math |
 | [core/database/](core/database/) | SQLAlchemy engine (WAL), ORM models, repositories | schema/query work |
 | [models/](models/) | `AppState` (observable QObject) + frozen DTOs | new cross-thread signal or payload field |
@@ -123,7 +123,11 @@ inspection pipeline both grab the same device.
    `downscaled_params(params, factor)` so per-camera downscale keeps them meaning
    full-resolution pixels (see [Downscale](#9-gotchas--traps)). A strategy that
    reads more than its own block overrides `params_from_camera_config` — the way
-   `template_opencv` pulls in its two stage blocks.
+   `template_opencv` pulls in its two stage blocks. A new "template first, then
+   the hole inside it" strategy is a subclass of `TemplateRegionDetector`
+   (`core/vision/template_region_detector.py`) naming its `HOLE_DETECTOR`,
+   `HOLE_STAGE` and `DEBUG_KEYS` — plus an entry in the Detection page's
+   `_TWO_STAGE_DETECTORS`, `_SWEEP_STAGES`, `_FORMS_SHOWN` and `_STAGE_TITLES`.
 6. Add its form to the Detection page's `_forms` dict (`ui/detection/detection_page.py`),
    plus a `_FORMS_SHOWN` entry if it should show other strategies' forms too.
 
@@ -1059,9 +1063,9 @@ doesn't rebuild the preview workers).
 | camera `driver` (all 4) | `image_file` | `simulated` |
 | `plc.connection.port` / `ip` | 5007 / 192.168.3.20 | 502 / 192.168.0.10 |
 
-(All 4 cameras' `detection.cameras.<n>.active_detector` currently read `dark_hole` in
-both live and defaults — no divergence there yet, but nothing stops one camera being
-tuned to a different strategy than the other three, or than the shipped default.)
+(All 4 cameras' `detection.cameras.<n>.active_detector` read `template_opencv` in
+the live file and `dark_hole` in defaults — and nothing stops one camera being
+tuned to a different strategy than the other three.)
 
 README describes `dark_hole` as "the default and the one to use on real parts" — that
 describes the *defaults file*, not the current live setting. Both statements are
@@ -1131,6 +1135,27 @@ so "NO HOLE" with a box means *template found, no hole in it*. Crop the template
 around the **feature** that holds the hole: cropped around the bore alone (or on a
 featureless panel) the dark bore dominates the correlation and the template matches
 any bore — `tests/test_template_opencv_detector.py` documents the numbers.
+
+**`blob_analysis` reports exactly one hole — the largest round blob — on
+purpose.** `BlobAnalysisDetector` is a straight port of the lab script
+`development_files/testing_own/holes_detecion.py` (`detect_hole`): blur →
+inverse threshold → open+close → external contours → area / circularity (+
+optional diameter) gates → the **largest-area** survivor wins, centre and
+diameter from `fitEllipse`. Its confidence is that blob's circularity, which is
+why only the winner is reported: `select_hole` judges the highest-confidence
+hole, so reporting every survivor would silently turn "largest wins" into
+"roundest wins" and the station would disagree with the lab script on the same
+frame. Don't "improve" it into a list. A camera expecting N > 1 holes needs
+`template_blob_analysis` with Regions Searched ≥ N (one hole per matched
+region). `template_blob_analysis` is `template_opencv` with blob analysis as
+Stage 2 — both are thin subclasses of `TemplateRegionDetector`, which owns the
+regions/padding/dedupe/debug logic, and the Detection page's
+`_TWO_STAGE_DETECTORS` map is what makes either one's Stage 2 sweep run inside
+Stage 1's match. Two details: the blob sweep **derives** `min_area_px` from the
+ROI (a circle at the ROI-derived min diameter) rather than searching it, so a
+Min Area typed for a bigger hole cannot make every trial fail; and both kernels
+are forced **odd** — an even morphology kernel's off-centre anchor shifts the
+blob, and downscale ÷2 turns a typed 5 into 2.
 
 **A detector's missing resource is a *detect-time* error, never a construct-time
 one.** `template_matching` with no `template_path`, and `yolo` with no

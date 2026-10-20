@@ -126,12 +126,12 @@ def test_every_strategy_has_its_own_form(page) -> None:
 def test_selecting_a_strategy_shows_its_own_form(page, strategy) -> None:
     """Exactly the forms that strategy runs are on screen — a single-stage
     strategy shows its own and nothing else."""
+    from ui.detection import detection_page
+
     widget = page.widget
     widget._strategy.setCurrentText(strategy)
     shown = widget._visible_forms()
-    assert strategy in shown
-    if strategy != "template_opencv":
-        assert shown == [strategy]
+    assert set(shown) == set(detection_page._FORMS_SHOWN.get(strategy, (strategy,)))
 
 
 # ------------------------------------------------- template_matching form
@@ -287,33 +287,42 @@ def test_sweep_button_follows_the_selected_strategy(page) -> None:
         ("template_matching", True),
         ("yolo", False),
         ("template_opencv", True),
+        ("blob_analysis", True),
+        ("template_blob_analysis", True),
     ]:
         widget._strategy.setCurrentText(strategy)
         assert widget._sweep_btn.isEnabled() is enabled, strategy
     widget._strategy.setCurrentText("yolo")
     assert "crop" in widget._sweep_btn.toolTip()
-    widget._strategy.setCurrentText("template_opencv")
-    assert widget._sweep_btn.toolTip().startswith("Stage 1")
+    for two_stage in ("template_opencv", "template_blob_analysis"):
+        widget._strategy.setCurrentText(two_stage)
+        assert widget._sweep_btn.toolTip().startswith("Stage 1"), two_stage
 
 
-# ------------------------------------------- template_opencv stage sweep
-def test_stage_selector_only_shows_for_template_opencv(page) -> None:
+# ---------------------------------------------- two-stage strategy sweeps
+@pytest.mark.parametrize(
+    "strategy, hole_stage",
+    [("template_opencv", "opencv"), ("template_blob_analysis", "blob_analysis")],
+)
+def test_stage_selector_only_shows_for_two_stage_strategies(page, strategy, hole_stage) -> None:
     widget = page.widget
     widget._strategy.setCurrentText("opencv")
     assert widget._sweep_stage.isHidden()
     assert widget._sweep_target("opencv") == "opencv"
+    widget._strategy.setCurrentText("blob_analysis")
+    assert widget._sweep_stage.isHidden()
 
-    widget._strategy.setCurrentText("template_opencv")
+    widget._strategy.setCurrentText(strategy)
     assert not widget._sweep_stage.isHidden()
     stages = [widget._sweep_stage.itemData(i) for i in range(widget._sweep_stage.count())]
-    assert stages == ["template_matching", "opencv"]
+    assert stages == ["template_matching", hole_stage]
     widget._sweep_stage.setCurrentIndex(1)
-    assert widget._sweep_target("template_opencv") == "opencv"
+    assert widget._sweep_target(strategy) == hole_stage
     assert widget._sweep_btn.toolTip().startswith("Stage 2")
 
     # a reload (camera / model switch) keeps the chosen stage
-    widget._update_sweep_availability("template_opencv")
-    assert widget._sweep_target("template_opencv") == "opencv"
+    widget._update_sweep_availability(strategy)
+    assert widget._sweep_target(strategy) == hole_stage
 
 
 def _feature_frame(tmp_path):
@@ -327,10 +336,10 @@ def _feature_frame(tmp_path):
     return cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR), str(path)
 
 
-def _ready_for_stage_sweep(page, monkeypatch, stage: int, roi) -> None:
+def _ready_for_stage_sweep(page, monkeypatch, stage: int, roi, strategy="template_opencv") -> None:
     widget = page.widget
     frame, template = _feature_frame(page.tmp_path)
-    widget._strategy.setCurrentText("template_opencv")
+    widget._strategy.setCurrentText(strategy)
     widget._tm_path.setText(template)
     widget._tm_threshold.setValue(0.8)
     widget._tm_scales.setText("1")
@@ -341,9 +350,10 @@ def _ready_for_stage_sweep(page, monkeypatch, stage: int, roi) -> None:
     monkeypatch.setattr(widget._view, "current_roi", lambda: roi)
 
 
-def test_stage_one_sweep_tunes_the_template_form(page, monkeypatch) -> None:
+@pytest.mark.parametrize("strategy", ["template_opencv", "template_blob_analysis"])
+def test_stage_one_sweep_tunes_the_template_form(page, monkeypatch, strategy) -> None:
     widget = page.widget
-    _ready_for_stage_sweep(page, monkeypatch, 0, (140, 140, 120, 120))
+    _ready_for_stage_sweep(page, monkeypatch, 0, (140, 140, 120, 120), strategy)
     widget._tm_method.setCurrentText("TM_SQDIFF_NORMED")
 
     widget._on_run_sweep()
@@ -354,7 +364,7 @@ def test_stage_one_sweep_tunes_the_template_form(page, monkeypatch) -> None:
     assert abs(best_hole.x_px - 200) < 5 and abs(best_hole.y_px - 200) < 5
     widget._on_apply_best_sweep()
     assert widget._tm_method.currentText() == best_params["method"]
-    assert widget._strategy.currentText() == "template_opencv"  # stays the active detector
+    assert widget._strategy.currentText() == strategy  # stays the active detector
 
 
 def test_stage_two_sweep_runs_opencv_inside_the_template_match(page, monkeypatch) -> None:
@@ -394,13 +404,52 @@ def test_stage_two_sweep_runs_opencv_inside_the_template_match(page, monkeypatch
     assert widget._cv_threshold.value() == best_params["detection_threshold"]
 
 
-def test_stage_two_sweep_without_a_match_says_tune_stage_one(page, monkeypatch) -> None:
+def test_stage_two_sweep_runs_blob_analysis_inside_the_template_match(page, monkeypatch) -> None:
+    """template_blob_analysis Stage 2: blob analysis picks the *largest* blob
+    in what it is given, so the crop it is tuned on matters even more than
+    for OpenCV — it must be the match, as in a real cycle."""
+    from ui.detection import detection_page
+
+    monkeypatch.setitem(detection_page._SWEEP_LEVELS, "blob_analysis", {
+        # 150 merges the bore into the 110-grey bracket: a square blob, which
+        # the 0.6 floor accepts but which scores below the round bore at 60
+        "threshold": [60, 150],
+        "blur_kernel_size": [3],
+        "morphology_kernel_size": [3],
+        "min_circularity": [0.8, 0.6],
+    })
+    widget = page.widget
+    _ready_for_stage_sweep(page, monkeypatch, 1, (175, 175, 50, 50), "template_blob_analysis")
+    seen_views = []
+    real_grid = widget._run_sweep_grid
+
+    def spy(combos, detector, views, roi, found):
+        seen_views.extend((image.shape[:2], ox, oy) for image, ox, oy in views)
+        return real_grid(combos, detector, views, roi, found)
+
+    monkeypatch.setattr(widget, "_run_sweep_grid", spy)
+    widget._on_run_sweep()
+
+    assert seen_views == [((120, 120), 140, 140)]  # the template match, not a ROI crop
+    assert widget._sweep_rows, widget._sweep_status.text()
+    assert widget._sweep_rows_strategy == "blob_analysis"
+    best_params, best_hole = widget._sweep_rows[0]
+    assert abs(best_hole.x_px - 200) < 3 and abs(best_hole.y_px - 200) < 3
+    assert best_params["threshold"] == 60
+    widget._ba_threshold.setValue(1)
+    widget._on_apply_best_sweep()
+    assert widget._ba_threshold.value() == 60
+    assert widget._strategy.currentText() == "template_blob_analysis"
+
+
+@pytest.mark.parametrize("strategy", ["template_opencv", "template_blob_analysis"])
+def test_stage_two_sweep_without_a_match_says_tune_stage_one(page, monkeypatch, strategy) -> None:
     messages = []
     monkeypatch.setattr(
         QMessageBox, "information", staticmethod(lambda _p, _t, text: messages.append(text))
     )
     widget = page.widget
-    _ready_for_stage_sweep(page, monkeypatch, 1, (175, 175, 50, 50))
+    _ready_for_stage_sweep(page, monkeypatch, 1, (175, 175, 50, 50), strategy)
     widget._last_frame = np.full((400, 400, 3), 180, np.uint8)  # no bracket anywhere
 
     widget._on_run_sweep()
@@ -446,6 +495,129 @@ def test_template_opencv_round_trips_through_save_and_load(page) -> None:
     widget._load()
     assert widget._to_regions.value() == 2
     assert widget._to_padding.value() == 15
+
+
+# ------------------------------------------ blob_analysis / template_blob
+def test_an_older_detection_json_loads_the_blob_forms_at_their_defaults(page) -> None:
+    """The fixture predates both blocks — the lab script's slider defaults."""
+    widget = page.widget
+    assert widget._ba_threshold.value() == 40
+    assert widget._ba_blur.value() == 7
+    assert widget._ba_morph.value() == 5
+    assert widget._ba_min_area.value() == 500
+    assert widget._ba_circularity.value() == pytest.approx(0.8)
+    assert widget._tb_regions.value() == 1
+    assert widget._tb_padding.value() == 0
+
+
+def test_blob_analysis_round_trips_through_save_and_load(page) -> None:
+    widget = page.widget
+    widget._strategy.setCurrentText("blob_analysis")
+    widget._ba_threshold.setValue(55)
+    widget._ba_blur.setValue(9)
+    widget._ba_morph.setValue(3)
+    widget._ba_min_area.setValue(1200)
+    widget._ba_circularity.setValue(0.72)
+    widget._ba_min_diameter.setValue(30)
+    widget._ba_max_diameter.setValue(300)
+    widget._on_save()
+
+    expected = {
+        "threshold": 55, "blur_kernel_size": 9, "morphology_kernel_size": 3,
+        "min_area_px": 1200, "min_circularity": pytest.approx(0.72),
+        "min_hole_diameter_px": 30, "max_hole_diameter_px": 300,
+    }
+    saved = stored(page)
+    assert saved["active_detector"] == "blob_analysis"
+    assert saved["blob_analysis"] == expected
+    assert page.engine.active_detector_name(1) == "blob_analysis"
+    assert page.engine.camera_config(1)["blob_analysis"] == expected
+
+    widget._ba_threshold.setValue(1)
+    widget._ba_min_area.setValue(0)
+    widget._load()
+    assert widget._ba_threshold.value() == 55
+    assert widget._ba_min_area.value() == 1200
+
+
+def test_template_blob_analysis_shows_its_own_form_over_both_stage_forms(page) -> None:
+    widget = page.widget
+    widget._strategy.setCurrentText("template_blob_analysis")
+    assert set(widget._visible_forms()) == {
+        "template_blob_analysis", "template_matching", "blob_analysis",
+    }
+    assert widget._forms["template_matching"].title().startswith("Stage 1")
+    assert widget._forms["blob_analysis"].title().startswith("Stage 2")
+
+    widget._strategy.setCurrentText("blob_analysis")  # titles go back on their own
+    assert widget._forms["blob_analysis"].title() == "Blob Analysis Parameters"
+
+
+def test_template_blob_analysis_round_trips_through_save_and_load(page) -> None:
+    widget = page.widget
+    path = template_file(page.tmp_path)
+    widget._strategy.setCurrentText("template_blob_analysis")
+    widget._tm_path.setText(path)
+    widget._ba_threshold.setValue(66)
+    widget._tb_regions.setValue(3)
+    widget._tb_padding.setValue(12)
+    widget._on_save()
+
+    saved = stored(page)
+    assert saved["active_detector"] == "template_blob_analysis"
+    assert saved["template_blob_analysis"] == {"max_regions": 3, "region_padding_px": 12}
+    assert saved["template_opencv"] == {"max_regions": 1, "region_padding_px": 0}  # its own
+    assert saved["template_matching"]["template_path"] == path  # stage 1
+    assert saved["blob_analysis"]["threshold"] == 66  # stage 2
+    assert page.engine.active_detector_name(1) == "template_blob_analysis"
+
+    widget._tb_regions.setValue(1)
+    widget._load()
+    assert widget._tb_regions.value() == 3
+    assert widget._tb_padding.value() == 12
+
+
+def test_no_hole_on_template_blob_analysis_says_the_template_was_not_found(page) -> None:
+    widget = page.widget
+    widget._strategy.setCurrentText("template_blob_analysis")
+    assert "template itself was not found" in widget._where_searched(DetectionResult())
+
+
+def test_blob_analysis_sweep_finds_the_hole_and_fills_the_form(page, monkeypatch) -> None:
+    from ui.detection import detection_page
+
+    monkeypatch.setitem(detection_page._SWEEP_LEVELS, "blob_analysis", {
+        "threshold": [10, 60, 120],  # 10 is darker than the bore: finds nothing
+        "blur_kernel_size": [1, 5],
+        "morphology_kernel_size": [3],
+        "min_circularity": [0.9, 0.7],
+    })
+    frame = np.full((400, 400), 180, np.uint8)
+    cv2.circle(frame, (200, 210), 30, 20, -1)
+    widget = page.widget
+    widget._strategy.setCurrentText("blob_analysis")
+    widget._ba_min_area.setValue(50_000)  # typed for a far bigger hole
+    widget._last_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    roi = (160, 170, 80, 80)
+    monkeypatch.setattr(widget._view, "current_roi", lambda: roi)
+
+    widget._on_run_sweep()
+
+    # the form's Min Area would have rejected every trial; the sweep derives
+    # it from the ROI instead
+    assert widget._sweep_rows, widget._sweep_status.text()
+    assert widget._sweep_rows_strategy == "blob_analysis"
+    best_params, best_hole = widget._sweep_rows[0]
+    assert abs(best_hole.x_px - 200) < 2 and abs(best_hole.y_px - 210) < 2
+    assert all(params["threshold"] != 10 for params, _hole in widget._sweep_rows)
+    min_diameter, _max = widget._diameter_bounds_from_roi(roi)
+    assert best_params["min_area_px"] == int(3.141592653589793 * (min_diameter / 2) ** 2)
+
+    widget._on_apply_best_sweep()
+    assert widget._ba_threshold.value() == best_params["threshold"]
+    assert widget._ba_circularity.value() == pytest.approx(best_params["min_circularity"])
+    assert widget._ba_min_area.value() == best_params["min_area_px"]
+    assert widget._ba_min_diameter.value() == round(min_diameter)
 
 
 # ---------------------------------------------- downscale / NG re-run

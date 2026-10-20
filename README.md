@@ -152,7 +152,8 @@ pytest
    thresholds — selected with the "Camera" picker at the top of the page;
    "Save & Apply" and "Restore Defaults" only ever touch the selected camera.
    Strategies (`dark_hole`, `opencv`, `template_matching`, `yolo`,
-   `template_opencv`) are hot-swappable per camera; adding one means
+   `template_opencv`, `blob_analysis`, `template_blob_analysis`) are
+   hot-swappable per camera; adding one means
    implementing `HoleDetector` and registering it in
    `core/vision/vision_engine.py` — no PLC changes.
 
@@ -167,6 +168,17 @@ pytest
    bore matches any bore. The result view outlines the match in orange with
    its score, so "NO HOLE" with a box means the template was found but held no
    hole, and without one means the template itself was not found.
+
+   `blob_analysis` is the simplest strategy: every pixel darker than
+   "Threshold (dark level)" becomes a blob, the mask is cleaned (open, then
+   close), and the **largest** blob with at least "Min Area" and "Min
+   Circularity" is the hole — one hole per frame, its confidence being its
+   circularity. The Debug view shows the mask, i.e. every blob it judged.
+   Its weak spot is any *bigger* round dark feature in the ROI, which wins;
+   `template_blob_analysis` fixes that the same way `template_opencv` does —
+   find the template first, then run blob analysis only inside the match
+   (one hole per matched region). Both are Auto Sweep-able; the two-stage one
+   is swept a stage at a time, like `template_opencv`.
 
    Two more per-camera switches sit in the Judgement box:
 

@@ -53,6 +53,19 @@
         "max_regions": 1,
         "region_padding_px": 0
       },
+      "blob_analysis": {
+        "threshold": 40,
+        "blur_kernel_size": 7,
+        "morphology_kernel_size": 5,
+        "min_area_px": 500,
+        "min_circularity": 0.8,
+        "min_hole_diameter_px": 0,
+        "max_hole_diameter_px": 0
+      },
+      "template_blob_analysis": {
+        "max_regions": 1,
+        "region_padding_px": 0
+      },
       "yolo": {
         "model_path": "",
         "confidence": 0.5,
@@ -115,6 +128,19 @@
         "max_hole_diameter_px": 0
       },
       "template_opencv": {
+        "max_regions": 1,
+        "region_padding_px": 0
+      },
+      "blob_analysis": {
+        "threshold": 40,
+        "blur_kernel_size": 7,
+        "morphology_kernel_size": 5,
+        "min_area_px": 500,
+        "min_circularity": 0.8,
+        "min_hole_diameter_px": 0,
+        "max_hole_diameter_px": 0
+      },
+      "template_blob_analysis": {
         "max_regions": 1,
         "region_padding_px": 0
       },
@@ -183,6 +209,19 @@
         "max_regions": 1,
         "region_padding_px": 0
       },
+      "blob_analysis": {
+        "threshold": 40,
+        "blur_kernel_size": 7,
+        "morphology_kernel_size": 5,
+        "min_area_px": 500,
+        "min_circularity": 0.8,
+        "min_hole_diameter_px": 0,
+        "max_hole_diameter_px": 0
+      },
+      "template_blob_analysis": {
+        "max_regions": 1,
+        "region_padding_px": 0
+      },
       "yolo": {
         "model_path": "",
         "confidence": 0.5,
@@ -245,6 +284,19 @@
         "max_hole_diameter_px": 0
       },
       "template_opencv": {
+        "max_regions": 1,
+        "region_padding_px": 0
+      },
+      "blob_analysis": {
+        "threshold": 40,
+        "blur_kernel_size": 7,
+        "morphology_kernel_size": 5,
+        "min_area_px": 500,
+        "min_circularity": 0.8,
+        "min_hole_diameter_px": 0,
+        "max_hole_diameter_px": 0
+      },
+      "template_blob_analysis": {
         "max_regions": 1,
         "region_padding_px": 0
       },

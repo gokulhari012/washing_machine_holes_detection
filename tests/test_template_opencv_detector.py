@@ -29,7 +29,7 @@ from core.vision import (
     VisionEngine,
     draw_detection_overlay,
 )
-from core.vision.template_opencv_detector import _without_duplicates
+from core.vision.template_region_detector import _without_duplicates
 
 METAL = 190
 PLATE = 90

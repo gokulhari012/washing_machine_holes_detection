@@ -77,6 +77,10 @@ class DetectorType(StrEnum):
     DARK_HOLE = "dark_hole"  # local-contrast; copes with partially visible bores
     # two-stage: template_matching locates the region, opencv finds the hole inside it
     TEMPLATE_OPENCV = "template_opencv"
+    # threshold + the largest round dark blob (the lab's center-hole detector)
+    BLOB_ANALYSIS = "blob_analysis"
+    # two-stage: template_matching locates the region, blob_analysis finds the hole inside it
+    TEMPLATE_BLOB_ANALYSIS = "template_blob_analysis"
 
 
 class LogSource(StrEnum):

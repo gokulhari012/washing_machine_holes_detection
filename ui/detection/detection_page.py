@@ -75,6 +75,17 @@ Stage 2 the ``opencv`` grid — but each Stage 2 trial runs only inside Stage
 1's match, found once with the form's current values, because that is the
 crop a real cycle hands OpenCV. "Apply Best" writes into that stage's form.
 
+**blob_analysis** is the lab's center-hole detector (threshold, open/close,
+keep the largest blob that is round enough) and **template_blob_analysis**
+is the same two-stage arrangement as template_opencv with blob analysis as
+Stage 2 — it shows its own small form over the ``template_matching`` and
+``blob_analysis`` forms, and sweeps one stage at a time exactly as above.
+Both stages' trial images follow the same rules, so the two two-stage
+strategies share one map (``_TWO_STAGE_DETECTORS``) for everything that has
+to know which detector a strategy's Stage 1 regions come from. The
+blob_analysis sweep derives its ``min_area_px`` from the ROI the same way the
+diameter gates are derived, rather than searching it.
+
 The **Judgement** box also carries two per-camera switches the engine and the
 pipeline act on: **Downscale** (detect on a frame shrunk by the factor; see
 ``VisionEngine``'s module docstring — results and every pixel parameter stay
@@ -84,7 +95,7 @@ Required another run** (re-capture and re-check an NG up to N more times; see
 the engine; it does *not* re-run an NG — it is one capture by design — and
 says in the verdict what a real cycle would do instead.
 
-``opencv``, ``dark_hole`` and ``template_matching`` are sweepable. For
+``opencv``, ``dark_hole``, ``blob_analysis`` and ``template_matching`` are sweepable. For
 ``template_matching`` the ROI does more than bound the search: the diameter
 gates it implies are divided by the template's own size to give the **scale
 range**, so the sweep searches the sizes the drawn box could actually
@@ -98,6 +109,7 @@ for the whole grid rather than once per combination.
 
 from __future__ import annotations
 
+import math
 from dataclasses import replace
 
 import numpy as np
@@ -130,13 +142,16 @@ from core.utilities import ConfigManager
 from core.utilities.enums import DetectorType, LogSource
 from core.utilities.exceptions import ConfigurationError, VisionSystemError
 from core.vision import (
+    BlobAnalysisDetector,
     DarkHoleDetector,
     DetectionResult,
     Hole,
     HoleDetector,
     OpenCVHoleDetector,
+    TemplateBlobAnalysisDetector,
     TemplateMatchingDetector,
     TemplateOpenCVDetector,
+    TemplateRegionDetector,
     VisionEngine,
     draw_debug_overlay,
     draw_detection_overlay,
@@ -168,6 +183,16 @@ _SWEEP_DETECTORS: dict[str, type] = {
     "opencv": OpenCVHoleDetector,
     "dark_hole": DarkHoleDetector,
     "template_matching": TemplateMatchingDetector,
+    "blob_analysis": BlobAnalysisDetector,
+}
+
+#: The "template first, then the hole inside it" strategies, and the detector
+#: each one's Stage 1 regions come from — Stage 2's sweep trials run inside
+#: those regions (``DetectionPage._template_region_views``), and "no hole"
+#: on one of these may mean the template itself was not found.
+_TWO_STAGE_DETECTORS: dict[str, type[TemplateRegionDetector]] = {
+    DetectorType.TEMPLATE_OPENCV.value: TemplateOpenCVDetector,
+    DetectorType.TEMPLATE_BLOB_ANALYSIS.value: TemplateBlobAnalysisDetector,
 }
 
 # ``yolo`` is deliberately absent, and the disabled button says why: a trained
@@ -186,51 +211,75 @@ _UNSWEEPABLE_REASON = {
     ),
 }
 
+#: Stage 1 of every two-stage strategy — the same template_matching block.
+_TEMPLATE_SWEEP_STAGE = (
+    DetectorType.TEMPLATE_MATCHING.value,
+    "Stage 1 — Template Matching",
+    "Stage 1: draw the ROI around the feature the template should "
+    "match (the whole matched area, not just the hole) — the sweep "
+    "scores where the template lands and sizes its scale range from "
+    "the box.",
+)
+
+
+def _hole_sweep_stage(strategy: DetectorType, label: str) -> tuple[str, str, str]:
+    """Stage 2 of a two-stage strategy: *strategy*'s own grid, in the match."""
+    return (
+        strategy.value,
+        f"Stage 2 — {label}",
+        f"Stage 2: draw the ROI around the hole. Stage 1 runs once with the "
+        f"form's current values, and every {label} trial searches only inside "
+        f"its match — so Stage 1 must already find the template.",
+    )
+
+
 #: Multi-stage strategies sweep **one stage at a time**, picked from the
 #: "Stage" combo beside "Run Auto Sweep": ``(stage strategy, combo label,
 #: what the ROI must mark)``. A joint grid would be the product of both
 #: stages' grids — far too big — and each stage is its own strategy's block
 #: anyway, so it reuses that strategy's grid, results table and "Apply Best".
-#: template_opencv's Stage 2 trials run inside Stage 1's matches, exactly as a
-#: real cycle does (see ``DetectionPage._template_region_views``).
+#: Each two-stage strategy's Stage 2 trials run inside Stage 1's matches,
+#: exactly as a real cycle does (see ``DetectionPage._template_region_views``).
 _SWEEP_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
     DetectorType.TEMPLATE_OPENCV.value: (
-        (
-            DetectorType.TEMPLATE_MATCHING.value,
-            "Stage 1 — Template Matching",
-            "Stage 1: draw the ROI around the feature the template should "
-            "match (the whole matched area, not just the hole) — the sweep "
-            "scores where the template lands and sizes its scale range from "
-            "the box.",
-        ),
-        (
-            DetectorType.OPENCV.value,
-            "Stage 2 — OpenCV",
-            "Stage 2: draw the ROI around the hole. Stage 1 runs once with the "
-            "form's current values, and every OpenCV trial searches only inside "
-            "its match — so Stage 1 must already find the template.",
-        ),
+        _TEMPLATE_SWEEP_STAGE,
+        _hole_sweep_stage(DetectorType.OPENCV, "OpenCV"),
+    ),
+    DetectorType.TEMPLATE_BLOB_ANALYSIS.value: (
+        _TEMPLATE_SWEEP_STAGE,
+        _hole_sweep_stage(DetectorType.BLOB_ANALYSIS, "Blob Analysis"),
     ),
 }
 
 #: Which parameter forms each strategy shows, top to bottom; a strategy not
-#: listed shows just its own. template_opencv runs the camera's own
-#: template_matching and opencv blocks as its two stages, so it shows (and
-#: Save writes) those two forms under its own small one.
+#: listed shows just its own. A two-stage strategy runs the camera's own
+#: template_matching block and its hole stage's block as its two stages, so
+#: it shows (and Save writes) those two forms under its own small one.
 _FORMS_SHOWN: dict[str, tuple[str, ...]] = {
     DetectorType.TEMPLATE_OPENCV.value: (
         DetectorType.TEMPLATE_OPENCV.value,
         DetectorType.TEMPLATE_MATCHING.value,
         DetectorType.OPENCV.value,
     ),
+    DetectorType.TEMPLATE_BLOB_ANALYSIS.value: (
+        DetectorType.TEMPLATE_BLOB_ANALYSIS.value,
+        DetectorType.TEMPLATE_MATCHING.value,
+        DetectorType.BLOB_ANALYSIS.value,
+    ),
 }
 
 #: Titles the stage forms carry while a multi-form strategy is selected, so
 #: it is obvious which stage each block of parameters drives.
+_TEMPLATE_STAGE_TITLE = "Stage 1 — Template Matching (finds the region)"
 _STAGE_TITLES: dict[str, dict[str, str]] = {
     DetectorType.TEMPLATE_OPENCV.value: {
-        DetectorType.TEMPLATE_MATCHING.value: "Stage 1 — Template Matching (finds the region)",
+        DetectorType.TEMPLATE_MATCHING.value: _TEMPLATE_STAGE_TITLE,
         DetectorType.OPENCV.value: "Stage 2 — OpenCV (finds the hole inside the region)",
+    },
+    DetectorType.TEMPLATE_BLOB_ANALYSIS.value: {
+        DetectorType.TEMPLATE_MATCHING.value: _TEMPLATE_STAGE_TITLE,
+        DetectorType.BLOB_ANALYSIS.value:
+            "Stage 2 — Blob Analysis (finds the hole inside the region)",
     },
 }
 
@@ -278,6 +327,17 @@ _SWEEP_LEVELS: dict[str, dict[str, list]] = {
         # table still shows the winning scale, which is the whole point of
         # sweeping this strategy.
         "scales": [],
+    },
+    "blob_analysis": {
+        "threshold": [20, 30, 40, 50, 60, 75, 90, 110, 130, 150, 175, 200],
+        "blur_kernel_size": [1, 3, 5, 7, 9, 11],
+        # 1 = no clean-up at all (open/close with a 1x1 kernel is a no-op)
+        "morphology_kernel_size": [1, 3, 5, 7, 9],
+        # Descending, for the same reason as template_matching's
+        # match_threshold: the hole's confidence *is* its circularity, so
+        # every floor it clears scores it identically and the stable sort
+        # keeps the strictest floor that still found it.
+        "min_circularity": [0.9, 0.85, 0.8, 0.7, 0.6, 0.5],
     },
 }
 
@@ -398,10 +458,38 @@ def _template_matching_param_grid(base: dict) -> list[dict]:
     return combos
 
 
+def _blob_analysis_param_grid(base: dict) -> list[dict]:
+    """Every combination the blob_analysis sweep tries, seeded with *base*.
+
+    ``min_area_px`` is not searched: it is set to the area of a circle at the
+    ROI-derived minimum diameter, so it gates exactly where that diameter gate
+    already does. Left at the form's value instead, a Min Area typed for a
+    bigger hole would reject every trial, and the sweep would report "found
+    nothing" with no hint why.
+    """
+    levels = _SWEEP_LEVELS["blob_analysis"]
+    min_diameter = float(base.get("min_hole_diameter_px", 0) or 0)
+    seeded = {**base, "min_area_px": int(math.pi * (min_diameter / 2.0) ** 2)}
+    combos: list[dict] = []
+    for threshold in levels["threshold"]:
+        for blur in levels["blur_kernel_size"]:
+            for kernel in levels["morphology_kernel_size"]:
+                for circularity in levels["min_circularity"]:
+                    combos.append({
+                        **seeded,
+                        "threshold": threshold,
+                        "blur_kernel_size": blur,
+                        "morphology_kernel_size": kernel,
+                        "min_circularity": circularity,
+                    })
+    return combos
+
+
 _SWEEP_GRID_BUILDERS = {
     "opencv": _opencv_param_grid,
     "dark_hole": _dark_hole_param_grid,
     "template_matching": _template_matching_param_grid,
+    "blob_analysis": _blob_analysis_param_grid,
 }
 
 _SWEEP_PROGRESS_TICK = 25  # UI refresh cadence — every Nth trial, not every one
@@ -559,12 +647,26 @@ class DetectionPage(QWidget):
         strategy_row.addWidget(QLabel("Active Detector"))
         self._strategy = QComboBox()
         self._strategy.addItems([d.value for d in DetectorType])
-        self._strategy.setItemData(
-            self._strategy.findText(DetectorType.TEMPLATE_OPENCV.value),
-            "Template matching and OpenCV detection: find the template first, "
-            "then the hole with OpenCV inside it",
-            Qt.ItemDataRole.ToolTipRole,
-        )
+        for strategy, tooltip in (
+            (
+                DetectorType.TEMPLATE_OPENCV,
+                "Template matching and OpenCV detection: find the template "
+                "first, then the hole with OpenCV inside it",
+            ),
+            (
+                DetectorType.BLOB_ANALYSIS,
+                "Blob analysis: threshold the frame and take the largest dark "
+                "blob that is round enough as the hole",
+            ),
+            (
+                DetectorType.TEMPLATE_BLOB_ANALYSIS,
+                "Template matching and blob analysis: find the template first, "
+                "then the largest round dark blob inside it",
+            ),
+        ):
+            self._strategy.setItemData(
+                self._strategy.findText(strategy.value), tooltip, Qt.ItemDataRole.ToolTipRole
+            )
         strategy_row.addWidget(self._strategy, stretch=1)
         left.addLayout(strategy_row)
 
@@ -575,13 +677,18 @@ class DetectionPage(QWidget):
             DetectorType.YOLO.value: self._build_yolo_form(),
             DetectorType.DARK_HOLE.value: self._build_dark_hole_form(),
             DetectorType.TEMPLATE_OPENCV.value: self._build_template_opencv_form(),
+            DetectorType.BLOB_ANALYSIS.value: self._build_blob_form(),
+            DetectorType.TEMPLATE_BLOB_ANALYSIS.value: self._build_template_blob_form(),
         }
         self._form_titles = {name: form.title() for name, form in self._forms.items()}
-        # The combined form sits above its two stage forms.
+        # Each combined form sits above its two stage forms (template matching
+        # first, then the hole stage) — visible ones keep this order.
         for name in (
             DetectorType.TEMPLATE_OPENCV.value,
+            DetectorType.TEMPLATE_BLOB_ANALYSIS.value,
             DetectorType.TEMPLATE_MATCHING.value,
             DetectorType.OPENCV.value,
+            DetectorType.BLOB_ANALYSIS.value,
             DetectorType.YOLO.value,
             DetectorType.DARK_HOLE.value,
         ):
@@ -623,6 +730,15 @@ class DetectionPage(QWidget):
                 "scales": self._tm_scales,
                 "min_hole_diameter_px": self._tm_min_diameter,
                 "max_hole_diameter_px": self._tm_max_diameter,
+            },
+            "blob_analysis": {
+                "threshold": self._ba_threshold,
+                "blur_kernel_size": self._ba_blur,
+                "morphology_kernel_size": self._ba_morph,
+                "min_area_px": self._ba_min_area,
+                "min_circularity": self._ba_circularity,
+                "min_hole_diameter_px": self._ba_min_diameter,
+                "max_hole_diameter_px": self._ba_max_diameter,
             },
         }
 
@@ -699,33 +815,106 @@ class DetectionPage(QWidget):
         return [name for name, form in self._forms.items() if not form.isHidden()]
 
     def _build_template_opencv_form(self) -> QGroupBox:
-        box = QGroupBox("Template Matching + OpenCV Parameters")
-        form = QFormLayout(box)
-        hint = QLabel(
+        box, self._to_regions, self._to_padding = self._build_regions_form(
+            "Template Matching + OpenCV Parameters",
             "Stage 1 finds the template in the frame; stage 2 looks for the hole "
             "with OpenCV only inside the matched area — a hole anywhere else is "
             "ignored. Crop the template around the feature that holds the hole, "
             "not around the hole alone. Both stages use the forms below, which "
             "are the same parameters the 'template_matching' and 'opencv' "
-            "strategies use; Stage 1's diameter gate applies to the matched area."
+            "strategies use; Stage 1's diameter gate applies to the matched area.",
         )
+        return box
+
+    def _build_template_blob_form(self) -> QGroupBox:
+        box, self._tb_regions, self._tb_padding = self._build_regions_form(
+            "Template Matching + Blob Analysis Parameters",
+            "Stage 1 finds the template in the frame; stage 2 runs blob analysis "
+            "only inside the matched area and takes the largest round dark blob "
+            "there as the hole — a blob anywhere else is ignored, however big. "
+            "Each matched region gives at most one hole. Crop the template "
+            "around the feature that holds the hole, not around the hole alone. "
+            "Both stages use the forms below, which are the same parameters the "
+            "'template_matching' and 'blob_analysis' strategies use; Stage 1's "
+            "diameter gate applies to the matched area.",
+        )
+        return box
+
+    @staticmethod
+    def _build_regions_form(title: str, hint_text: str) -> tuple[QGroupBox, QSpinBox, QSpinBox]:
+        """A two-stage strategy's own block: how many template matches are
+        searched, and how much each one is padded. Returns the box and the
+        two spin boxes, which each strategy keeps under its own names."""
+        box = QGroupBox(title)
+        form = QFormLayout(box)
+        hint = QLabel(hint_text)
         hint.setWordWrap(True)
         hint.setProperty("class", "dim")
-        self._to_regions = _spin(1, 10)
-        self._to_regions.setToolTip(
+        regions = _spin(1, 10)
+        regions.setToolTip(
             "How many of the best template matches are searched for a hole — "
             "1 searches only the best one. Raise it only if the part really "
             "carries the feature more than once."
         )
-        self._to_padding = _spin(0, 4000)
-        self._to_padding.setSuffix(" px")
-        self._to_padding.setToolTip(
+        padding = _spin(0, 4000)
+        padding.setSuffix(" px")
+        padding.setToolTip(
             "Grows each matched area by this much on every side before the hole "
             "search — for a hole at, or just past, the template's edge."
         )
         form.addRow(hint)
-        form.addRow("Regions Searched", self._to_regions)
-        form.addRow("Region Padding", self._to_padding)
+        form.addRow("Regions Searched", regions)
+        form.addRow("Region Padding", padding)
+        return box, regions, padding
+
+    def _build_blob_form(self) -> QGroupBox:
+        box = QGroupBox("Blob Analysis Parameters")
+        form = QFormLayout(box)
+        hint = QLabel(
+            "Every pixel darker than the threshold becomes a blob; the largest "
+            "blob that passes the gates below is the hole (one hole per frame). "
+            "Its confidence is its circularity. The Debug view shows the "
+            "cleaned mask — every blob the gates judge."
+        )
+        hint.setWordWrap(True)
+        hint.setProperty("class", "dim")
+        self._ba_threshold = _spin(0, 255)
+        self._ba_threshold.setToolTip(
+            "Dark level: pixels darker than this grey level are blob pixels. "
+            "Raise it if the hole breaks up, lower it if the background joins in."
+        )
+        self._ba_blur = _spin(1, 31)
+        self._ba_blur.setToolTip("Gaussian blur before the threshold; even values round up to odd")
+        self._ba_morph = _spin(1, 31)
+        self._ba_morph.setToolTip(
+            "Square kernel for the open-then-close clean-up of the mask "
+            "(removes specks, fills pin-holes). 1 = no clean-up; even values "
+            "round up to odd."
+        )
+        self._ba_min_area = _spin(0, 50_000_000)
+        self._ba_min_area.setSuffix(" px²")
+        self._ba_min_area.setToolTip("Smallest blob area that counts, in pixels of the camera image")
+        self._ba_circularity = _dspin(0.0, 1.0, 0.01)
+        self._ba_circularity.setToolTip(
+            "4πA/P² — 1.0 is a perfect circle. Blobs below this are not holes. "
+            "'Confidence Threshold' above filters the same number again."
+        )
+        self._ba_min_diameter = _spin(0, 4000)
+        self._ba_max_diameter = _spin(0, 4000)
+        size_hint = (
+            "Gate on the fitted diameter in px; 0 disables it. Auto Sweep sets "
+            "both from the ROI you draw."
+        )
+        self._ba_min_diameter.setToolTip(size_hint)
+        self._ba_max_diameter.setToolTip(size_hint)
+        form.addRow(hint)
+        form.addRow("Threshold (dark level)", self._ba_threshold)
+        form.addRow("Blur Kernel", self._ba_blur)
+        form.addRow("Morph Kernel", self._ba_morph)
+        form.addRow("Min Area", self._ba_min_area)
+        form.addRow("Min Circularity", self._ba_circularity)
+        form.addRow("Min Hole Diameter (px)", self._ba_min_diameter)
+        form.addRow("Max Hole Diameter (px)", self._ba_max_diameter)
         return box
 
     def _build_opencv_form(self) -> QWidget:
@@ -940,7 +1129,8 @@ class DetectionPage(QWidget):
             "just a crop around it. It then grid-searches every other gating "
             "parameter of the active strategy against the last 'Test on "
             "Camera' frame — thousands of combinations, not just two. "
-            "template_opencv is swept one stage at a time — pick it under Stage."
+            "template_opencv and template_blob_analysis are swept one stage at "
+            "a time — pick it under Stage."
         )
         hint.setWordWrap(True)
         hint.setProperty("class", "dim")
@@ -1040,6 +1230,19 @@ class DetectionPage(QWidget):
         self._to_regions.setValue(int(combined.get("max_regions", 1)))
         self._to_padding.setValue(int(combined.get("region_padding_px", 0)))
 
+        combined_blob = cfg.get("template_blob_analysis", {})
+        self._tb_regions.setValue(int(combined_blob.get("max_regions", 1)))
+        self._tb_padding.setValue(int(combined_blob.get("region_padding_px", 0)))
+
+        blob = cfg.get("blob_analysis", {})
+        self._ba_threshold.setValue(int(blob.get("threshold", 40)))
+        self._ba_blur.setValue(int(blob.get("blur_kernel_size", 7)))
+        self._ba_morph.setValue(int(blob.get("morphology_kernel_size", 5)))
+        self._ba_min_area.setValue(int(blob.get("min_area_px", 500)))
+        self._ba_circularity.setValue(float(blob.get("min_circularity", 0.8)))
+        self._ba_min_diameter.setValue(int(blob.get("min_hole_diameter_px", 0)))
+        self._ba_max_diameter.setValue(int(blob.get("max_hole_diameter_px", 0)))
+
         opencv = cfg.get("opencv", {})
         self._cv_threshold.setValue(int(opencv.get("detection_threshold", 60)))
         self._cv_adaptive.setChecked(bool(opencv.get("adaptive_threshold", False)))
@@ -1130,6 +1333,19 @@ class DetectionPage(QWidget):
             "template_opencv": {
                 "max_regions": self._to_regions.value(),
                 "region_padding_px": self._to_padding.value(),
+            },
+            "blob_analysis": {
+                "threshold": self._ba_threshold.value(),
+                "blur_kernel_size": self._ba_blur.value(),
+                "morphology_kernel_size": self._ba_morph.value(),
+                "min_area_px": self._ba_min_area.value(),
+                "min_circularity": self._ba_circularity.value(),
+                "min_hole_diameter_px": self._ba_min_diameter.value(),
+                "max_hole_diameter_px": self._ba_max_diameter.value(),
+            },
+            "template_blob_analysis": {
+                "max_regions": self._tb_regions.value(),
+                "region_padding_px": self._tb_padding.value(),
             },
             "dark_hole": {
                 "channel": self._dh_channel.currentText(),
@@ -1241,7 +1457,7 @@ class DetectionPage(QWidget):
         if result.regions:
             best = max(region.score for region in result.regions)
             return f" inside the template match (score {best:.2f})"
-        if self._strategy.currentText() == DetectorType.TEMPLATE_OPENCV.value:
+        if self._strategy.currentText() in _TWO_STAGE_DETECTORS:
             return " — the template itself was not found"
         return ""
 
@@ -1537,12 +1753,9 @@ class DetectionPage(QWidget):
             # as the configuration problem it is, not as "found nothing".
             combos = grid_builder(base_params)
             detector = _SWEEP_DETECTORS[target](base_params)
-            inside_matches = (
-                strategy == DetectorType.TEMPLATE_OPENCV.value
-                and target == TemplateOpenCVDetector.HOLE_STAGE
-            )
-            if inside_matches:
-                views = self._template_region_views(roi)
+            two_stage = _TWO_STAGE_DETECTORS.get(strategy)
+            if two_stage is not None and target == two_stage.HOLE_STAGE:
+                views = self._template_region_views(roi, two_stage)
             else:
                 cropped, offset_x, offset_y = self._crop_around_roi(self._last_frame, roi)
                 if self._normalize.isChecked():  # match what the live/tested detector sees
@@ -1565,7 +1778,7 @@ class DetectionPage(QWidget):
         note = " (stopped early)" if cancelled else ""
         if not self._sweep_rows:
             stage_hint = ""
-            if target != strategy and target == TemplateOpenCVDetector.TEMPLATE_STAGE:
+            if target != strategy and target == TemplateRegionDetector.TEMPLATE_STAGE:
                 stage_hint = (
                     " For Stage 1 the ROI must surround the whole feature the "
                     "template shows — a box around the bore alone is smaller "
@@ -1588,16 +1801,18 @@ class DetectionPage(QWidget):
         )
 
     def _template_region_views(
-        self, roi: tuple[int, int, int, int]
+        self, roi: tuple[int, int, int, int], two_stage: type[TemplateRegionDetector]
     ) -> list[tuple[np.ndarray, int, int]]:
-        """template_opencv Stage 2's trial images: each Stage 1 match that
-        overlaps *roi*, cropped from the (normalised, if enabled) frame.
+        """A two-stage strategy's Stage 2 trial images: each Stage 1 match
+        that overlaps *roi*, cropped from the (normalised, if enabled) frame.
 
-        That is precisely what a real cycle hands OpenCV — the padded match,
-        not a box around the hole — and OpenCV thresholds the whole crop it
-        is given, so tuning it on any other crop would tune it for an image it
-        never sees. Stage 1 runs **once** here, with the form's current
-        values (template, threshold, scales, regions searched, padding).
+        That is precisely what a real cycle hands the hole stage — the padded
+        match, not a box around the hole — and both OpenCV and blob analysis
+        threshold the whole crop they are given (blob analysis even picks the
+        *largest* blob in it), so tuning them on any other crop would tune
+        them for an image they never see. Stage 1 runs **once** here, with
+        the form's current values (template, threshold, scales, and
+        *two_stage*'s own regions searched and padding).
 
         Returns an empty list — after telling the operator why — when Stage 1
         finds nothing, or nothing near the ROI.
@@ -1608,9 +1823,7 @@ class DetectionPage(QWidget):
         frame = self._last_frame
         if self._normalize.isChecked():  # the engine normalises the whole frame
             frame = normalize_image(frame)
-        locator = TemplateOpenCVDetector(
-            TemplateOpenCVDetector.params_from_camera_config(self._collect())
-        )
+        locator = two_stage(two_stage.params_from_camera_config(self._collect()))
         regions = locator.detect(frame).regions
         x, y, w, h = roi
         covering = [
@@ -1643,7 +1856,7 @@ class DetectionPage(QWidget):
     ) -> int:
         """Run every combination in *combos* against every ``(image,
         offset_x, offset_y)`` in *views* — one crop around the ROI, or
-        template_opencv Stage 2's matched regions — appending (params, hole)
+        a two-stage strategy's Stage 2 matched regions — appending (params, hole)
         to *found* for each that lands a candidate inside *roi*. Returns how
         many were actually tried (may be less than
         ``len(combos)`` if cancelled). Keeps the UI responsive and cancellable

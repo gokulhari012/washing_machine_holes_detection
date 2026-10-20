@@ -9,8 +9,9 @@ anything about it:
 
 - :meth:`HoleDetector.params_from_camera_config` picks the strategy's
   parameters out of one camera's detection block. Almost every strategy reads
-  the one block named like itself; a composite strategy (``template_opencv``)
-  overrides it to gather the blocks of the stages it runs.
+  the one block named like itself; a composite strategy (``template_opencv``,
+  ``template_blob_analysis``) overrides it to gather the blocks of the stages
+  it runs.
 - :meth:`HoleDetector.downscaled_params` re-expresses those parameters for a
   frame shrunk by the camera's ``common.downscale_factor``, so every pixel
   parameter keeps meaning what it means at full resolution and switching

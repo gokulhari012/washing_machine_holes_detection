@@ -18,8 +18,8 @@ class Hole:
 
 @dataclass(frozen=True)
 class SearchRegion:
-    """An area a two-stage strategy confined its hole search to — for
-    ``template_opencv``, one template match. Pixel coordinates of the analysed
+    """An area a two-stage strategy confined its hole search to — for the
+    template strategies, one template match. Pixel coordinates of the analysed
     image, top-left corner plus size; ``score`` is how well the area matched."""
 
     x: int

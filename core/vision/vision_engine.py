@@ -66,11 +66,13 @@ import numpy as np
 from core.logging import get_logger
 from core.utilities.enums import DetectorType, LogSource
 from core.utilities.exceptions import ConfigurationError
+from core.vision.blob_analysis_detector import BlobAnalysisDetector
 from core.vision.dark_hole_detector import DarkHoleDetector
 from core.vision.detection_result import DetectionResult, SearchRegion
 from core.vision.detector_base import HoleDetector
 from core.vision.normalization import normalize_image
 from core.vision.opencv_hole_detector import OpenCVHoleDetector
+from core.vision.template_blob_analysis_detector import TemplateBlobAnalysisDetector
 from core.vision.template_matching_detector import TemplateMatchingDetector
 from core.vision.template_opencv_detector import TemplateOpenCVDetector
 from core.vision.yolo_hole_detector import YoloHoleDetector
@@ -83,6 +85,8 @@ _REGISTRY: dict[DetectorType, type[HoleDetector]] = {
     DetectorType.YOLO: YoloHoleDetector,
     DetectorType.DARK_HOLE: DarkHoleDetector,
     DetectorType.TEMPLATE_OPENCV: TemplateOpenCVDetector,
+    DetectorType.BLOB_ANALYSIS: BlobAnalysisDetector,
+    DetectorType.TEMPLATE_BLOB_ANALYSIS: TemplateBlobAnalysisDetector,
 }
 
 #: Largest accepted downscale factor — beyond this a bore is a handful of pixels.
@@ -441,7 +445,7 @@ def draw_detection_overlay(
     labels — and the holes are shifted into place. The px
     label keeps the hole's own ROI-relative coordinates, the ones stored.
 
-    ``result.regions`` (``template_opencv``'s template matches) are outlined
+    ``result.regions`` (the two-stage strategies' template matches) are outlined
     in orange with their match score just above the box, under the holes — so a "NO HOLE" with a
     box drawn means the template was found but held no hole, and one without
     means the template itself was not found.
