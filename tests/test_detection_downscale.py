@@ -66,6 +66,23 @@ BLOB_ANALYSIS = {
     "max_hole_diameter_px": 130,
 }
 
+CALIPER = {
+    "coarse_threshold": 0,
+    "blur_kernel_size": 5,
+    "num_calipers": 72,
+    "caliper_width_px": 5,
+    "search_band": 0.5,
+    "edge_polarity": "dark_to_light",
+    "edge_selection": "strongest",
+    "min_edge_strength": 10,
+    # pixel tolerances: unconverted, ÷4 would loosen them four-fold
+    "inlier_threshold_px": 3.0,
+    "min_inlier_ratio": 0.3,
+    "max_rms_px": 2.0,
+    "min_hole_diameter_px": 60,
+    "max_hole_diameter_px": 130,
+}
+
 
 def make_frame() -> np.ndarray:
     frame = np.full((800, 1100), 190, np.uint8)
@@ -84,7 +101,12 @@ def engine_for(strategy: str, params: dict, factor: float | None, **extra) -> Vi
 # ------------------------------------------------- full-resolution results
 @pytest.mark.parametrize(
     "strategy, params",
-    [("opencv", OPENCV), ("dark_hole", DARK_HOLE), ("blob_analysis", BLOB_ANALYSIS)],
+    [
+        ("opencv", OPENCV),
+        ("dark_hole", DARK_HOLE),
+        ("blob_analysis", BLOB_ANALYSIS),
+        ("caliper_based_circle_fitting", CALIPER),
+    ],
 )
 @pytest.mark.parametrize("factor", [2.0, 3.0, 4.0])
 def test_hole_is_reported_in_full_resolution_pixels(strategy, params, factor) -> None:

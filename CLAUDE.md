@@ -69,7 +69,7 @@ Workers own **threads only** — zero business logic. Business logic lives in se
 | [core/plc/](core/plc/) | `PlcClientBase`, Modbus/SLMP/Simulated adapters, `RegisterMap`, `PlcManager` | protocol or register work |
 | [core/led/](core/led/) | `protocol.py` (KDC-24V60W-4T wire format), `LedClientBase`, Serial/Simulated adapters, `LedManager` | LED Controller (per-camera light) work |
 | [core/camera/](core/camera/) | `CameraBase`, 5 drivers, `CameraManager` | camera driver work |
-| [core/vision/](core/vision/) | `HoleDetector` ABC, 7 detectors (incl. two-stage `template_opencv`/`template_blob_analysis` on the shared `TemplateRegionDetector`), `VisionEngine` (incl. per-camera downscale), overlay drawing | detection algorithm work |
+| [core/vision/](core/vision/) | `HoleDetector` ABC, 9 detectors (incl. the three two-stage `template_*` ones on the shared `TemplateRegionDetector`), `VisionEngine` (incl. per-camera downscale), overlay drawing | detection algorithm work |
 | [core/calibration/](core/calibration/) | px→mm scale / homography, reference point, per-camera axis signs | coordinate math |
 | [core/database/](core/database/) | SQLAlchemy engine (WAL), ORM models, repositories | schema/query work |
 | [models/](models/) | `AppState` (observable QObject) + frozen DTOs | new cross-thread signal or payload field |
@@ -1138,7 +1138,7 @@ any bore — `tests/test_template_opencv_detector.py` documents the numbers.
 
 **`blob_analysis` reports exactly one hole — the largest round blob — on
 purpose.** `BlobAnalysisDetector` is a straight port of the lab script
-`development_files/testing_own/holes_detecion.py` (`detect_hole`): blur →
+`development_files/testing_own/holes_detecion_blob_analysis.py` (`detect_hole`): blur →
 inverse threshold → open+close → external contours → area / circularity (+
 optional diameter) gates → the **largest-area** survivor wins, centre and
 diameter from `fitEllipse`. Its confidence is that blob's circularity, which is
@@ -1156,6 +1156,34 @@ ROI (a circle at the ROI-derived min diameter) rather than searching it, so a
 Min Area typed for a bigger hole cannot make every trial fail; and both kernels
 are forced **odd** — an even morphology kernel's off-centre anchor shifts the
 blob, and downscale ÷2 turns a typed 5 into 2.
+
+**`caliper_based_circle_fitting` is built to a contract, not ported.** The lab
+file `development_files/testing_own/holes_detection_center_robust_caliper-based
+circle fitting.py` is only a viewer; the algorithm it imports
+(`hole_center_robust.find_hole_center`) was never in this repository.
+`CaliperCircleDetector` implements the technique to what the viewer shows —
+centre, radius, per-caliper edge points with inlier flags, fit RMS and inlier
+ratio, accepted at RMS ≤ 2 px and ≥ 30 % inliers (its `MAX_RMS`/`MIN_INLIERS`,
+our defaults). If that file turns up, compare against it before assuming parity.
+Pipeline: Otsu/fixed-threshold seed blob → `num_calipers` radial calipers
+(each `caliper_width_px` wide, averaged) → one sub-pixel edge per caliper →
+seeded RANSAC + Gauss-Newton geometric refit → a second pass cast from the
+fitted centre with half the band. Rules worth keeping:
+- **confidence is the inlier ratio over calipers *cast*, not edges found** —
+  rays that found nothing count against the fit; one hole per image, like blob;
+- **the RANSAC RNG is seeded per call** (`_RANSAC_SEED`), so a frame always
+  gives the same answer — a station must not flip GOOD/NG on a re-test;
+- **`inlier_threshold_px` must exceed `max_rms_px`**, or the RMS gate can never
+  fail (RMS is over inliers, which all lie within the threshold);
+- **Auto Sweep never searches the three acceptance criteria** (tolerance, min
+  inlier ratio, max RMS): with confidence = inlier ratio, a sweep free to widen
+  the tolerance would always pick the widest. It searches what *measures* the
+  rim — seed threshold, blur, band, polarity, selection, strength;
+- **Otsu seeding can lock onto a mid-grey feature inside a template match**
+  (the plate fixture in `tests/test_template_caliper_circle_detector.py`: Otsu
+  splits at 150 and fits a 67 px circle with 53 % inliers, which *passes* the
+  default gate). That is why the seed threshold is swept; don't change the
+  default from Otsu without data from the station.
 
 **A detector's missing resource is a *detect-time* error, never a construct-time
 one.** `template_matching` with no `template_path`, and `yolo` with no

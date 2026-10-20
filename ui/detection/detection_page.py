@@ -86,6 +86,16 @@ to know which detector a strategy's Stage 1 regions come from. The
 blob_analysis sweep derives its ``min_area_px`` from the ROI the same way the
 diameter gates are derived, rather than searching it.
 
+**caliper_based_circle_fitting** (radial calipers find the rim, a robust
+circle fit gives the centre) and **template_caliper_based_circle_fitting**
+(the same as Stage 2 of a template match) follow exactly the same pattern as
+blob analysis and its template version. Its sweep searches only what
+*measures* the rim — the seed threshold, blur, search band, edge polarity,
+selection and strength — and leaves the three acceptance criteria (inlier
+tolerance, min inlier ratio, max RMS) at the form's values: they define what
+a good fit is, and since the hole's confidence is its inlier ratio, a sweep
+allowed to loosen the tolerance would always pick the loosest one.
+
 The **Judgement** box also carries two per-camera switches the engine and the
 pipeline act on: **Downscale** (detect on a frame shrunk by the factor; see
 ``VisionEngine``'s module docstring — results and every pixel parameter stay
@@ -95,7 +105,8 @@ Required another run** (re-capture and re-check an NG up to N more times; see
 the engine; it does *not* re-run an NG — it is one capture by design — and
 says in the verdict what a real cycle would do instead.
 
-``opencv``, ``dark_hole``, ``blob_analysis`` and ``template_matching`` are sweepable. For
+``opencv``, ``dark_hole``, ``blob_analysis``, ``caliper_based_circle_fitting`` and
+``template_matching`` are sweepable. For
 ``template_matching`` the ROI does more than bound the search: the diameter
 gates it implies are divided by the template's own size to give the **scale
 range**, so the sweep searches the sizes the drawn box could actually
@@ -143,12 +154,14 @@ from core.utilities.enums import DetectorType, LogSource
 from core.utilities.exceptions import ConfigurationError, VisionSystemError
 from core.vision import (
     BlobAnalysisDetector,
+    CaliperCircleDetector,
     DarkHoleDetector,
     DetectionResult,
     Hole,
     HoleDetector,
     OpenCVHoleDetector,
     TemplateBlobAnalysisDetector,
+    TemplateCaliperCircleDetector,
     TemplateMatchingDetector,
     TemplateOpenCVDetector,
     TemplateRegionDetector,
@@ -184,6 +197,7 @@ _SWEEP_DETECTORS: dict[str, type] = {
     "dark_hole": DarkHoleDetector,
     "template_matching": TemplateMatchingDetector,
     "blob_analysis": BlobAnalysisDetector,
+    "caliper_based_circle_fitting": CaliperCircleDetector,
 }
 
 #: The "template first, then the hole inside it" strategies, and the detector
@@ -193,6 +207,7 @@ _SWEEP_DETECTORS: dict[str, type] = {
 _TWO_STAGE_DETECTORS: dict[str, type[TemplateRegionDetector]] = {
     DetectorType.TEMPLATE_OPENCV.value: TemplateOpenCVDetector,
     DetectorType.TEMPLATE_BLOB_ANALYSIS.value: TemplateBlobAnalysisDetector,
+    DetectorType.TEMPLATE_CALIPER_BASED_CIRCLE_FITTING.value: TemplateCaliperCircleDetector,
 }
 
 # ``yolo`` is deliberately absent, and the disabled button says why: a trained
@@ -249,6 +264,10 @@ _SWEEP_STAGES: dict[str, tuple[tuple[str, str, str], ...]] = {
         _TEMPLATE_SWEEP_STAGE,
         _hole_sweep_stage(DetectorType.BLOB_ANALYSIS, "Blob Analysis"),
     ),
+    DetectorType.TEMPLATE_CALIPER_BASED_CIRCLE_FITTING.value: (
+        _TEMPLATE_SWEEP_STAGE,
+        _hole_sweep_stage(DetectorType.CALIPER_BASED_CIRCLE_FITTING, "Caliper Circle Fitting"),
+    ),
 }
 
 #: Which parameter forms each strategy shows, top to bottom; a strategy not
@@ -266,6 +285,11 @@ _FORMS_SHOWN: dict[str, tuple[str, ...]] = {
         DetectorType.TEMPLATE_MATCHING.value,
         DetectorType.BLOB_ANALYSIS.value,
     ),
+    DetectorType.TEMPLATE_CALIPER_BASED_CIRCLE_FITTING.value: (
+        DetectorType.TEMPLATE_CALIPER_BASED_CIRCLE_FITTING.value,
+        DetectorType.TEMPLATE_MATCHING.value,
+        DetectorType.CALIPER_BASED_CIRCLE_FITTING.value,
+    ),
 }
 
 #: Titles the stage forms carry while a multi-form strategy is selected, so
@@ -280,6 +304,11 @@ _STAGE_TITLES: dict[str, dict[str, str]] = {
         DetectorType.TEMPLATE_MATCHING.value: _TEMPLATE_STAGE_TITLE,
         DetectorType.BLOB_ANALYSIS.value:
             "Stage 2 — Blob Analysis (finds the hole inside the region)",
+    },
+    DetectorType.TEMPLATE_CALIPER_BASED_CIRCLE_FITTING.value: {
+        DetectorType.TEMPLATE_MATCHING.value: _TEMPLATE_STAGE_TITLE,
+        DetectorType.CALIPER_BASED_CIRCLE_FITTING.value:
+            "Stage 2 — Caliper Circle Fitting (measures the hole inside the region)",
     },
 }
 
@@ -338,6 +367,22 @@ _SWEEP_LEVELS: dict[str, dict[str, list]] = {
         # every floor it clears scores it identically and the stable sort
         # keeps the strictest floor that still found it.
         "min_circularity": [0.9, 0.85, 0.8, 0.7, 0.6, 0.5],
+    },
+    # Only what *measures* the rim. inlier_threshold_px, min_inlier_ratio and
+    # max_rms_px stay at the form's values: they define what a good fit is,
+    # and the hole's confidence is its inlier ratio — a sweep free to widen
+    # the tolerance would always pick the widest. num_calipers and
+    # caliper_width_px stay too: more calipers only sample the rim more finely.
+    "caliper_based_circle_fitting": {
+        "coarse_threshold": [0, 40, 70, 100, 130, 160],  # 0 = Otsu, per image
+        "blur_kernel_size": [1, 3, 5, 9],
+        "search_band": [0.3, 0.6],
+        "edge_polarity": ["dark_to_light", "either"],
+        "edge_selection": ["strongest", "first"],
+        # Descending, as for blob_analysis's min_circularity: every floor a rim
+        # clears with the same inliers scores the same, and the stable sort
+        # keeps the strictest one.
+        "min_edge_strength": [40, 20, 10, 5],
     },
 }
 
@@ -485,11 +530,36 @@ def _blob_analysis_param_grid(base: dict) -> list[dict]:
     return combos
 
 
+def _caliper_param_grid(base: dict) -> list[dict]:
+    """Every combination the caliper sweep tries, seeded with *base* — whose
+    diameter gates come from the ROI and also bound the seed blob, so a big
+    dark background region cannot be the seed of any trial."""
+    levels = _SWEEP_LEVELS["caliper_based_circle_fitting"]
+    combos: list[dict] = []
+    for seed_threshold in levels["coarse_threshold"]:
+        for blur in levels["blur_kernel_size"]:
+            for band in levels["search_band"]:
+                for polarity in levels["edge_polarity"]:
+                    for selection in levels["edge_selection"]:
+                        for strength in levels["min_edge_strength"]:
+                            combos.append({
+                                **base,
+                                "coarse_threshold": seed_threshold,
+                                "blur_kernel_size": blur,
+                                "search_band": band,
+                                "edge_polarity": polarity,
+                                "edge_selection": selection,
+                                "min_edge_strength": strength,
+                            })
+    return combos
+
+
 _SWEEP_GRID_BUILDERS = {
     "opencv": _opencv_param_grid,
     "dark_hole": _dark_hole_param_grid,
     "template_matching": _template_matching_param_grid,
     "blob_analysis": _blob_analysis_param_grid,
+    "caliper_based_circle_fitting": _caliper_param_grid,
 }
 
 _SWEEP_PROGRESS_TICK = 25  # UI refresh cadence — every Nth trial, not every one
@@ -663,6 +733,17 @@ class DetectionPage(QWidget):
                 "Template matching and blob analysis: find the template first, "
                 "then the largest round dark blob inside it",
             ),
+            (
+                DetectorType.CALIPER_BASED_CIRCLE_FITTING,
+                "Caliper-based circle fitting: radial calipers find the rim "
+                "edge, a robust circle fit gives the centre — steady against "
+                "a partly hidden rim, burrs and reflections",
+            ),
+            (
+                DetectorType.TEMPLATE_CALIPER_BASED_CIRCLE_FITTING,
+                "Template matching and caliper circle fitting: find the template "
+                "first, then measure the hole's rim with calipers inside it",
+            ),
         ):
             self._strategy.setItemData(
                 self._strategy.findText(strategy.value), tooltip, Qt.ItemDataRole.ToolTipRole
@@ -679,6 +760,9 @@ class DetectionPage(QWidget):
             DetectorType.TEMPLATE_OPENCV.value: self._build_template_opencv_form(),
             DetectorType.BLOB_ANALYSIS.value: self._build_blob_form(),
             DetectorType.TEMPLATE_BLOB_ANALYSIS.value: self._build_template_blob_form(),
+            DetectorType.CALIPER_BASED_CIRCLE_FITTING.value: self._build_caliper_form(),
+            DetectorType.TEMPLATE_CALIPER_BASED_CIRCLE_FITTING.value:
+                self._build_template_caliper_form(),
         }
         self._form_titles = {name: form.title() for name, form in self._forms.items()}
         # Each combined form sits above its two stage forms (template matching
@@ -686,9 +770,11 @@ class DetectionPage(QWidget):
         for name in (
             DetectorType.TEMPLATE_OPENCV.value,
             DetectorType.TEMPLATE_BLOB_ANALYSIS.value,
+            DetectorType.TEMPLATE_CALIPER_BASED_CIRCLE_FITTING.value,
             DetectorType.TEMPLATE_MATCHING.value,
             DetectorType.OPENCV.value,
             DetectorType.BLOB_ANALYSIS.value,
+            DetectorType.CALIPER_BASED_CIRCLE_FITTING.value,
             DetectorType.YOLO.value,
             DetectorType.DARK_HOLE.value,
         ):
@@ -739,6 +825,16 @@ class DetectionPage(QWidget):
                 "min_circularity": self._ba_circularity,
                 "min_hole_diameter_px": self._ba_min_diameter,
                 "max_hole_diameter_px": self._ba_max_diameter,
+            },
+            "caliper_based_circle_fitting": {
+                "coarse_threshold": self._cf_seed_threshold,
+                "blur_kernel_size": self._cf_blur,
+                "search_band": self._cf_band,
+                "edge_polarity": self._cf_polarity,
+                "edge_selection": self._cf_selection,
+                "min_edge_strength": self._cf_strength,
+                "min_hole_diameter_px": self._cf_min_diameter,
+                "max_hole_diameter_px": self._cf_max_diameter,
             },
         }
 
@@ -915,6 +1011,112 @@ class DetectionPage(QWidget):
         form.addRow("Min Circularity", self._ba_circularity)
         form.addRow("Min Hole Diameter (px)", self._ba_min_diameter)
         form.addRow("Max Hole Diameter (px)", self._ba_max_diameter)
+        return box
+
+    def _build_template_caliper_form(self) -> QGroupBox:
+        box, self._tc_regions, self._tc_padding = self._build_regions_form(
+            "Template Matching + Caliper Circle Fitting Parameters",
+            "Stage 1 finds the template in the frame; stage 2 aims calipers at "
+            "the darkest round blob inside the matched area only and fits a "
+            "circle to the rim edges they find — a hole anywhere else is "
+            "ignored. Each matched region gives at most one hole. Pad the "
+            "region if the bore's rim runs past the template's edge. Both "
+            "stages use the forms below, which are the same parameters the "
+            "'template_matching' and 'caliper_based_circle_fitting' strategies "
+            "use; Stage 1's diameter gate applies to the matched area.",
+        )
+        return box
+
+    def _build_caliper_form(self) -> QGroupBox:
+        box = QGroupBox("Caliper Circle Fitting Parameters")
+        form = QFormLayout(box)
+        hint = QLabel(
+            "A dark blob gives a rough centre; calipers cast outward from it "
+            "find the rim edge, and a robust circle fit to those edge points "
+            "gives the hole (one per frame), ignoring points a burr or a "
+            "reflection put off the circle. Confidence is the inlier ratio. "
+            "Debug view: the seed mask, the search band, and the edge points — "
+            "filled dots for inliers, rings for rejected outliers."
+        )
+        hint.setWordWrap(True)
+        hint.setProperty("class", "dim")
+        self._cf_seed_threshold = _spin(0, 255)
+        self._cf_seed_threshold.setSpecialValueText("auto (Otsu)")  # shown at 0
+        self._cf_seed_threshold.setToolTip(
+            "Dark level for the rough seed blob that aims the calipers. It only "
+            "has to find the hole roughly — the rim itself is measured by the "
+            "calipers. 0 picks a threshold per image (Otsu)."
+        )
+        self._cf_blur = _spin(1, 31)
+        self._cf_blur.setToolTip("Gaussian blur before seeding and edge search; even rounds up to odd")
+        self._cf_calipers = _spin(8, 720)
+        self._cf_calipers.setToolTip("How many calipers are cast, evenly spaced round the hole")
+        self._cf_width = _spin(1, 51)
+        self._cf_width.setSuffix(" px")
+        self._cf_width.setToolTip(
+            "Each caliper averages this many parallel samples across its width "
+            "— wider is steadier against noise and scratches, narrower follows "
+            "a tight rim more closely"
+        )
+        self._cf_band = _dspin(0.05, 0.95, 0.05)
+        self._cf_band.setToolTip(
+            "How far each caliper reaches either side of the seed radius, as a "
+            "fraction of it: 0.5 searches from half to one and a half seed radii"
+        )
+        self._cf_polarity = QComboBox()
+        self._cf_polarity.addItems(["dark_to_light", "either"])
+        self._cf_polarity.setToolTip(
+            "Which edges count, going outward: 'dark_to_light' is a dark bore "
+            "on brighter metal; 'either' also accepts bright-to-dark"
+        )
+        self._cf_selection = QComboBox()
+        self._cf_selection.addItems(["strongest", "first"])
+        self._cf_selection.setToolTip(
+            "Which edge on each caliper: the strongest, or the first (innermost) "
+            "— use 'first' when a brighter chamfer ring round the bore gives a "
+            "stronger outer edge"
+        )
+        self._cf_strength = _spin(1, 255)
+        self._cf_strength.setToolTip(
+            "Weakest edge a caliper accepts, in grey levels per pixel of the edge profile"
+        )
+        self._cf_tolerance = _dspin(0.1, 50.0, 0.5, 1)
+        self._cf_tolerance.setSuffix(" px")
+        self._cf_tolerance.setToolTip(
+            "An edge point within this distance of the fitted rim is an inlier. "
+            "Keep it above Max Fit RMS, or the RMS check can never fail."
+        )
+        self._cf_min_inliers = _dspin(0.0, 1.0, 0.05)
+        self._cf_min_inliers.setToolTip(
+            "Share of all calipers whose edge must agree with the circle — 0.30 "
+            "accepts a bore with about a third of its rim visible. 'Confidence "
+            "Threshold' above filters the same number again."
+        )
+        self._cf_max_rms = _dspin(0.1, 50.0, 0.1, 1)
+        self._cf_max_rms.setSuffix(" px")
+        self._cf_max_rms.setToolTip("Largest RMS distance of the inliers from the fitted rim")
+        self._cf_min_diameter = _spin(0, 4000)
+        self._cf_max_diameter = _spin(0, 4000)
+        size_hint = (
+            "Gate on the fitted diameter in px; 0 disables it. Auto Sweep sets "
+            "both from the ROI you draw."
+        )
+        self._cf_min_diameter.setToolTip(size_hint)
+        self._cf_max_diameter.setToolTip(size_hint)
+        form.addRow(hint)
+        form.addRow("Seed Threshold", self._cf_seed_threshold)
+        form.addRow("Blur Kernel", self._cf_blur)
+        form.addRow("Calipers", self._cf_calipers)
+        form.addRow("Caliper Width", self._cf_width)
+        form.addRow("Search Band (± seed radius)", self._cf_band)
+        form.addRow("Edge Polarity", self._cf_polarity)
+        form.addRow("Edge Selection", self._cf_selection)
+        form.addRow("Min Edge Strength", self._cf_strength)
+        form.addRow("Inlier Tolerance", self._cf_tolerance)
+        form.addRow("Min Inlier Ratio", self._cf_min_inliers)
+        form.addRow("Max Fit RMS", self._cf_max_rms)
+        form.addRow("Min Hole Diameter (px)", self._cf_min_diameter)
+        form.addRow("Max Hole Diameter (px)", self._cf_max_diameter)
         return box
 
     def _build_opencv_form(self) -> QWidget:
@@ -1129,8 +1331,8 @@ class DetectionPage(QWidget):
             "just a crop around it. It then grid-searches every other gating "
             "parameter of the active strategy against the last 'Test on "
             "Camera' frame — thousands of combinations, not just two. "
-            "template_opencv and template_blob_analysis are swept one stage at "
-            "a time — pick it under Stage."
+            "The template_* strategies are swept one stage at a time — pick it "
+            "under Stage."
         )
         hint.setWordWrap(True)
         hint.setProperty("class", "dim")
@@ -1243,6 +1445,25 @@ class DetectionPage(QWidget):
         self._ba_min_diameter.setValue(int(blob.get("min_hole_diameter_px", 0)))
         self._ba_max_diameter.setValue(int(blob.get("max_hole_diameter_px", 0)))
 
+        combined_caliper = cfg.get("template_caliper_based_circle_fitting", {})
+        self._tc_regions.setValue(int(combined_caliper.get("max_regions", 1)))
+        self._tc_padding.setValue(int(combined_caliper.get("region_padding_px", 0)))
+
+        caliper = cfg.get("caliper_based_circle_fitting", {})
+        self._cf_seed_threshold.setValue(int(caliper.get("coarse_threshold", 0)))
+        self._cf_blur.setValue(int(caliper.get("blur_kernel_size", 5)))
+        self._cf_calipers.setValue(int(caliper.get("num_calipers", 72)))
+        self._cf_width.setValue(int(caliper.get("caliper_width_px", 5)))
+        self._cf_band.setValue(float(caliper.get("search_band", 0.5)))
+        self._cf_polarity.setCurrentText(str(caliper.get("edge_polarity", "dark_to_light")))
+        self._cf_selection.setCurrentText(str(caliper.get("edge_selection", "strongest")))
+        self._cf_strength.setValue(int(caliper.get("min_edge_strength", 10)))
+        self._cf_tolerance.setValue(float(caliper.get("inlier_threshold_px", 3.0)))
+        self._cf_min_inliers.setValue(float(caliper.get("min_inlier_ratio", 0.3)))
+        self._cf_max_rms.setValue(float(caliper.get("max_rms_px", 2.0)))
+        self._cf_min_diameter.setValue(int(caliper.get("min_hole_diameter_px", 0)))
+        self._cf_max_diameter.setValue(int(caliper.get("max_hole_diameter_px", 0)))
+
         opencv = cfg.get("opencv", {})
         self._cv_threshold.setValue(int(opencv.get("detection_threshold", 60)))
         self._cv_adaptive.setChecked(bool(opencv.get("adaptive_threshold", False)))
@@ -1346,6 +1567,25 @@ class DetectionPage(QWidget):
             "template_blob_analysis": {
                 "max_regions": self._tb_regions.value(),
                 "region_padding_px": self._tb_padding.value(),
+            },
+            "caliper_based_circle_fitting": {
+                "coarse_threshold": self._cf_seed_threshold.value(),
+                "blur_kernel_size": self._cf_blur.value(),
+                "num_calipers": self._cf_calipers.value(),
+                "caliper_width_px": self._cf_width.value(),
+                "search_band": self._cf_band.value(),
+                "edge_polarity": self._cf_polarity.currentText(),
+                "edge_selection": self._cf_selection.currentText(),
+                "min_edge_strength": self._cf_strength.value(),
+                "inlier_threshold_px": self._cf_tolerance.value(),
+                "min_inlier_ratio": self._cf_min_inliers.value(),
+                "max_rms_px": self._cf_max_rms.value(),
+                "min_hole_diameter_px": self._cf_min_diameter.value(),
+                "max_hole_diameter_px": self._cf_max_diameter.value(),
+            },
+            "template_caliper_based_circle_fitting": {
+                "max_regions": self._tc_regions.value(),
+                "region_padding_px": self._tc_padding.value(),
             },
             "dark_hole": {
                 "channel": self._dh_channel.currentText(),

@@ -1,6 +1,6 @@
 """Blob analysis: the largest dark, round blob is the hole.
 
-Ported from the lab script ``development_files/testing_own/holes_detecion.py``
+Ported from the lab script ``development_files/testing_own/holes_detecion_blob_analysis.py``
 (``detect_hole``), a center-hole detector tuned by hand with four sliders —
 threshold, min area, min circularity, blur. The pipeline is kept exactly as
 that script runs it, so the numbers found there carry straight over:

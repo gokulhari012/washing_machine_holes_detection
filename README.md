@@ -152,8 +152,9 @@ pytest
    thresholds — selected with the "Camera" picker at the top of the page;
    "Save & Apply" and "Restore Defaults" only ever touch the selected camera.
    Strategies (`dark_hole`, `opencv`, `template_matching`, `yolo`,
-   `template_opencv`, `blob_analysis`, `template_blob_analysis`) are
-   hot-swappable per camera; adding one means
+   `template_opencv`, `blob_analysis`, `template_blob_analysis`,
+   `caliper_based_circle_fitting`, `template_caliper_based_circle_fitting`)
+   are hot-swappable per camera; adding one means
    implementing `HoleDetector` and registering it in
    `core/vision/vision_engine.py` — no PLC changes.
 
@@ -179,6 +180,25 @@ pytest
    find the template first, then run blob analysis only inside the match
    (one hole per matched region). Both are Auto Sweep-able; the two-stage one
    is swept a stage at a time, like `template_opencv`.
+
+   `caliper_based_circle_fitting` measures the bore's **edge** instead of its
+   area: a rough dark blob aims a ring of calipers (short sampling lines)
+   across the rim, each finds where the grey level steps to a fraction of a
+   pixel, and a robust circle fit through those points ignores the ones a
+   burr, scratch or reflection put off the circle. It keeps the true centre
+   where area-based strategies drift — a rim cut off by the ROI, a shadow or
+   bright reflection over part of it. A fit is accepted when at least "Min
+   Inlier Ratio" of the calipers agree with it (default 30 %) and their RMS
+   distance from the rim is at most "Max Fit RMS" (default 2 px); the
+   confidence shown is that inlier ratio. The Debug view shows the seed mask,
+   the search band, and every caliper's edge point (filled = inlier, ring =
+   rejected). `template_caliper_based_circle_fitting` runs it only inside the
+   template match. "Seed Threshold" on *auto (Otsu)* suits a bore that is the
+   darkest thing in view; inside a template match that also holds a mid-grey
+   feature, Otsu can seed on the feature and fit the wrong circle — set it
+   explicitly, or let Auto Sweep pick it. The sweep never changes the three
+   acceptance settings (Inlier Tolerance, Min Inlier Ratio, Max Fit RMS):
+   they are the quality spec, not something to optimise.
 
    Two more per-camera switches sit in the Judgement box:
 

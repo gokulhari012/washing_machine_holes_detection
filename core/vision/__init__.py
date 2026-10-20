@@ -1,12 +1,14 @@
 """Vision layer: strategy interface, detectors, engine, result types."""
 
 from core.vision.blob_analysis_detector import BlobAnalysisDetector
+from core.vision.caliper_circle_detector import CaliperCircleDetector, CaliperFit
 from core.vision.dark_hole_detector import DarkHoleDetector
 from core.vision.detection_result import DetectionResult, Hole, SearchRegion
 from core.vision.detector_base import HoleDetector
 from core.vision.normalization import normalize_image
 from core.vision.opencv_hole_detector import OpenCVHoleDetector
 from core.vision.template_blob_analysis_detector import TemplateBlobAnalysisDetector
+from core.vision.template_caliper_circle_detector import TemplateCaliperCircleDetector
 from core.vision.template_matching_detector import TemplateMatchingDetector
 from core.vision.template_opencv_detector import TemplateOpenCVDetector
 from core.vision.template_region_detector import TemplateRegionDetector
@@ -20,6 +22,8 @@ from core.vision.yolo_hole_detector import YoloHoleDetector
 
 __all__ = [
     "BlobAnalysisDetector",
+    "CaliperCircleDetector",
+    "CaliperFit",
     "DarkHoleDetector",
     "DetectionResult",
     "Hole",
@@ -27,6 +31,7 @@ __all__ = [
     "OpenCVHoleDetector",
     "SearchRegion",
     "TemplateBlobAnalysisDetector",
+    "TemplateCaliperCircleDetector",
     "TemplateMatchingDetector",
     "TemplateOpenCVDetector",
     "TemplateRegionDetector",

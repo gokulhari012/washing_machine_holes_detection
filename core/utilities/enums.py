@@ -81,6 +81,10 @@ class DetectorType(StrEnum):
     BLOB_ANALYSIS = "blob_analysis"
     # two-stage: template_matching locates the region, blob_analysis finds the hole inside it
     TEMPLATE_BLOB_ANALYSIS = "template_blob_analysis"
+    # radial calipers find rim edge points, a robust (RANSAC) circle fit gives the hole
+    CALIPER_BASED_CIRCLE_FITTING = "caliper_based_circle_fitting"
+    # two-stage: template_matching locates the region, caliper fitting finds the hole inside it
+    TEMPLATE_CALIPER_BASED_CIRCLE_FITTING = "template_caliper_based_circle_fitting"
 
 
 class LogSource(StrEnum):

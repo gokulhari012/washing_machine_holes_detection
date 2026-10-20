@@ -67,12 +67,14 @@ from core.logging import get_logger
 from core.utilities.enums import DetectorType, LogSource
 from core.utilities.exceptions import ConfigurationError
 from core.vision.blob_analysis_detector import BlobAnalysisDetector
+from core.vision.caliper_circle_detector import CaliperCircleDetector
 from core.vision.dark_hole_detector import DarkHoleDetector
 from core.vision.detection_result import DetectionResult, SearchRegion
 from core.vision.detector_base import HoleDetector
 from core.vision.normalization import normalize_image
 from core.vision.opencv_hole_detector import OpenCVHoleDetector
 from core.vision.template_blob_analysis_detector import TemplateBlobAnalysisDetector
+from core.vision.template_caliper_circle_detector import TemplateCaliperCircleDetector
 from core.vision.template_matching_detector import TemplateMatchingDetector
 from core.vision.template_opencv_detector import TemplateOpenCVDetector
 from core.vision.yolo_hole_detector import YoloHoleDetector
@@ -87,6 +89,8 @@ _REGISTRY: dict[DetectorType, type[HoleDetector]] = {
     DetectorType.TEMPLATE_OPENCV: TemplateOpenCVDetector,
     DetectorType.BLOB_ANALYSIS: BlobAnalysisDetector,
     DetectorType.TEMPLATE_BLOB_ANALYSIS: TemplateBlobAnalysisDetector,
+    DetectorType.CALIPER_BASED_CIRCLE_FITTING: CaliperCircleDetector,
+    DetectorType.TEMPLATE_CALIPER_BASED_CIRCLE_FITTING: TemplateCaliperCircleDetector,
 }
 
 #: Largest accepted downscale factor — beyond this a bore is a handful of pixels.

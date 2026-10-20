@@ -55,6 +55,25 @@
         "max_regions": 1,
         "region_padding_px": 0
       },
+      "caliper_based_circle_fitting": {
+        "coarse_threshold": 0,
+        "blur_kernel_size": 5,
+        "num_calipers": 72,
+        "caliper_width_px": 5,
+        "search_band": 0.5,
+        "edge_polarity": "dark_to_light",
+        "edge_selection": "strongest",
+        "min_edge_strength": 10,
+        "inlier_threshold_px": 3.0,
+        "min_inlier_ratio": 0.3,
+        "max_rms_px": 2.0,
+        "min_hole_diameter_px": 0,
+        "max_hole_diameter_px": 0
+      },
+      "template_caliper_based_circle_fitting": {
+        "max_regions": 1,
+        "region_padding_px": 0
+      },
       "dark_hole": {
         "channel": "auto",
         "blur_kernel_size": 3,
@@ -130,6 +149,25 @@
         "max_hole_diameter_px": 0
       },
       "template_blob_analysis": {
+        "max_regions": 1,
+        "region_padding_px": 0
+      },
+      "caliper_based_circle_fitting": {
+        "coarse_threshold": 0,
+        "blur_kernel_size": 5,
+        "num_calipers": 72,
+        "caliper_width_px": 5,
+        "search_band": 0.5,
+        "edge_polarity": "dark_to_light",
+        "edge_selection": "strongest",
+        "min_edge_strength": 10,
+        "inlier_threshold_px": 3.0,
+        "min_inlier_ratio": 0.3,
+        "max_rms_px": 2.0,
+        "min_hole_diameter_px": 0,
+        "max_hole_diameter_px": 0
+      },
+      "template_caliper_based_circle_fitting": {
         "max_regions": 1,
         "region_padding_px": 0
       },
@@ -211,6 +249,25 @@
         "max_regions": 1,
         "region_padding_px": 0
       },
+      "caliper_based_circle_fitting": {
+        "coarse_threshold": 0,
+        "blur_kernel_size": 5,
+        "num_calipers": 72,
+        "caliper_width_px": 5,
+        "search_band": 0.5,
+        "edge_polarity": "dark_to_light",
+        "edge_selection": "strongest",
+        "min_edge_strength": 10,
+        "inlier_threshold_px": 3.0,
+        "min_inlier_ratio": 0.3,
+        "max_rms_px": 2.0,
+        "min_hole_diameter_px": 0,
+        "max_hole_diameter_px": 0
+      },
+      "template_caliper_based_circle_fitting": {
+        "max_regions": 1,
+        "region_padding_px": 0
+      },
       "dark_hole": {
         "channel": "green",
         "blur_kernel_size": 1,
@@ -286,6 +343,25 @@
         "max_hole_diameter_px": 0
       },
       "template_blob_analysis": {
+        "max_regions": 1,
+        "region_padding_px": 0
+      },
+      "caliper_based_circle_fitting": {
+        "coarse_threshold": 0,
+        "blur_kernel_size": 5,
+        "num_calipers": 72,
+        "caliper_width_px": 5,
+        "search_band": 0.5,
+        "edge_polarity": "dark_to_light",
+        "edge_selection": "strongest",
+        "min_edge_strength": 10,
+        "inlier_threshold_px": 3.0,
+        "min_inlier_ratio": 0.3,
+        "max_rms_px": 2.0,
+        "min_hole_diameter_px": 0,
+        "max_hole_diameter_px": 0
+      },
+      "template_caliper_based_circle_fitting": {
         "max_regions": 1,
         "region_padding_px": 0
       },

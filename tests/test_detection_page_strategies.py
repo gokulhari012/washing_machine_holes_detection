@@ -105,6 +105,15 @@ def page(tmp_path, qt_app):
     return SimpleNamespace(widget=widget, engine=engine, config=config, tmp_path=tmp_path)
 
 
+#: Every "template first, then the hole inside it" strategy and its Stage 2.
+TWO_STAGE = [
+    ("template_opencv", "opencv"),
+    ("template_blob_analysis", "blob_analysis"),
+    ("template_caliper_based_circle_fitting", "caliper_based_circle_fitting"),
+]
+TWO_STAGE_NAMES = [strategy for strategy, _stage in TWO_STAGE]
+
+
 def stored(page) -> dict:
     return page.config.load("detection")["cameras"]["1"]
 
@@ -289,28 +298,28 @@ def test_sweep_button_follows_the_selected_strategy(page) -> None:
         ("template_opencv", True),
         ("blob_analysis", True),
         ("template_blob_analysis", True),
+        ("caliper_based_circle_fitting", True),
+        ("template_caliper_based_circle_fitting", True),
     ]:
         widget._strategy.setCurrentText(strategy)
         assert widget._sweep_btn.isEnabled() is enabled, strategy
     widget._strategy.setCurrentText("yolo")
     assert "crop" in widget._sweep_btn.toolTip()
-    for two_stage in ("template_opencv", "template_blob_analysis"):
+    for two_stage in TWO_STAGE_NAMES:
         widget._strategy.setCurrentText(two_stage)
         assert widget._sweep_btn.toolTip().startswith("Stage 1"), two_stage
 
 
 # ---------------------------------------------- two-stage strategy sweeps
-@pytest.mark.parametrize(
-    "strategy, hole_stage",
-    [("template_opencv", "opencv"), ("template_blob_analysis", "blob_analysis")],
-)
+@pytest.mark.parametrize("strategy, hole_stage", TWO_STAGE)
 def test_stage_selector_only_shows_for_two_stage_strategies(page, strategy, hole_stage) -> None:
     widget = page.widget
     widget._strategy.setCurrentText("opencv")
     assert widget._sweep_stage.isHidden()
     assert widget._sweep_target("opencv") == "opencv"
-    widget._strategy.setCurrentText("blob_analysis")
-    assert widget._sweep_stage.isHidden()
+    for single in ("blob_analysis", "caliper_based_circle_fitting"):
+        widget._strategy.setCurrentText(single)
+        assert widget._sweep_stage.isHidden(), single
 
     widget._strategy.setCurrentText(strategy)
     assert not widget._sweep_stage.isHidden()
@@ -350,7 +359,7 @@ def _ready_for_stage_sweep(page, monkeypatch, stage: int, roi, strategy="templat
     monkeypatch.setattr(widget._view, "current_roi", lambda: roi)
 
 
-@pytest.mark.parametrize("strategy", ["template_opencv", "template_blob_analysis"])
+@pytest.mark.parametrize("strategy", TWO_STAGE_NAMES)
 def test_stage_one_sweep_tunes_the_template_form(page, monkeypatch, strategy) -> None:
     widget = page.widget
     _ready_for_stage_sweep(page, monkeypatch, 0, (140, 140, 120, 120), strategy)
@@ -442,7 +451,7 @@ def test_stage_two_sweep_runs_blob_analysis_inside_the_template_match(page, monk
     assert widget._strategy.currentText() == "template_blob_analysis"
 
 
-@pytest.mark.parametrize("strategy", ["template_opencv", "template_blob_analysis"])
+@pytest.mark.parametrize("strategy", TWO_STAGE_NAMES)
 def test_stage_two_sweep_without_a_match_says_tune_stage_one(page, monkeypatch, strategy) -> None:
     messages = []
     monkeypatch.setattr(
@@ -577,12 +586,6 @@ def test_template_blob_analysis_round_trips_through_save_and_load(page) -> None:
     assert widget._tb_padding.value() == 12
 
 
-def test_no_hole_on_template_blob_analysis_says_the_template_was_not_found(page) -> None:
-    widget = page.widget
-    widget._strategy.setCurrentText("template_blob_analysis")
-    assert "template itself was not found" in widget._where_searched(DetectionResult())
-
-
 def test_blob_analysis_sweep_finds_the_hole_and_fills_the_form(page, monkeypatch) -> None:
     from ui.detection import detection_page
 
@@ -618,6 +621,187 @@ def test_blob_analysis_sweep_finds_the_hole_and_fills_the_form(page, monkeypatch
     assert widget._ba_circularity.value() == pytest.approx(best_params["min_circularity"])
     assert widget._ba_min_area.value() == best_params["min_area_px"]
     assert widget._ba_min_diameter.value() == round(min_diameter)
+
+
+# ------------------------- caliper_based_circle_fitting / template_caliper
+def test_an_older_detection_json_loads_the_caliper_forms_at_their_defaults(page) -> None:
+    """The fixture predates both blocks — the viewer's MAX_RMS / MIN_INLIERS."""
+    widget = page.widget
+    assert widget._cf_seed_threshold.value() == 0
+    assert widget._cf_seed_threshold.text() == "auto (Otsu)"
+    assert widget._cf_calipers.value() == 72
+    assert widget._cf_polarity.currentText() == "dark_to_light"
+    assert widget._cf_selection.currentText() == "strongest"
+    assert widget._cf_tolerance.value() == pytest.approx(3.0)
+    assert widget._cf_min_inliers.value() == pytest.approx(0.3)
+    assert widget._cf_max_rms.value() == pytest.approx(2.0)
+    assert widget._tc_regions.value() == 1
+    assert widget._tc_padding.value() == 0
+
+
+def test_caliper_round_trips_through_save_and_load(page) -> None:
+    widget = page.widget
+    widget._strategy.setCurrentText("caliper_based_circle_fitting")
+    widget._cf_seed_threshold.setValue(80)
+    widget._cf_blur.setValue(7)
+    widget._cf_calipers.setValue(120)
+    widget._cf_width.setValue(9)
+    widget._cf_band.setValue(0.35)
+    widget._cf_polarity.setCurrentText("either")
+    widget._cf_selection.setCurrentText("first")
+    widget._cf_strength.setValue(25)
+    widget._cf_tolerance.setValue(2.5)
+    widget._cf_min_inliers.setValue(0.55)
+    widget._cf_max_rms.setValue(1.2)
+    widget._cf_min_diameter.setValue(40)
+    widget._cf_max_diameter.setValue(400)
+    widget._on_save()
+
+    expected = {
+        "coarse_threshold": 80, "blur_kernel_size": 7, "num_calipers": 120,
+        "caliper_width_px": 9, "search_band": pytest.approx(0.35),
+        "edge_polarity": "either", "edge_selection": "first", "min_edge_strength": 25,
+        "inlier_threshold_px": pytest.approx(2.5), "min_inlier_ratio": pytest.approx(0.55),
+        "max_rms_px": pytest.approx(1.2), "min_hole_diameter_px": 40,
+        "max_hole_diameter_px": 400,
+    }
+    saved = stored(page)
+    assert saved["active_detector"] == "caliper_based_circle_fitting"
+    assert saved["caliper_based_circle_fitting"] == expected
+    assert page.engine.active_detector_name(1) == "caliper_based_circle_fitting"
+    assert page.engine.camera_config(1)["caliper_based_circle_fitting"] == expected
+
+    widget._cf_calipers.setValue(8)
+    widget._cf_selection.setCurrentText("strongest")
+    widget._load()
+    assert widget._cf_calipers.value() == 120
+    assert widget._cf_selection.currentText() == "first"
+
+
+def test_template_caliper_shows_its_own_form_over_both_stage_forms(page) -> None:
+    widget = page.widget
+    widget._strategy.setCurrentText("template_caliper_based_circle_fitting")
+    assert set(widget._visible_forms()) == {
+        "template_caliper_based_circle_fitting", "template_matching",
+        "caliper_based_circle_fitting",
+    }
+    assert widget._forms["template_matching"].title().startswith("Stage 1")
+    assert widget._forms["caliper_based_circle_fitting"].title().startswith("Stage 2")
+
+    widget._strategy.setCurrentText("caliper_based_circle_fitting")  # titles go back
+    assert widget._forms["caliper_based_circle_fitting"].title() == (
+        "Caliper Circle Fitting Parameters"
+    )
+
+
+def test_template_caliper_round_trips_through_save_and_load(page) -> None:
+    widget = page.widget
+    path = template_file(page.tmp_path)
+    widget._strategy.setCurrentText("template_caliper_based_circle_fitting")
+    widget._tm_path.setText(path)
+    widget._cf_seed_threshold.setValue(55)
+    widget._tc_regions.setValue(2)
+    widget._tc_padding.setValue(30)
+    widget._on_save()
+
+    saved = stored(page)
+    assert saved["active_detector"] == "template_caliper_based_circle_fitting"
+    assert saved["template_caliper_based_circle_fitting"] == {
+        "max_regions": 2, "region_padding_px": 30,
+    }
+    assert saved["template_blob_analysis"] == {"max_regions": 1, "region_padding_px": 0}
+    assert saved["template_matching"]["template_path"] == path  # stage 1
+    assert saved["caliper_based_circle_fitting"]["coarse_threshold"] == 55  # stage 2
+    assert page.engine.active_detector_name(1) == "template_caliper_based_circle_fitting"
+
+    widget._tc_padding.setValue(0)
+    widget._load()
+    assert widget._tc_regions.value() == 2
+    assert widget._tc_padding.value() == 30
+
+
+@pytest.mark.parametrize("strategy", TWO_STAGE_NAMES)
+def test_no_hole_on_a_two_stage_strategy_can_mean_no_template(page, strategy) -> None:
+    widget = page.widget
+    widget._strategy.setCurrentText(strategy)
+    assert "template itself was not found" in widget._where_searched(DetectionResult())
+
+
+def test_stage_two_sweep_runs_the_calipers_inside_the_template_match(page, monkeypatch) -> None:
+    from ui.detection import detection_page
+
+    monkeypatch.setitem(detection_page._SWEEP_LEVELS, "caliper_based_circle_fitting", {
+        "coarse_threshold": [0, 60],
+        "blur_kernel_size": [3],
+        "search_band": [0.5],
+        "edge_polarity": ["dark_to_light"],
+        "edge_selection": ["strongest", "first"],
+        "min_edge_strength": [10],
+    })
+    widget = page.widget
+    _ready_for_stage_sweep(
+        page, monkeypatch, 1, (175, 175, 50, 50), "template_caliper_based_circle_fitting"
+    )
+    seen_views = []
+    real_grid = widget._run_sweep_grid
+
+    def spy(combos, detector, views, roi, found):
+        seen_views.extend((image.shape[:2], ox, oy) for image, ox, oy in views)
+        return real_grid(combos, detector, views, roi, found)
+
+    monkeypatch.setattr(widget, "_run_sweep_grid", spy)
+    widget._on_run_sweep()
+
+    assert seen_views == [((120, 120), 140, 140)]  # the template match, not a ROI crop
+    assert widget._sweep_rows, widget._sweep_status.text()
+    assert widget._sweep_rows_strategy == "caliper_based_circle_fitting"
+    best_params, best_hole = widget._sweep_rows[0]
+    assert abs(best_hole.x_px - 200) < 1 and abs(best_hole.y_px - 200) < 1
+    widget._cf_seed_threshold.setValue(200)
+    widget._on_apply_best_sweep()
+    assert widget._cf_seed_threshold.value() == best_params["coarse_threshold"]
+    assert widget._strategy.currentText() == "template_caliper_based_circle_fitting"
+
+
+def test_caliper_sweep_finds_the_hole_and_fills_the_form(page, monkeypatch) -> None:
+    from ui.detection import detection_page
+
+    monkeypatch.setitem(detection_page._SWEEP_LEVELS, "caliper_based_circle_fitting", {
+        "coarse_threshold": [0, 10, 100],  # 10 is darker than the bore: no seed at all
+        "blur_kernel_size": [1, 5],
+        "search_band": [0.3, 0.6],
+        "edge_polarity": ["dark_to_light", "either"],
+        "edge_selection": ["strongest"],
+        "min_edge_strength": [20, 10],
+    })
+    frame = np.full((400, 400), 180, np.uint8)
+    cv2.circle(frame, (200, 210), 30, 20, -1)
+    cv2.rectangle(frame, (215, 160), (235, 260), 240, -1)  # a bright bar over the rim
+    widget = page.widget
+    widget._strategy.setCurrentText("caliper_based_circle_fitting")
+    widget._cf_polarity.setCurrentText("either")
+    widget._last_frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+    roi = (160, 170, 80, 80)
+    monkeypatch.setattr(widget._view, "current_roi", lambda: roi)
+
+    widget._on_run_sweep()
+
+    assert widget._sweep_rows, widget._sweep_status.text()
+    assert widget._sweep_rows_strategy == "caliper_based_circle_fitting"
+    best_params, best_hole = widget._sweep_rows[0]
+    assert abs(best_hole.x_px - 200) < 1 and abs(best_hole.y_px - 210) < 1
+    assert all(params["coarse_threshold"] != 10 for params, _hole in widget._sweep_rows)
+
+    widget._on_apply_best_sweep()
+    assert widget._cf_seed_threshold.value() == best_params["coarse_threshold"]
+    assert widget._cf_band.value() == pytest.approx(best_params["search_band"])
+    assert widget._cf_polarity.currentText() == best_params["edge_polarity"]
+    assert widget._cf_strength.value() == best_params["min_edge_strength"]
+    min_diameter, _max = widget._diameter_bounds_from_roi(roi)
+    assert widget._cf_min_diameter.value() == round(min_diameter)
+    # the acceptance criteria are never swept — they stay as the operator set them
+    assert widget._cf_tolerance.value() == pytest.approx(3.0)
+    assert widget._cf_min_inliers.value() == pytest.approx(0.3)
 
 
 # ---------------------------------------------- downscale / NG re-run
