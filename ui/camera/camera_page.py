@@ -67,6 +67,14 @@ preview so the operator can watch each change take effect instead of clicking
 checkable QPushButton has no built-in "checked" styling in this theme, so
 without it the button gave no ongoing sign that it was still streaming.
 
+"Save Image" (under "Test Camera") writes the previewed frame — the whole
+rotated picture, without the ROI box drawn on it — to a file chosen in a save
+dialog, which first opens on ``images/camera_captures/`` with a
+``camera<N>_<timestamp>.png`` name and afterwards on whichever folder was used
+last. It is disabled until something has been captured and for as long as
+Continuous Capture runs: the preview changes every tick, so which frame would
+be written is a race the operator cannot see.
+
 The preview always shows the camera's **whole** (rotated) frame with the ROI
 drawn on it, so the operator can see where the region sits in the scene;
 "ROI View" beside it shows just the cropped region — what detection is
@@ -84,6 +92,7 @@ save are handled by the composition root's config subscription.
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -116,8 +125,14 @@ from core.camera import (
     frame_interval_ms,
     rotate_frame,
 )
-from core.camera.image_file_camera import IMAGE_NAME_FILTER, IMAGE_PATTERNS, read_image
-from core.utilities.enums import CameraDriver, ConnectionState, TriggerMode
+from core.camera.image_file_camera import (
+    IMAGE_NAME_FILTER,
+    IMAGE_PATTERNS,
+    read_image,
+    write_image,
+)
+from core.logging import get_logger
+from core.utilities.enums import CameraDriver, ConnectionState, LogSource, TriggerMode
 from core.utilities.exceptions import VisionSystemError
 from models.app_state import AppState
 from services.camera_service import CameraService
@@ -130,7 +145,14 @@ from ui.widgets import ImageView, LabeledLed, RoiEditor
 # stay in CameraDriver for config-file compatibility but are hidden from this dropdown.
 _SUPPORTED_DRIVERS = (CameraDriver.SIMULATED, CameraDriver.IMAGE_FILE, CameraDriver.BASLER)
 
+logger = get_logger(LogSource.UI)
+
 BLINK_INTERVAL_MS = 500
+
+# Where "Save Image" first offers to write — relative to the app folder
+# (main.py chdirs there), beside the inspection images.
+SAVE_IMAGE_DIR = Path("images") / "camera_captures"
+SAVE_IMAGE_FILTER = "PNG image (*.png);;JPEG image (*.jpg *.jpeg);;Bitmap (*.bmp)"
 
 # Largest pixel value an ROI box accepts (matches the Width/Height ceiling).
 ROI_MAX_PX = 8192
@@ -168,6 +190,8 @@ class CameraPage(QWidget):
         # Last whole (un-cropped) frame shown, so the ROI view can be re-cropped
         # whenever the ROI changes without grabbing again.
         self._full_frame = None
+        # Folder the last "Save Image" went to, so the next dialog opens there.
+        self._save_image_dir = SAVE_IMAGE_DIR
         # The form's ROI as centre x, y, w, h in *pixels* — the one source of
         # truth; the spin boxes only display it, in px or mm (see docstring).
         self._roi_px: list[int] = [0, 0, 0, 0]
@@ -228,6 +252,14 @@ class CameraPage(QWidget):
         test_btn = QPushButton("Test Camera")
         test_btn.clicked.connect(self._on_test)
         left.addWidget(test_btn)
+        self._save_image_btn = QPushButton("Save Image")
+        self._save_image_btn.setToolTip(
+            "Save the picture shown in the preview (the whole frame, without "
+            "the ROI drawn on it) to a file — unavailable during Continuous Capture"
+        )
+        self._save_image_btn.clicked.connect(self._on_save_image)
+        self._save_image_btn.setEnabled(False)  # nothing captured yet
+        left.addWidget(self._save_image_btn)
         self._continuous_btn = QPushButton("Continuous Capture")
         self._continuous_btn.setCheckable(True)
         self._continuous_btn.setToolTip(
@@ -524,6 +556,7 @@ class CameraPage(QWidget):
         # with the next camera's ROI.
         self._full_frame = None
         self._preview.clear_frame()
+        self._refresh_save_image()
         self._populate_form()
 
     def _on_machine_model_applied(self, name: str, plc_code: int) -> None:
@@ -749,6 +782,49 @@ class CameraPage(QWidget):
             self._svc.light_off(index)
         self._show_full_frame(frame)
 
+    def _refresh_save_image(self) -> None:
+        """"Save Image" needs a picture to save, and is off while Continuous
+        Capture runs — the preview changes every tick, so which frame would be
+        written is a race the operator cannot see."""
+        self._save_image_btn.setEnabled(
+            self._full_frame is not None and not self._continuous_btn.isChecked()
+        )
+
+    def _default_image_name(self) -> str:
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"camera{self._current_index()}_{stamp}.png"
+
+    def _on_save_image(self) -> None:
+        """Write the previewed frame — the whole (rotated) image, without the
+        ROI box drawn on it — to a file the operator picks.
+
+        The frame is copied before the dialog opens, so a preview-worker frame
+        arriving while it is up cannot change what gets saved.
+        """
+        if self._full_frame is None or self._continuous_btn.isChecked():
+            return
+        frame = self._full_frame.copy()
+        start = self._save_image_dir / self._default_image_name()
+        try:
+            self._save_image_dir.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass  # the dialog still opens; the operator just picks another folder
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save Image", str(start), SAVE_IMAGE_FILTER
+        )
+        if not path:
+            return
+        target = Path(path)
+        if target.suffix.lower() not in (".png", ".jpg", ".jpeg", ".bmp"):
+            target = target.with_suffix(".png")
+        try:
+            write_image(target, frame)
+        except OSError as exc:
+            QMessageBox.warning(self, "Save Image", str(exc))
+            return
+        self._save_image_dir = target.parent
+        logger.info("Camera %s image saved to %s", self._current_index(), target)
+
     def _on_continuous_toggled(self, checked: bool) -> None:
         if not checked:
             self._continuous_timer.stop()
@@ -756,11 +832,13 @@ class CameraPage(QWidget):
             if self._continuous_strobe_index is not None:
                 self._svc.light_off(self._continuous_strobe_index)
                 self._continuous_strobe_index = None
+            self._refresh_save_image()
             return
         index = self._current_index()
         if index is None:
             self._continuous_btn.setChecked(False)
             return
+        self._save_image_btn.setEnabled(False)
         if self._led_strobe.isChecked():
             self._svc.light_on(index)
             self._continuous_strobe_index = index
@@ -1012,6 +1090,7 @@ class CameraPage(QWidget):
         """Show a whole (un-cropped) frame with the ROI box, and its crop."""
         self._full_frame = frame
         self._preview.set_frame(frame)
+        self._refresh_save_image()
         self._update_roi_view()
 
     def _update_roi_view(self) -> None:

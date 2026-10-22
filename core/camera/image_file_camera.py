@@ -50,6 +50,24 @@ def read_image(path: Path | str) -> np.ndarray | None:
     return cv2.imdecode(data, cv2.IMREAD_COLOR)
 
 
+def write_image(path: Path | str, frame: np.ndarray) -> None:
+    """Encode ``frame`` in the format ``path``'s suffix names and write it.
+
+    The counterpart of :func:`read_image`: ``imencode`` + ``tofile`` rather
+    than ``cv2.imwrite``, which fails silently on non-ASCII Windows paths.
+    Raises ``OSError`` on any failure, so a caller can never mistake a
+    picture that was not written for one that was.
+    """
+    suffix = Path(path).suffix or ".png"
+    try:
+        ok, encoded = cv2.imencode(suffix, frame)
+    except cv2.error as exc:
+        raise OSError(f"Cannot encode the image as {suffix}: {exc}") from exc
+    if not ok:
+        raise OSError(f"Cannot encode the image as {suffix}")
+    encoded.tofile(str(path))
+
+
 class ImageFileCamera(CameraBase):
     """Serves an uploaded image (or a folder of images) as camera frames."""
 
